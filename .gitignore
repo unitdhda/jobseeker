@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+auth/
+fonts/
+.env
+.env.*
+!.env.example
+*.pdf
+SECURITY_AUDIT*.md
+node_modules/
+.pi/

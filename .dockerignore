@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+!.env.example
+*.pdf
+data
+auth
+bootstrap-cv
+fonts
+model-cache
+node_modules
+dist
+npm-debug.log*
+README.md
