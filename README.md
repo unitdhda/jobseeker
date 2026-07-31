@@ -30,7 +30,7 @@ Important variables:
 - `OPENAI_CODEX_AUTH_FILE` for the writable OpenAI Codex OAuth credential JSON
 - `FLUE_MODEL` and `FLUE_THINKING_LEVEL` for the shared agent model and reasoning effort
 - `SCRAPE_CRON`, `NOTIFY_CRON`, and `DIGEST_CRON` for global collection and delivery schedules
-- `SCORE_BATCH_SIZE` (default `500`) for the global fair per-cycle budget; `SCORE_AGENT_CONCURRENCY_MIN`/`MAX` bound the shared adaptive scoring pool (defaults `5`–`10`); `USER_DAILY_SCORE_LIMIT`, `USER_DAILY_APPLICATION_LIMIT`, and `USER_DAILY_SEARCH_PROFILE_LIMIT` set rolling 24-hour user limits
+- `SCORE_BATCH_SIZE` (default `500`) for the global fair per-cycle budget; `USER_SCORE_LIMIT_PER_CYCLE` caps each user, including the owner, at 10 scores per cycle; `SCORE_AGENT_CONCURRENCY_MIN`/`MAX` bound the shared adaptive scoring pool (defaults `5`–`10`); `USER_DAILY_SCORE_LIMIT`, `USER_DAILY_APPLICATION_LIMIT`, and `USER_DAILY_SEARCH_PROFILE_LIMIT` set rolling 24-hour user limits
 - `SEARCH_PLATFORMS` (defaults to `hh,hirehi,habr,getmatch,geekjob,avito,rabota`)
 - `HH_AREA_ID` (`1` is Moscow; used as the default area in the generated HH search profile)
 - `PLAYWRIGHT_CHROMIUM_PATH` when Chromium is not in Playwright's standard cache

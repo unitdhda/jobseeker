@@ -88,13 +88,15 @@ export async function runScrapeCycle(): Promise<ScrapeCycleResult | null> {
     }
     let attempted = 0;
     const usage = new Map(users.map((user) => [user.userId, usageInLast24Hours(user.userId, 'score')]));
+    const cycleUsage = new Map(users.map((user) => [user.userId, 0]));
     while (attempted < config.scoreBatchSize) {
       let progressed = false;
       const round = nextFairScoreRound(users.map((user) => ({
         userId: user.userId,
         used: usage.get(user.userId) ?? 0,
+        cycleUsed: cycleUsage.get(user.userId) ?? 0,
         unlimited: user.userId === config.telegramUserId,
-      })), config.scoreBatchSize - attempted, config.userDailyScoreLimit);
+      })), config.scoreBatchSize - attempted, config.userDailyScoreLimit, config.userScoreLimitPerCycle);
       if (!round.length) break;
       const counts = await mapConcurrent(round, config.scoreAgentConcurrencyMax, async (allocation) => {
         try {
@@ -109,6 +111,7 @@ export async function runScrapeCycle(): Promise<ScrapeCycleResult | null> {
         const count = counts[index];
         attempted += count;
         usage.set(allocation.userId, (usage.get(allocation.userId) ?? 0) + count);
+        cycleUsage.set(allocation.userId, (cycleUsage.get(allocation.userId) ?? 0) + count);
         if (count) progressed = true;
       }
       if (!progressed) break;

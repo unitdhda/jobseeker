@@ -81,6 +81,7 @@ export const config = {
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userDailyScoreLimit: integerEnv('USER_DAILY_SCORE_LIMIT', 100, 1, 10_000),
+  userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 10, 1, 10_000),
   userDailyApplicationLimit: integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100),
   userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 16, 1, 100),
   maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),
