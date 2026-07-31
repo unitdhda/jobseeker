@@ -1,4 +1,4 @@
-export interface FairUserBudget { userId: string; used: number }
+export interface FairUserBudget { userId: string; used: number; unlimited?: boolean }
 export interface FairAllocation { userId: string; limit: number }
 
 export function nextFairScoreRound(users: FairUserBudget[], remainingGlobalBudget: number,
@@ -7,7 +7,8 @@ export function nextFairScoreRound(users: FairUserBudget[], remainingGlobalBudge
   const allocations: FairAllocation[] = [];
   for (const user of users) {
     if (!remaining) break;
-    const allowance = Math.min(Math.max(0, dailyLimit - user.used), Math.max(1, quantum), remaining);
+    const userBudget = user.unlimited ? remaining : Math.max(0, dailyLimit - user.used);
+    const allowance = Math.min(userBudget, Math.max(1, quantum), remaining);
     if (!allowance) continue;
     allocations.push({ userId: user.userId, limit: allowance });
     remaining -= allowance;

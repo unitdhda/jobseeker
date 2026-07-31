@@ -16,3 +16,15 @@ test('daily limits and remaining global budget are respected', () => {
   ], 7, 50);
   assert.deepEqual(round, [{ userId: 'b', limit: 2 }, { userId: 'c', limit: 5 }]);
 });
+
+test('an unlimited admin keeps receiving fair rounds after exceeding the user limit', () => {
+  const round = nextFairScoreRound([
+    { userId: 'admin', used: 1_000, unlimited: true },
+    { userId: 'limited', used: 100 },
+    { userId: 'available', used: 95 },
+  ], 20, 100);
+  assert.deepEqual(round, [
+    { userId: 'admin', limit: 10 },
+    { userId: 'available', limit: 5 },
+  ]);
+});

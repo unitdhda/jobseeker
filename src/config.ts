@@ -80,7 +80,7 @@ export const config = {
   scoreBatchSize: integerEnv('SCORE_BATCH_SIZE', 500, 1, 10_000),
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
-  userDailyScoreLimit: integerEnv('USER_DAILY_SCORE_LIMIT', 50, 1, 10_000),
+  userDailyScoreLimit: integerEnv('USER_DAILY_SCORE_LIMIT', 100, 1, 10_000),
   userDailyApplicationLimit: integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100),
   userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 16, 1, 100),
   maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),
