@@ -6,13 +6,15 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import test from 'node:test';
 
-test('legacy single-user CV storage migrates to owner-scoped reusable text', () => {
+test('legacy RU/EN CV storage collapses to one owner-scoped authoritative source', () => {
   const directory = mkdtempSync(join(tmpdir(), 'jobseeker-migration-test-'));
   const path = join(directory, 'legacy.db');
   const legacy = new DatabaseSync(path);
   legacy.exec(`CREATE TABLE cv_templates(language TEXT PRIMARY KEY,cv_path TEXT NOT NULL,cv_sha256 TEXT NOT NULL,
     cv_text TEXT NOT NULL,updated_at TEXT NOT NULL);
-    INSERT INTO cv_templates VALUES ('ru','/private/ru.pdf','hash','Legacy reusable CV text with substantial experience, skills, education, achievements, languages, and contact details.','2026');`);
+    INSERT INTO cv_templates VALUES
+      ('ru','/private/ru.pdf','ru-hash','Legacy Russian reusable CV text with substantial experience, skills, education, achievements, languages, and contact details.','2025'),
+      ('en','/private/en.pdf','en-hash','Legacy English reusable CV text with substantial experience, skills, education, achievements, languages, and contact details.','2026');`);
   legacy.close();
   execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval',
     "await import('./src/lib/database.ts')"], { cwd: process.cwd(), env: { ...process.env,
@@ -21,8 +23,12 @@ test('legacy single-user CV storage migrates to owner-scoped reusable text', () 
   const columns = migrated.prepare('PRAGMA table_info(cv_templates)').all().map((row) => String(row.name));
   assert.equal(columns.includes('cv_path'), false);
   assert.equal(columns.includes('document_json'), true);
-  const cv = migrated.prepare("SELECT user_id,source_format,document_json FROM cv_templates WHERE language='ru'").get();
+  assert.equal(columns.includes('language'), false);
+  assert.equal(columns.includes('source_language'), false);
+  assert.equal(Number(migrated.prepare('SELECT COUNT(*) count FROM cv_templates').get()?.count), 1);
+  const cv = migrated.prepare('SELECT user_id,cv_sha256,source_format,document_json FROM cv_templates').get();
   assert.equal(String(cv?.user_id), '1001');
+  assert.equal(String(cv?.cv_sha256), 'en-hash');
   assert.equal(String(cv?.source_format), 'pdf');
   assert.ok((JSON.parse(String(cv?.document_json)) as { blocks: unknown[] }).blocks.length > 0);
   migrated.close();

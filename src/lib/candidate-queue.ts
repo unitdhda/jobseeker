@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import {
-  candidatesDueForRefresh, candidatesNeedingPrefilter, getCvTemplate, markCandidateClosed, markCandidateFailed, markCandidateNormalized,
+  candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, markCandidateClosed, markCandidateFailed, markCandidateNormalized,
   rankedCandidateQueue, saveCandidatePrefilter, upsertVacancy, type Vacancy, type VacancyCandidate, type VacancyInput,
 } from './database.ts';
 import { prefilterVacancy } from './prefilter.ts';
@@ -27,10 +27,9 @@ type QueueProgress = (phase: 'filtering' | 'normalization', current: number, tot
 
 async function prefilterCandidates(userIds: string[], progress?: QueueProgress): Promise<{ evaluated: number; queued: number }> {
   const profiles = userIds.map((userId) => {
-    const ru = getCvTemplate(userId, 'ru'); const en = getCvTemplate(userId, 'en');
-    if (!ru || !en) return null;
-    const cvText = `${ru.cvText}\n\n${en.cvText}`;
-    return { userId, cvText, cvHash: createHash('sha256').update(cvText).digest('hex') };
+    const cv = getCvSource(userId);
+    if (!cv) return null;
+    return { userId, cvText: cv.cvText, cvHash: cv.cvSha256 };
   }).filter((profile) => profile !== null);
   if (!profiles.length) return { evaluated: 0, queued: 0 };
   const profileContext = profiles.map(({ userId, cvHash }) => `${userId}:${cvHash}`).sort().join('|');

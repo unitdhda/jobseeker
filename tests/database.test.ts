@@ -22,8 +22,7 @@ const extracted = (label: string) => ({
 function addUser(userId: string): void {
   d.requestAccess({ userId, chatId: userId, displayName: `User ${userId}` });
   d.setUserStatus(userId, 'approved');
-  d.saveCvTemplate(userId, 'ru', 'ru.txt', `ru-${userId}`, extracted(`RU ${userId}`));
-  d.saveCvTemplate(userId, 'en', 'en.txt', `en-${userId}`, extracted(`EN ${userId}`));
+  d.saveCvSource(userId, 'cv.txt', `cv-${userId}`, extracted(`CV ${userId}`));
 }
 
 await test('multi-user database behavior', async (t) => {
@@ -46,6 +45,15 @@ await test('multi-user database behavior', async (t) => {
     assert.equal(d.getTelegramUser('2002')?.status, 'revoked');
     d.requestAccess({ userId: '2002', chatId: '2002', displayName: 'Second' });
     d.setUserStatus('2002', 'approved');
+  });
+
+  await t.test('one authoritative CV source is stored per user', () => {
+    addUser('1001');
+    const firstHash = d.getCvHash('1001');
+    d.saveCvSource('1001', 'replacement.txt', 'replacement-hash', extracted('Replacement CV'));
+    assert.equal(Number(d.db.prepare("SELECT COUNT(*) count FROM cv_templates WHERE user_id='1001'").get()?.count), 1);
+    assert.equal(d.getCvSource('1001')?.originalFilename, 'replacement.txt');
+    assert.notEqual(d.getCvHash('1001'), firstHash);
   });
 
   await t.test('scores are isolated and shared vacancies are searchable with FTS5', () => {
@@ -78,7 +86,7 @@ await test('multi-user database behavior', async (t) => {
     assert.equal(d.usageInLast24Hours('2002', 'score'), 1);
     schedules.updateDeliveryWindow('2002', '22:00-08:00 Europe/Moscow');
     const exported = d.exportUserData('2002');
-    assert.equal((exported.cvTemplates as unknown[]).length, 2);
+    assert.equal((exported.cvSource as { original_filename: string }).original_filename, 'cv.txt');
     assert.ok((exported.scores as unknown[]).length >= 1);
     assert.equal((exported.deliveryWindow as { timezone: string }).timezone, 'Europe/Moscow');
     d.deleteUserData('2002');

@@ -2,13 +2,13 @@ import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import type { InputRichBlockTable, RichBlockTableCell, RichText } from 'grammy/types';
 import { config } from '../config.ts';
 import {
-  approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvBundleHash, getCvTemplate, getScoredVacancy,
+  approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getScoredVacancy,
   getScoredVacancyByApplyId, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix, listTelegramUsers,
   markAlerted, markApplicationDelivered, markDigested, requestAccess, searchScoredVacancies, setUserStatus,
   skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries,
-  type CvLanguage, type ScoredVacancy, type TelegramIdentity, type TelegramUser, type GlobalScheduleName,
+  type ScoredVacancy, type TelegramIdentity, type TelegramUser, type GlobalScheduleName,
 } from './database.ts';
-import { importCvTemplate } from './cv-import.ts';
+import { importCvSource } from './cv-import.ts';
 import { refreshUserInWorker, tailorApplicationInWorker } from './job-worker-client.ts';
 import { clearApplicationArtifacts } from './application-artifacts.ts';
 import { maximumCvBytes } from './cv-limits.ts';
@@ -19,8 +19,7 @@ import {
 } from './schedules.ts';
 
 let bot: Bot | undefined;
-interface CvUploadState { language: CvLanguage; then?: CvLanguage }
-const pendingCvUpload = new Map<string, CvUploadState>();
+const pendingCvUpload = new Set<string>();
 const activeCvImports = new Set<string>();
 const lastCvSessions = new Map<string, number>();
 const applicationJobs = new Set<string>();
@@ -223,7 +222,8 @@ function formatSchedule(name: GlobalScheduleName, cron?: string): string {
   return `${name}: ${status.cron}\nNext run: ${next} (${config.timezone})`;
 }
 function cvStatus(userId: string): string {
-  return `Russian CV: ${getCvTemplate(userId, 'ru') ? 'ready' : 'missing'}\nEnglish CV: ${getCvTemplate(userId, 'en') ? 'ready' : 'missing'}`;
+  const cv = getCvSource(userId);
+  return cv ? 'CV source: ready' : 'CV source: missing';
 }
 async function downloadTelegramFile(fileId: string, declaredSize?: number): Promise<Uint8Array> {
   if (declaredSize != null && declaredSize > maximumCvBytes) throw new Error('CV document exceeds the 20 MB limit.');
@@ -237,7 +237,7 @@ async function downloadTelegramFile(fileId: string, declaredSize?: number): Prom
   return readResponseBytes(response, maximumCvBytes);
 }
 function refreshSearchesAfterCvUpload(userId: string): void {
-  const cvHash = getCvBundleHash(userId);
+  const cvHash = getCvHash(userId);
   if (!cvHash) return;
   pendingRefreshHashes.set(userId, cvHash);
   if (refreshingUsers.has(userId)) return;
@@ -250,17 +250,17 @@ function refreshSearchesAfterCvUpload(userId: string): void {
         pendingRefreshHashes.delete(userId);
         try {
           const refreshed = await refreshUserInWorker(userId, requestedHash);
-          if (!pendingRefreshHashes.has(userId) && isApprovedUser(userId) && getCvBundleHash(userId) === requestedHash) {
+          if (!pendingRefreshHashes.has(userId) && isApprovedUser(userId) && getCvHash(userId) === requestedHash) {
             await getBot().api.sendMessage(targetChat(userId),
               `Refreshed ${refreshed.searchCount} searches across ${refreshed.platformCount} platforms. ` +
               'The next scheduled shared scan will use them.');
           }
         } catch (error) {
-          if (!pendingRefreshHashes.has(userId) && isApprovedUser(userId) && getCvBundleHash(userId)) {
+          if (!pendingRefreshHashes.has(userId) && isApprovedUser(userId) && getCvHash(userId)) {
             console.error(`Search-profile refresh failed for user ${userId}`,
               error instanceof Error ? error.message : String(error));
             await getBot().api.sendMessage(targetChat(userId),
-              'CVs were saved, but profile generation was deferred or failed. The next scheduled scan will retry within your daily limit.');
+              'The CV source was saved, but profile generation was deferred or failed. The next scheduled scan will retry within your daily limit.');
           }
         }
       }
@@ -283,7 +283,7 @@ function usersPage(pageInput: number): { text: string; keyboard: InlineKeyboard;
   const lines = users.map((user) => {
     const ref = user.isOwner ? '—' : userPrefix(user.userId, ids);
     const name = (user.username ? `@${user.username}` : user.displayName).replace(/\s+/g, ' ').slice(0, 16);
-    const cv = getCvTemplate(user.userId, 'ru') && getCvTemplate(user.userId, 'en') ? 'yes' : 'no';
+    const cv = getCvSource(user.userId) ? 'yes' : 'no';
     const window = deliveryWindowStatus(user.userId).replace('Europe/', '').slice(0, 22);
     return `${ref.padEnd(7)} ${user.status.padEnd(11)} ${user.userId.padEnd(13)} ${cv.padEnd(3)} ${window.padEnd(22)} ${name}`;
   });
@@ -310,7 +310,7 @@ async function deletePersonalData(ctx: Context, confirmation: string): Promise<v
   if (!ctx.from) return;
   const userId = String(ctx.from.id);
   if (confirmation.trim().toLowerCase() !== 'confirm') {
-    await ctx.reply('This permanently deletes your CVs, profiles, scores, decisions, applications, usage, and settings. ' +
+    await ctx.reply('This permanently deletes your CV source, profiles, scores, decisions, applications, usage, and settings. ' +
       'Shared vacancies remain. Send /delete_me confirm (or /delete-me confirm) to continue.');
     return;
   }
@@ -328,7 +328,7 @@ function approvedStartText(user: TelegramUser): string {
   const ownerCommands = user.isOwner
     ? '\n\nOwner commands:\n/users — review users\n/revoke REF — revoke access\n/scrape, /notify, /digest — show or set global crons'
     : '';
-  return `Jobseeker access: approved.\n\nUpload personal RU and EN CVs with /cv. Shared vacancies are scored privately against your CV. ` +
+  return `Jobseeker access: approved.\n\nUpload one authoritative CV in any language with /cv. Shared vacancies are scored privately against it. ` +
     `Before uploading, use /privacy to review storage, model-provider processing, retention, export, and deletion. ` +
     `Use /search to search your scored vacancies, /export_me to export personal data, and /delete_me to erase it. ` +
     `Use /window HH:MM-HH:MM Area/City to limit proactive alerts and digests; /window off allows anytime delivery. ` +
@@ -453,8 +453,8 @@ export function startTelegramBot(): void {
     await ctx.reply('Privacy: normalized CV text, canonical blocks, hashes, derived profiles/embeddings, scores, usage, and model conversation state are stored in private SQLite storage. Relevant CV and vacancy content is sent to the configured third-party model provider for profile generation, scoring, and tailoring. Source uploads and generated PDFs are not retained. Data remains while access is active until /delete_me confirm; encrypted backups may retain deleted data only for the documented backup-retention period. Use /export_me before deletion. Uploading with /cv confirms you understand this processing.');
   });
   instance.command('cv', async (ctx) => {
-    const userId = String(ctx.from!.id); const requested = ctx.match.trim().toLowerCase();
-    if (requested && requested !== 'ru' && requested !== 'en') { await ctx.reply('Usage: /cv, /cv ru, or /cv en'); return; }
+    const userId = String(ctx.from!.id);
+    if (ctx.match.trim()) { await ctx.reply('Usage: /cv'); return; }
     if (!pendingCvUpload.has(userId)) {
       const cooldownMs = config.cvUploadSessionCooldownMinutes * 60_000;
       const remaining = (lastCvSessions.get(userId) ?? 0) + cooldownMs - Date.now();
@@ -464,19 +464,19 @@ export function startTelegramBot(): void {
       }
       lastCvSessions.set(userId, Date.now());
     }
-    const language: CvLanguage = requested === 'en' ? 'en' : 'ru';
-    pendingCvUpload.set(userId, requested === '' ? { language: 'ru', then: 'en' } : { language });
+    pendingCvUpload.add(userId);
     await ctx.reply(`${cvStatus(userId)}\n\nBy uploading, you confirm the /privacy processing notice. ` +
-      `Send the ${language === 'ru' ? 'Russian' : 'English'} CV as PDF, Markdown, TXT, or DOCX (maximum 20 MB).`);
+      'Send one authoritative CV in any language as PDF, Markdown, TXT, or DOCX (maximum 20 MB). ' +
+      'It will replace the current source; tailored documents are translated to each vacancy language.');
   });
   instance.on('message:document', async (ctx) => {
-    const userId = String(ctx.from.id); const state = pendingCvUpload.get(userId);
-    if (!state) { await ctx.reply('Use /cv first, then send the requested CV document.'); return; }
+    const userId = String(ctx.from.id);
+    if (!pendingCvUpload.has(userId)) { await ctx.reply('Use /cv first, then send the CV document.'); return; }
     if (activeCvImports.has(userId)) { await ctx.reply('Your previous CV document is still being checked.'); return; }
     activeCvImports.add(userId);
     try {
-      const { language } = state; const document = ctx.message.document;
-      const filename = document.file_name ?? `cv-${language}`;
+      const document = ctx.message.document;
+      const filename = document.file_name ?? 'cv';
       if (document.file_size != null && document.file_size > maximumCvBytes) {
         await ctx.reply('CV document exceeds the 20 MB limit.'); return;
       }
@@ -488,15 +488,10 @@ export function startTelegramBot(): void {
         await ctx.reply('Please send a PDF, Markdown, TXT, or DOCX document.'); return;
       }
       const bytes = await downloadTelegramFile(document.file_id, document.file_size);
-      await importCvTemplate(userId, language, filename, document.mime_type, bytes);
-      if (state.then) {
-        pendingCvUpload.set(userId, { language: state.then });
-        await ctx.reply(`${language.toUpperCase()} CV replaced. Now send the English CV document.`); return;
-      }
+      await importCvSource(userId, filename, document.mime_type, bytes);
       pendingCvUpload.delete(userId);
-      const bothReady = Boolean(getCvTemplate(userId, 'ru') && getCvTemplate(userId, 'en'));
-      await ctx.reply(`${language.toUpperCase()} CV replaced. ${cvStatus(userId)}${bothReady ? '\nRefreshing searches…' : ''}`);
-      if (bothReady) refreshSearchesAfterCvUpload(userId);
+      await ctx.reply(`CV source replaced. ${cvStatus(userId)}\nRefreshing searches…`);
+      refreshSearchesAfterCvUpload(userId);
     } catch (error) {
       console.error(`CV import failed for user ${userId}: ${errorMessage(error)}`);
       if (isApprovedUser(userId)) await ctx.reply('The CV could not be safely processed. Check the format and size, then retry.');
@@ -531,7 +526,7 @@ export function startTelegramBot(): void {
     await instance.api.setMyCommands([
       { command: 'start', description: 'Show access and setup instructions' },
       { command: 'request', description: 'Request owner approval' },
-      { command: 'cv', description: 'Upload or replace personal CVs' },
+      { command: 'cv', description: 'Upload or replace your CV source' },
       { command: 'privacy', description: 'Review CV data processing and retention' },
       { command: 'window', description: 'Show or set proactive delivery window' },
       { command: 'search', description: 'Search your scored vacancies' },

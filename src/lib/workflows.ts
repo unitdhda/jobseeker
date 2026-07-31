@@ -3,14 +3,13 @@ import { init } from '@flue/runtime';
 import { PrepareSearchProfile, ScoreVacancy, TailorApplication } from '../agents/workflows.ts';
 import { config } from '../config.ts';
 import {
-  beginApplication, failApplication, getCvBundleHash, getCvTemplate, getScoredVacancy, getSearchProfile, getVacancy,
+  beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy, getSearchProfile, getVacancy,
   pendingVacancies, prefilterCalibration, prefilterQueueStats, rankedPendingVacancies, recordUsage, requireApprovedUser,
   savePrefilterScore, usageInLast24Hours, vacanciesNeedingPrefilter, type Vacancy,
 } from './database.ts';
 import { getSearchPlatform } from '../platforms/registry.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, getApplicationArtifacts, type GeneratedApplication } from './application-artifacts.ts';
-import { detectCvLanguage } from './language.ts';
 import { trace } from './trace.ts';
 import { prefilterVacancy, vacancySemanticText } from './prefilter.ts';
 import { embeddingCosine, semanticEmbedding } from './semantic-embeddings.ts';
@@ -22,16 +21,15 @@ const scoringPool = new AdaptiveTaskPool(config.scoreAgentConcurrencyMin, config
 export async function ensureCvAndSearchProfiles(userId: string, force = false,
   expectedCvHash?: string): Promise<Record<string, unknown>> {
   requireApprovedUser(userId);
-  const ru = getCvTemplate(userId, 'ru');
-  const en = getCvTemplate(userId, 'en');
-  if (!ru || !en) throw new Error('Upload both Russian and English CV templates with /cv first.');
-  const hash = getCvBundleHash(userId);
+  const cv = getCvSource(userId);
+  if (!cv) throw new Error('Upload one authoritative CV source with /cv first.');
+  const hash = getCvHash(userId);
   if (!hash || (expectedCvHash && hash !== expectedCvHash)) throw new Error('CV changed before profile generation started.');
   const profiles: Record<string, unknown> = {};
 
   for (const platformId of config.searchPlatforms) {
     requireApprovedUser(userId);
-    if (getCvBundleHash(userId) !== hash) throw new Error('CV changed during profile generation.');
+    if (getCvHash(userId) !== hash) throw new Error('CV changed during profile generation.');
     const platform = getSearchPlatform(platformId);
     try {
       if (force || !getSearchProfile(userId, platformId)) {
@@ -46,7 +44,9 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
           message: {
             kind: 'signal',
             type: 'cv.prepare-search',
-            body: `Build the ${platform.name} search profile.\n\nRUSSIAN CV TEMPLATE:\n${ru.cvText}\n\nENGLISH CV TEMPLATE:\n${en.cvText}`,
+            body: `Build the ${platform.name} search profile from this authoritative CV source. ` +
+              `The source may use any language; translate role terminology when the platform requires it.\n\n` +
+              `CV SOURCE:\n${cv.cvText}`,
           },
         });
         await agent.read(receipt);
@@ -92,10 +92,9 @@ export async function scorePendingVacancies(
   let vacancies: Vacancy[];
   let calibrationContext: string | undefined;
   if (config.prefilterEnabled) {
-    const ru = getCvTemplate(userId, 'ru');
-    const en = getCvTemplate(userId, 'en');
-    if (!ru || !en) throw new Error('Both CV templates are required for pre-LLM filtering.');
-    const cvText = `${ru.cvText}\n\n${en.cvText}`;
+    const cv = getCvSource(userId);
+    if (!cv) throw new Error('An authoritative CV source is required for pre-LLM filtering.');
+    const cvText = cv.cvText;
     const cvContentHash = createHash('sha256').update(cvText).digest('hex');
     const contextHash = createHash('sha256').update([
       'prefilter-v3-score-only', cvContentHash, config.prefilterMinScore,
@@ -189,9 +188,7 @@ export async function tailorApplication(userId: string, vacancyId: number): Prom
     const id = `${userId}-application-${vacancyId}-${vacancy.contentHash.slice(0, 12)}-${Date.now()}`;
     const agent = init(TailorApplication, { id });
     recordUsage(userId, 'application');
-    const language = detectCvLanguage(`${vacancy.name}\n${vacancy.description}`);
-    const template = getCvTemplate(userId, language);
-    if (!template) throw new Error(`${language.toUpperCase()} CV template was not found.`);
+    if (!getCvSource(userId)) throw new Error('The authoritative CV source was not found.');
     const receipt = await agent.dispatch({
       initialData: { userId, vacancyId },
       message: { kind: 'user', body: 'Prepare the application documents now from the stored canonical CV content.' },
