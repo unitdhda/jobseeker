@@ -24,7 +24,7 @@ Do not deploy if the host cannot provide encrypted storage. The application deli
 
 - Active account data remains until `/delete_me confirm` or operator-authorized removal.
 - Original CV uploads and generated PDFs are never persisted.
-- User deletion removes CVs, profiles, scores, decisions, applications, usage, settings, CV embeddings, and user-scoped Flue history from the active database.
+- User deletion removes the authoritative CV source, profiles, scores, decisions, applications, usage, settings, CV embeddings, and user-scoped Flue history from the active database.
 - Encrypted backups are retained for no more than 30 days and then destroyed; deletion therefore propagates when the final pre-deletion backup expires.
 - Operational logs are retained for no more than 7 days. `TRACE_VERBOSE` must remain disabled in production and logs must not intentionally contain CV/model bodies.
 

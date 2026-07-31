@@ -1,4 +1,4 @@
-import type { CvLanguage } from './database.ts';
+export type CvLanguage = 'ru' | 'en';
 
 export function detectCvLanguage(text: string): CvLanguage {
   const cyrillic = text.match(/[А-Яа-яЁё]/g)?.length ?? 0;

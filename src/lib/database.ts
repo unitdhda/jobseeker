@@ -57,8 +57,7 @@ if (legacyMultiuser && !ownerId) {
 // New installations get the multi-user schema directly. Existing tables are rebuilt below.
 db.exec(`
 CREATE TABLE IF NOT EXISTS cv_templates (
-  user_id TEXT NOT NULL REFERENCES telegram_users(user_id) ON DELETE CASCADE,
-  language TEXT NOT NULL CHECK (language IN ('ru','en')),
+  user_id TEXT PRIMARY KEY REFERENCES telegram_users(user_id) ON DELETE CASCADE,
   cv_sha256 TEXT NOT NULL,
   cv_text TEXT NOT NULL,
   document_json TEXT NOT NULL,
@@ -67,8 +66,7 @@ CREATE TABLE IF NOT EXISTS cv_templates (
   media_type TEXT NOT NULL,
   parser_name TEXT NOT NULL,
   parser_version TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  PRIMARY KEY (user_id,language)
+  updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS search_profiles (
   user_id TEXT NOT NULL REFERENCES telegram_users(user_id) ON DELETE CASCADE,
@@ -360,6 +358,43 @@ if (!columns('cv_templates').includes('document_json')) {
   }
 }
 
+// Collapse legacy RU/EN variants into one authoritative CV source per user.
+if (columns('cv_templates').includes('language')) {
+  db.exec('PRAGMA foreign_keys=OFF');
+  db.exec('BEGIN');
+  try {
+    db.exec(`ALTER TABLE cv_templates RENAME TO cv_templates_language_variants;
+      CREATE TABLE cv_templates (
+        user_id TEXT PRIMARY KEY REFERENCES telegram_users(user_id) ON DELETE CASCADE,
+        cv_sha256 TEXT NOT NULL,cv_text TEXT NOT NULL,document_json TEXT NOT NULL,
+        source_format TEXT NOT NULL CHECK (source_format IN ('pdf','md','txt','doc','docx')),
+        original_filename TEXT NOT NULL,media_type TEXT NOT NULL,parser_name TEXT NOT NULL,parser_version TEXT NOT NULL,
+        updated_at TEXT NOT NULL);
+      INSERT INTO cv_templates
+        (user_id,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,updated_at)
+      SELECT user_id,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,updated_at FROM (
+          SELECT *,ROW_NUMBER() OVER (PARTITION BY user_id ORDER BY updated_at DESC,
+            CASE language WHEN 'en' THEN 0 ELSE 1 END) selected_rank
+          FROM cv_templates_language_variants
+        ) WHERE selected_rank=1;
+      DROP TABLE cv_templates_language_variants;
+      DELETE FROM search_profiles;
+      DELETE FROM scores;
+      DELETE FROM prefilter_scores;
+      DELETE FROM embedding_cache WHERE kind='cv';`);
+    db.prepare("INSERT OR REPLACE INTO app_migrations(name,applied_at) VALUES ('single-cv-source-v3',?)")
+      .run(new Date().toISOString());
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys=ON');
+  }
+} else if (!db.prepare("SELECT 1 FROM app_migrations WHERE name='single-cv-source-v3'").get()) {
+  db.prepare("INSERT INTO app_migrations(name,applied_at) VALUES ('single-cv-source-v3',?)").run(new Date().toISOString());
+}
+
 // Incremental compatibility for older candidate/vacancy layouts.
 const vacancyColumns = columns('vacancies');
 if (!vacancyColumns.includes('apply_id')) {
@@ -502,8 +537,7 @@ export function listTelegramUsers(limit: number, offset: number): { users: Teleg
   return { users, total };
 }
 export function approvedUsers(requireCv = false): TelegramUser[] {
-  const cvClause = requireCv ? `AND EXISTS (SELECT 1 FROM cv_templates c WHERE c.user_id=u.user_id AND c.language='ru')
-    AND EXISTS (SELECT 1 FROM cv_templates c WHERE c.user_id=u.user_id AND c.language='en')` : '';
+  const cvClause = requireCv ? 'AND EXISTS (SELECT 1 FROM cv_templates c WHERE c.user_id=u.user_id)' : '';
   return db.prepare(`SELECT u.* FROM telegram_users u WHERE u.status='approved' ${cvClause} ORDER BY u.is_owner DESC,u.user_id`)
     .all().map(rowToUser);
 }
@@ -514,7 +548,7 @@ export interface UserUsageSummary {
   searchProfiles24h: number; scoresTotal: number; applicationsTotal: number;
 }
 export function recordUsage(userId: string, kind: UsageKind): void {
-  if (!hasCompleteCv(userId)) throw new Error('Both CV templates are required.');
+  if (!hasCv(userId)) throw new Error('An authoritative CV source is required.');
   db.prepare('INSERT INTO usage_events(user_id,kind,occurred_at) VALUES (?,?,?)').run(userId, kind, new Date().toISOString());
 }
 export function usageInLast24Hours(userId: string, kind: UsageKind): number {
@@ -571,9 +605,9 @@ export function deleteUserData(userId: string): void {
 export function exportUserData(userId: string): Record<string, unknown> {
   const user = getTelegramUser(userId);
   if (!user) throw new Error('User was not found.');
-  const cvTemplates = db.prepare(`SELECT language,cv_sha256,cv_text,document_json,source_format,original_filename,
-    media_type,parser_name,parser_version,updated_at FROM cv_templates WHERE user_id=? ORDER BY language`).all(userId)
-    .map((row) => ({ ...row, document_json: JSON.parse(String(row.document_json)) }));
+  const cvRow = db.prepare(`SELECT cv_sha256,cv_text,document_json,source_format,original_filename,
+    media_type,parser_name,parser_version,updated_at FROM cv_templates WHERE user_id=?`).get(userId);
+  const cvSource = cvRow ? { ...cvRow, document_json: JSON.parse(String(cvRow.document_json)) } : null;
   const profiles = db.prepare('SELECT platform,profile_json,updated_at FROM search_profiles WHERE user_id=? ORDER BY platform').all(userId)
     .map((row) => ({ platform: row.platform, profile: JSON.parse(String(row.profile_json)), updatedAt: row.updated_at }));
   const scores = db.prepare(`SELECT s.vacancy_id,v.apply_id,v.source,v.source_id,v.name,v.employer,v.url,s.score,s.primary_track,
@@ -582,7 +616,7 @@ export function exportUserData(userId: string): Record<string, unknown> {
     WHERE s.user_id=? ORDER BY s.scored_at DESC`).all(userId).map((row) => ({ ...row,
       reasons_json: JSON.parse(String(row.reasons_json)), gaps_json: JSON.parse(String(row.gaps_json)) }));
   return { exportedAt: new Date().toISOString(), user, deliveryWindow: getDeliveryWindow(userId),
-    cvTemplates, searchProfiles: profiles, scores,
+    cvSource, searchProfiles: profiles, scores,
     usage: db.prepare('SELECT kind,occurred_at FROM usage_events WHERE user_id=? ORDER BY occurred_at').all(userId),
     discoveries: db.prepare(`SELECT source,source_id,search_name,first_seen_at,last_seen_at FROM candidate_discoveries
       WHERE user_id=? ORDER BY last_seen_at DESC`).all(userId) };
@@ -608,42 +642,40 @@ function rowToVacancy(row: Record<string, unknown>): Vacancy {
     contentHash: String(row.content_hash), decision: String(row.user_decision ?? row.decision ?? 'new') };
 }
 
-export type CvLanguage = 'ru' | 'en';
-export interface CvTemplate {
-  language: CvLanguage; cvSha256: string; cvText: string; document: CanonicalCvDocument;
+export interface CvSource {
+  cvSha256: string; cvText: string; document: CanonicalCvDocument;
   sourceFormat: CvSourceFormat; originalFilename: string; mediaType: string; parserName: string; parserVersion: string;
 }
-export function getCvTemplate(userId: string, language: CvLanguage): CvTemplate | null {
-  const row = db.prepare(`SELECT language,cv_sha256,cv_text,document_json,source_format,original_filename,
-    media_type,parser_name,parser_version FROM cv_templates WHERE user_id=? AND language=?`).get(userId, language);
-  return row ? { language: String(row.language) as CvLanguage, cvSha256: String(row.cv_sha256), cvText: String(row.cv_text),
-    document: JSON.parse(String(row.document_json)) as CanonicalCvDocument, sourceFormat: String(row.source_format) as CvSourceFormat,
-    originalFilename: String(row.original_filename), mediaType: String(row.media_type), parserName: String(row.parser_name),
-    parserVersion: String(row.parser_version) } : null;
+export function getCvSource(userId: string): CvSource | null {
+  const row = db.prepare(`SELECT cv_sha256,cv_text,document_json,source_format,original_filename,
+    media_type,parser_name,parser_version FROM cv_templates WHERE user_id=?`).get(userId);
+  return row ? { cvSha256: String(row.cv_sha256), cvText: String(row.cv_text),
+    document: JSON.parse(String(row.document_json)) as CanonicalCvDocument,
+    sourceFormat: String(row.source_format) as CvSourceFormat, originalFilename: String(row.original_filename),
+    mediaType: String(row.media_type), parserName: String(row.parser_name), parserVersion: String(row.parser_version) } : null;
 }
-export function getCvBundleHash(userId: string): string | null {
-  const rows = db.prepare('SELECT language,cv_sha256 FROM cv_templates WHERE user_id=? ORDER BY language').all(userId);
-  if (rows.length !== 2) return null;
-  return createHash('sha256').update(rows.map((row) => `${row.language}:${row.cv_sha256}`).join('|')).digest('hex');
+export function getCvHash(userId: string): string | null {
+  const row = db.prepare('SELECT cv_sha256 FROM cv_templates WHERE user_id=?').get(userId);
+  return row ? String(row.cv_sha256) : null;
 }
-export function saveCvTemplate(userId: string, language: CvLanguage, originalFilename: string,
-  cvSha256: string, extracted: ExtractedCvDocument): void {
+export function saveCvSource(userId: string, originalFilename: string, cvSha256: string,
+  extracted: ExtractedCvDocument): void {
   db.prepare(`INSERT INTO cv_templates
-    (user_id,language,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,language) DO UPDATE SET cv_sha256=excluded.cv_sha256,
-    cv_text=excluded.cv_text,document_json=excluded.document_json,source_format=excluded.source_format,
-    original_filename=excluded.original_filename,media_type=excluded.media_type,parser_name=excluded.parser_name,
-    parser_version=excluded.parser_version,updated_at=excluded.updated_at`)
-    .run(userId, language, cvSha256, extracted.text, JSON.stringify(extracted.document), extracted.sourceFormat,
-      originalFilename, extracted.mediaType, extracted.parserName, extracted.parserVersion, new Date().toISOString());
+    (user_id,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET
+    cv_sha256=excluded.cv_sha256,cv_text=excluded.cv_text,document_json=excluded.document_json,
+    source_format=excluded.source_format,original_filename=excluded.original_filename,media_type=excluded.media_type,
+    parser_name=excluded.parser_name,parser_version=excluded.parser_version,updated_at=excluded.updated_at`)
+    .run(userId, cvSha256, extracted.text, JSON.stringify(extracted.document), extracted.sourceFormat, originalFilename,
+      extracted.mediaType, extracted.parserName, extracted.parserVersion, new Date().toISOString());
   db.prepare('DELETE FROM scores WHERE user_id=?').run(userId);
   db.prepare('DELETE FROM prefilter_scores WHERE user_id=?').run(userId);
 }
-function hasCompleteCv(userId: string): boolean {
-  return Number(db.prepare('SELECT COUNT(*) count FROM cv_templates WHERE user_id=?').get(userId)?.count ?? 0) >= 2;
+function hasCv(userId: string): boolean {
+  return Boolean(db.prepare('SELECT 1 FROM cv_templates WHERE user_id=?').get(userId));
 }
 export function saveSearchProfile(userId: string, platform: string, profile: unknown): void {
-  if (!hasCompleteCv(userId)) throw new Error('Both CV templates are required.');
+  if (!hasCv(userId)) throw new Error('An authoritative CV source is required.');
   db.prepare(`INSERT INTO search_profiles (user_id,platform,profile_json,updated_at) VALUES (?,?,?,?)
     ON CONFLICT(user_id,platform) DO UPDATE SET profile_json=excluded.profile_json,updated_at=excluded.updated_at`)
     .run(userId, platform, JSON.stringify(profile), new Date().toISOString());
@@ -752,7 +784,7 @@ export function recordVacancyCandidate(userId: string, input: VacancyCandidateIn
       WHERE source=? AND source_id=?`).run(input.url, input.searchName, input.title, summary, publishedAt, payloadJson,
         listingHash, now, Number(changed), Number(changed), input.source, input.sourceId);
   }
-  if (hasCompleteCv(userId)) {
+  if (hasCv(userId)) {
     db.prepare(`INSERT INTO candidate_discoveries(user_id,source,source_id,search_name,first_seen_at,last_seen_at)
       VALUES (?,?,?,?,?,?) ON CONFLICT(user_id,source,source_id) DO UPDATE SET
       search_name=excluded.search_name,last_seen_at=excluded.last_seen_at`)
@@ -846,7 +878,7 @@ export interface PrefilterScoreInput {
   auditSelected: boolean; reasons: string[];
 }
 export function savePrefilterScore(userId: string, vacancyId: number, contextHash: string, contentHash: string, score: PrefilterScoreInput): void {
-  if (!hasCompleteCv(userId)) throw new Error('Both CV templates are required.');
+  if (!hasCv(userId)) throw new Error('An authoritative CV source is required.');
   ensureUserVacancy(userId, vacancyId);
   db.prepare(`INSERT INTO prefilter_scores
     (user_id,vacancy_id,context_hash,content_hash,regex_score,embedding_cosine,embedding_score,semantic_cosine,semantic_score,
@@ -904,7 +936,7 @@ export function prefilterCalibration(userId: string, contextHash: string, alertS
 }
 
 export function saveScore(userId: string, vacancyId: number, score: number, primaryTrack: string, summary: string, reasons: string[], gaps: string[], hardRejection: boolean): void {
-  if (!hasCompleteCv(userId)) throw new Error('Both CV templates are required.');
+  if (!hasCv(userId)) throw new Error('An authoritative CV source is required.');
   ensureUserVacancy(userId, vacancyId);
   db.prepare(`INSERT INTO scores(user_id,vacancy_id,score,primary_track,summary,reasons_json,gaps_json,hard_rejection,scored_at)
     VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,vacancy_id) DO UPDATE SET score=excluded.score,primary_track=excluded.primary_track,

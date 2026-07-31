@@ -1,7 +1,7 @@
 import { runScrapeCycle } from './lib/jobs.ts';
 import { ensureCvAndSearchProfiles, tailorApplication } from './lib/workflows.ts';
 import { config } from './config.ts';
-import { getCvBundleHash, requireApprovedUser, usageInLast24Hours } from './lib/database.ts';
+import { getCvHash, requireApprovedUser, usageInLast24Hours } from './lib/database.ts';
 import { startScriptRuntime } from './scripts/runtime.ts';
 import type { JobWorkerMessage, JobWorkerRequest, RefreshUserResult, SerializedApplication } from './lib/job-worker-protocol.ts';
 import { errorMessage } from './lib/logging.ts';
@@ -18,7 +18,7 @@ async function execute(request: JobWorkerRequest): Promise<unknown> {
   if (request.type === 'run-cycle') return runScrapeCycle();
   if (request.type === 'refresh-user') {
     requireApprovedUser(request.userId);
-    if (getCvBundleHash(request.userId) !== request.cvHash) throw new Error('CV changed before profile refresh; using the newest queued version.');
+    if (getCvHash(request.userId) !== request.cvHash) throw new Error('CV changed before profile refresh; using the newest queued version.');
     const used = usageInLast24Hours(request.userId, 'search-profile');
     if (used + config.searchPlatforms.length > config.userDailySearchProfileLimit) {
       throw new Error(`Daily search-profile limit (${config.userDailySearchProfileLimit}) reached.`);

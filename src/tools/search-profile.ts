@@ -1,6 +1,6 @@
 import { defineTool, type JsonValue } from '@flue/runtime';
 import * as v from 'valibot';
-import { getCvBundleHash, requireApprovedUser, saveSearchProfile } from '../lib/database.ts';
+import { getCvHash, requireApprovedUser, saveSearchProfile } from '../lib/database.ts';
 import { getSearchPlatform } from '../platforms/registry.ts';
 import { trace } from '../lib/trace.ts';
 
@@ -22,7 +22,7 @@ export function searchProfileTools(userId: string, platformId: string, expectedC
       input: v.object({ profile: v.unknown() }),
       async run({ data }) {
         requireApprovedUser(userId);
-        if (getCvBundleHash(userId) !== expectedCvHash) throw new Error('CV changed during profile generation.');
+        if (getCvHash(userId) !== expectedCvHash) throw new Error('CV changed during profile generation.');
         const result = v.safeParse(platform.schema, data.profile);
         trace('tool.validate_search_profile.input', { platform: platform.id, profile: data.profile });
         if (!result.success) {
