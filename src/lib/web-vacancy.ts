@@ -5,11 +5,12 @@ import { fetchSourceText } from './safe-http.ts';
 export type JsonObject = Record<string, unknown>;
 export const sourceUserAgent = 'JobseekerVacancyMonitor/1.0';
 
-export async function fetchSourceHtml(source: string, url: string): Promise<{ html: string; url: string }> {
+export async function fetchSourceHtml(source: string, url: string,
+  maximumBytes?: number): Promise<{ html: string; url: string }> {
   const response = await fetchSourceText(source, url, {
     headers: { accept: 'text/html,application/xhtml+xml,application/xml,text/xml', 'user-agent': sourceUserAgent },
     signal: AbortSignal.timeout(45_000),
-  });
+  }, maximumBytes);
   if (response.contentType && !/(?:text\/(?:html|xml)|application\/(?:xhtml\+xml|xml))\b/i.test(response.contentType)) {
     throw new Error(`${source} returned an unexpected content type`);
   }
