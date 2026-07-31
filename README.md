@@ -63,24 +63,6 @@ curl http://127.0.0.1:3000/health
 
 The `jobseeker-data` volume survives image and container replacement. Compose runs the service read-only and non-root, drops all Linux capabilities, enables no-new-privileges, bounds memory/PIDs/CPU, and exposes only explicit writable data/auth/model mounts. Chromium sandboxing remains enabled.
 
-## deployment host deployment
-
-The deployment host needs Docker Engine with the Compose plugin. The local machine needs `ssh`, `scp`, and `rsync`.
-
-```bash
-chmod +x scripts/deploy-deployment host.sh
-./scripts/deploy-deployment host.sh user@your-deployment host
-```
-
-This uploads the source, `.env`, and OpenAI Codex OAuth JSON, builds on the deployment host, and runs the service with `restart: unless-stopped`. It defaults to `~/hh-jobseeker`; override `REMOTE_DIR`, `SSH_PORT`, or `OPENAI_CODEX_AUTH_SOURCE` as needed.
-
-Updates use the same command. Operations:
-
-```bash
-ssh user@your-deployment host 'cd ~/hh-jobseeker && docker compose logs -f jobseeker'
-ssh user@your-deployment host 'cd ~/hh-jobseeker && docker compose restart jobseeker'
-```
-
 ## Privacy and retention
 
 - CV text, canonical blocks, hashes, derived profiles and embeddings, scores, usage records, and model conversation state are stored in owner-only SQLite files.

@@ -12,8 +12,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "cv:prepare": "tsx --env-file-if-exists=.env src/scripts/prepare-cv.ts",
-    "run:cycle": "tsx --env-file-if-exists=.env src/scripts/run-cycle.ts",
-    "logs:telegram": "node --env-file-if-exists=.env scripts/telegram-log-forwarder.mjs data/test-run/server.log"
+    "run:cycle": "tsx --env-file-if-exists=.env src/scripts/run-cycle.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.81.1",

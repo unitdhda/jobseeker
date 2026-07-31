@@ -11,6 +11,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+      - seccomp:./docker/seccomp-chromium.json
     pids_limit: 256
     mem_limit: 4g
     cpus: 2.0

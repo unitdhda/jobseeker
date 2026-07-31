@@ -14,6 +14,7 @@ function pause(min = 250, max = 650): Promise<void> {
 }
 
 type ScrapeResult = { seen: number; discovered: number };
+const maximumGetmatchSitemapBytes = 8 * 1024 * 1024;
 
 async function scrapeStructuredDetailPages(
   source: 'habr' | 'geekjob', userId: string, profile: TextSearchProfile,
@@ -126,7 +127,7 @@ function getmatchVacancy(sourceId: string, url: string, sourceQuery: string, htm
 
 export async function scrapeGetmatch(userId: string, profile: GetmatchSearchProfile): Promise<ScrapeResult> {
   trace('scrape.search.request', { platform: 'getmatch', url: 'https://getmatch.ru/sitemap.xml', queries: profile.searches.map((search) => search.query) });
-  const { html: sitemap } = await fetchSourceHtml('getmatch', 'https://getmatch.ru/sitemap.xml');
+  const { html: sitemap } = await fetchSourceHtml('getmatch', 'https://getmatch.ru/sitemap.xml', maximumGetmatchSitemapBytes);
   const links = new Map<string, { url: string; lastmod: string; searchName: string }>();
   for (const entry of sitemap.matchAll(/<url>([\s\S]*?)<\/url>/gi)) {
     const url = entry[1].match(/<loc>(https:\/\/getmatch\.ru\/vacancies\/(\d+)-([^<]+))<\/loc>/i);

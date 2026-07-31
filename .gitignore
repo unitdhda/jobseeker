@@ -8,5 +8,6 @@ fonts/
 !.env.example
 *.pdf
 SECURITY_AUDIT*.md
+/scripts/
 node_modules/
 .pi/
