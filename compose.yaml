@@ -22,6 +22,7 @@ services:
     environment:
       PORT: "3000"
       RUN_INITIAL_CYCLE: "${RUN_INITIAL_CYCLE:-true}"
+      USER_DAILY_SCORE_LIMIT: "100"
       DATABASE_PATH: /app/data/jobseeker.db
       OPENAI_CODEX_AUTH_FILE: /app/auth/auth.json
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright

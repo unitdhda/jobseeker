@@ -90,8 +90,11 @@ export async function runScrapeCycle(): Promise<ScrapeCycleResult | null> {
     const usage = new Map(users.map((user) => [user.userId, usageInLast24Hours(user.userId, 'score')]));
     while (attempted < config.scoreBatchSize) {
       let progressed = false;
-      const round = nextFairScoreRound(users.map((user) => ({ userId: user.userId, used: usage.get(user.userId) ?? 0 })),
-        config.scoreBatchSize - attempted, config.userDailyScoreLimit);
+      const round = nextFairScoreRound(users.map((user) => ({
+        userId: user.userId,
+        used: usage.get(user.userId) ?? 0,
+        unlimited: user.userId === config.telegramUserId,
+      })), config.scoreBatchSize - attempted, config.userDailyScoreLimit);
       if (!round.length) break;
       const counts = await mapConcurrent(round, config.scoreAgentConcurrencyMax, async (allocation) => {
         try {

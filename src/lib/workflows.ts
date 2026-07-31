@@ -66,7 +66,7 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
 
 export async function scoreOne(userId: string, vacancyId: number): Promise<void> {
   requireApprovedUser(userId);
-  if (usageInLast24Hours(userId, 'score') >= config.userDailyScoreLimit) {
+  if (userId !== config.telegramUserId && usageInLast24Hours(userId, 'score') >= config.userDailyScoreLimit) {
     throw new Error(`Daily vacancy-scoring limit (${config.userDailyScoreLimit}) reached.`);
   }
   const vacancy = getVacancy(vacancyId);
