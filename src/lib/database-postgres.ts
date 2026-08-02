@@ -27,12 +27,14 @@ const initialization = (async () => {
     [config.telegramUserId, config.telegramChatId ?? config.telegramUserId, timestamp]);
 })();
 const ready = async (): Promise<void> => initialization;
+function jsonValue<T>(value: unknown): T { return (typeof value === 'string' ? JSON.parse(value) : value) as T; }
+function isoTimestamp(value: unknown): string { return value instanceof Date ? value.toISOString() : String(value); }
+function optionalIsoTimestamp(value: unknown): string | null { return value == null ? null : isoTimestamp(value); }
 
 function rowToUser(row: Row): TelegramUser {
   return { userId: String(row.user_id), chatId: String(row.chat_id), username: row.username == null ? null : String(row.username),
     displayName: String(row.display_name), status: String(row.status) as TelegramUser['status'], isOwner: Boolean(row.is_owner),
-    requestedAt: row.requested_at == null ? null : String(row.requested_at),
-    approvedAt: row.approved_at == null ? null : String(row.approved_at) };
+    requestedAt: optionalIsoTimestamp(row.requested_at), approvedAt: optionalIsoTimestamp(row.approved_at) };
 }
 export async function getTelegramUser(userId: string): Promise<TelegramUser | null> {
   await ready(); const row = await one('select * from telegram_users where user_id=$1', [userId]); return row ? rowToUser(row) : null;
@@ -75,7 +77,6 @@ export async function setUserStatus(userId: string, status: 'approved' | 'reject
       approved_at=case when $1='approved' then $2 else approved_at end,
       requested_at=case when $1 in ('rejected','revoked') then $2 else requested_at end,updated_at=$2
       where user_id=$3 returning *`, [status, timestamp, userId]);
-    if (status !== 'approved') await client.query('delete from pending_deliveries where user_id=$1', [userId]);
     return rows[0] ? rowToUser(rows[0]) : null;
   });
 }
@@ -100,13 +101,13 @@ export async function recordUsage(userId: string, kind: UsageKind): Promise<void
 }
 export async function usageInLast24Hours(userId: string, kind: UsageKind): Promise<number> {
   await ready(); const row = await one(`select count(*) count from usage_events where user_id=$1 and kind=$2
-    and occurred_at::timestamptz>=now()-interval '1 day'`, [userId, kind]); return Number(row?.count ?? 0);
+    and occurred_at>=now()-interval '1 day'`, [userId, kind]); return Number(row?.count ?? 0);
 }
 export async function userUsageSummaries(): Promise<UserUsageSummary[]> {
   await ready(); const rows = await q(`select u.user_id,u.display_name,
-    count(*) filter(where e.kind='score' and e.occurred_at::timestamptz>=now()-interval '1 day') scores_24h,
-    count(*) filter(where e.kind='application' and e.occurred_at::timestamptz>=now()-interval '1 day') applications_24h,
-    count(*) filter(where e.kind='search-profile' and e.occurred_at::timestamptz>=now()-interval '1 day') profiles_24h,
+    count(*) filter(where e.kind='score' and e.occurred_at>=now()-interval '1 day') scores_24h,
+    count(*) filter(where e.kind='application' and e.occurred_at>=now()-interval '1 day') applications_24h,
+    count(*) filter(where e.kind='search-profile' and e.occurred_at>=now()-interval '1 day') profiles_24h,
     count(*) filter(where e.kind='score') scores_total,count(*) filter(where e.kind='application') applications_total
     from telegram_users u left join usage_events e on e.user_id=u.user_id group by u.user_id,u.display_name
     order by max(u.is_owner) desc,u.user_id`);
@@ -140,12 +141,12 @@ export async function purgeSettledAgentSessions(): Promise<number> {
 }
 export async function deleteUserData(userId: string): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
-    for (const table of ['candidate_prefilter_scores','candidate_discoveries','pending_deliveries','user_delivery_windows','applications','scores',
-      'prefilter_scores','user_vacancies','search_profiles','cv_templates','usage_events','telegram_sessions','background_tasks'] as const) {
+    for (const table of ['candidate_prefilter_scores','candidate_discoveries','user_delivery_windows','prefilter_scores',
+      'user_vacancies','search_profiles','cv_templates','usage_events','telegram_sessions','background_tasks'] as const) {
       await client.query(`delete from ${table} where user_id=$1`, [userId]);
     }
     await client.query("delete from embedding_cache where kind='cv' and user_id=$1", [userId]);
-    await client.query('delete from telegram_user_update_leases where user_id=$1', [userId]);
+    await client.query("delete from coordination_leases where resource_key=$1", [`telegram-user:${userId}`]);
     await client.query('update llm_cost_events set user_id=null where user_id=$1', [userId]);
     const sessionPattern = `%"${userId.replaceAll('%', '\\%').replaceAll('_', '\\_')}-%`;
     const submissions = await txq(client, "select submission_id from flue_agent_submissions where session_key like $1 escape '\\'", [sessionPattern]);
@@ -165,29 +166,29 @@ export async function exportUserData(userId: string): Promise<Record<string, unk
   await ready(); if (!await getTelegramUser(userId)) throw new Error('User was not found.');
   const [cv, profiles, scores] = await Promise.all([one('select cv_text,document_json from cv_templates where user_id=$1', [userId]),
     q('select platform,profile_json from search_profiles where user_id=$1 order by platform', [userId]),
-    q('select v.url,s.score from scores s join vacancies v on v.id=s.vacancy_id where s.user_id=$1 order by s.score desc,v.url', [userId])]);
+    q('select v.url,uv.score from user_vacancies uv join vacancies v on v.id=uv.vacancy_id where uv.user_id=$1 and uv.score is not null order by uv.score desc,v.url', [userId])]);
   const careerRow = profiles.find((row) => String(row.platform) === careerProfilePlatformId);
-  return { cvSource: cv ? String(cv.cv_text) : null, normalizedDocument: cv ? JSON.parse(String(cv.document_json)) : null,
-    careerProfile: careerRow ? (JSON.parse(String(careerRow.profile_json)) as { profile?: unknown }).profile ?? null : null,
+  return { cvSource: cv ? String(cv.cv_text) : null, normalizedDocument: cv ? jsonValue(cv.document_json) : null,
+    careerProfile: careerRow ? (jsonValue<{ profile?: unknown }>(careerRow.profile_json)).profile ?? null : null,
     searchProfiles: profiles.filter((row) => String(row.platform) !== careerProfilePlatformId)
-      .map((row) => ({ platform: String(row.platform), profile: JSON.parse(String(row.profile_json)) })),
+      .map((row) => ({ platform: String(row.platform), profile: jsonValue(row.profile_json) })),
     scores: scores.map((row) => ({ url: String(row.url), score: Number(row.score) })) };
 }
 
 function rowToVacancy(row: Row): Vacancy {
-  const source = String(row.source ?? 'hh'); return { id: Number(row.id), source, sourceId: String(row.source_id ?? row.hh_id),
+  const source = String(row.source ?? 'hh'); return { id: Number(row.id), source, sourceId: String(row.source_id),
     applyId: String(row.apply_id), name: String(row.name), employer: String(row.employer), area: String(row.area),
     salaryFrom: row.salary_from == null ? null : Number(row.salary_from), salaryTo: row.salary_to == null ? null : Number(row.salary_to),
     salaryCurrency: row.salary_currency == null ? null : String(row.salary_currency), salaryGross: row.salary_gross == null ? null : Boolean(row.salary_gross),
     experience: String(row.experience), employment: String(row.employment), schedule: String(row.schedule), workFormat: String(row.work_format),
-    description: String(row.description), keySkills: JSON.parse(String(row.key_skills_json)) as string[], url: safeVacancyUrl(source, String(row.url)),
-    publishedAt: String(row.published_at), sourceQuery: String(row.source_query), contentHash: String(row.content_hash),
-    decision: String(row.user_decision ?? row.decision ?? 'new') };
+    description: String(row.description), keySkills: jsonValue<string[]>(row.key_skills_json), url: safeVacancyUrl(source, String(row.url)),
+    publishedAt: isoTimestamp(row.published_at), sourceQuery: String(row.source_query), contentHash: String(row.content_hash),
+    decision: String(row.user_decision ?? 'new') };
 }
 export async function getCvSource(userId: string): Promise<CvSource | null> {
   await ready(); const row = await one(`select cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version
     from cv_templates where user_id=$1`, [userId]);
-  return row ? { cvSha256: String(row.cv_sha256), cvText: String(row.cv_text), document: JSON.parse(String(row.document_json)),
+  return row ? { cvSha256: String(row.cv_sha256), cvText: String(row.cv_text), document: jsonValue(row.document_json),
     sourceFormat: String(row.source_format) as CvSource['sourceFormat'], originalFilename: String(row.original_filename),
     mediaType: String(row.media_type), parserName: String(row.parser_name), parserVersion: String(row.parser_version) } : null;
 }
@@ -197,29 +198,31 @@ export async function getCvHash(userId: string): Promise<string | null> {
 export async function saveCvSource(userId: string, originalFilename: string, cvSha256: string, extracted: ExtractedCvDocument): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
     await client.query(`insert into cv_templates(user_id,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,updated_at)
-      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) on conflict(user_id) do update set cv_sha256=excluded.cv_sha256,cv_text=excluded.cv_text,
+      values($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10) on conflict(user_id) do update set cv_sha256=excluded.cv_sha256,cv_text=excluded.cv_text,
       document_json=excluded.document_json,source_format=excluded.source_format,original_filename=excluded.original_filename,
       media_type=excluded.media_type,parser_name=excluded.parser_name,parser_version=excluded.parser_version,updated_at=excluded.updated_at`,
       [userId, cvSha256, extracted.text, JSON.stringify(extracted.document), extracted.sourceFormat, originalFilename,
         extracted.mediaType, extracted.parserName, extracted.parserVersion, now()]);
-    await client.query('delete from scores where user_id=$1', [userId]); await client.query('delete from prefilter_scores where user_id=$1', [userId]);
+    await client.query('delete from score_alert_details where user_id=$1', [userId]);
+    await client.query('update user_vacancies set score=null,score_updated_at=null where user_id=$1', [userId]);
+    await client.query('delete from prefilter_scores where user_id=$1', [userId]);
   });
 }
 export async function saveSearchProfile(userId: string, platform: string, profile: unknown): Promise<void> {
   await ready(); if (!await hasCv(userId)) throw new Error('An authoritative CV source is required.');
-  await q(`insert into search_profiles(user_id,platform,profile_json,updated_at) values($1,$2,$3,$4)
+  await q(`insert into search_profiles(user_id,platform,profile_json,updated_at) values($1,$2,$3::jsonb,$4)
     on conflict(user_id,platform) do update set profile_json=excluded.profile_json,updated_at=excluded.updated_at`,
     [userId, platform, JSON.stringify(profile), now()]);
 }
 export async function clearSearchProfile(userId: string, platform: string): Promise<void> { await ready(); await q('delete from search_profiles where user_id=$1 and platform=$2', [userId, platform]); }
 export async function getSearchProfile<T>(userId: string, platform: string): Promise<T | null> {
   await ready(); const row = await one('select profile_json from search_profiles where user_id=$1 and platform=$2', [userId, platform]);
-  return row ? JSON.parse(String(row.profile_json)) as T : null;
+  return row ? jsonValue<T>(row.profile_json) : null;
 }
 export async function getDeliverySettings(userId: string): Promise<DeliverySettings | null> {
   await ready(); const row = await one('select start_minutes,end_minutes,digest_minutes,timezone,last_digest_at from user_delivery_windows where user_id=$1', [userId]);
   return row ? { startMinutes: Number(row.start_minutes), endMinutes: Number(row.end_minutes), digestMinutes: Number(row.digest_minutes),
-    timezone: String(row.timezone), lastDigestAt: row.last_digest_at == null ? null : String(row.last_digest_at) } : null;
+    timezone: String(row.timezone), lastDigestAt: optionalIsoTimestamp(row.last_digest_at) } : null;
 }
 export async function saveDeliverySettings(userId: string, settings: Omit<DeliverySettings, 'lastDigestAt'>): Promise<void> {
   await ready(); await q(`insert into user_delivery_windows(user_id,start_minutes,end_minutes,digest_minutes,timezone,last_digest_at,updated_at)
@@ -264,17 +267,21 @@ export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; 
       if ((await txq(client, 'select 1 from vacancies where apply_id=$1', [applyId])).length) {
         throw new Error('Could not allocate a unique vacancy apply ID.');
       }
-      const rows = await txq(client, `insert into vacancies(hh_id,source,source_id,apply_id,name,employer,area,salary_from,salary_to,
+      const rows = await txq(client, `insert into vacancies(source,source_id,apply_id,name,employer,area,salary_from,salary_to,
         salary_currency,salary_gross,experience,employment,schedule,work_format,description,key_skills_json,url,published_at,source_query,
-        content_hash,canonical_fingerprint,first_seen_at,updated_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) returning id`,
-        [`${v.source}:${v.sourceId}`, v.source, v.sourceId, applyId, ...values.slice(0,17), fingerprint, timestamp, timestamp]);
+        content_hash,canonical_fingerprint,first_seen_at,updated_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23) returning id`,
+        [v.source, v.sourceId, applyId, ...values.slice(0,17), fingerprint, timestamp, timestamp]);
       return { id: Number(rows[0]!.id), needsScore: true, duplicate: false };
     }
     const id = Number(existing.id), changed = String(existing.content_hash) !== v.contentHash;
     await client.query(`update vacancies set name=$1,employer=$2,area=$3,salary_from=$4,salary_to=$5,salary_currency=$6,salary_gross=$7,
-      experience=$8,employment=$9,schedule=$10,work_format=$11,description=$12,key_skills_json=$13,url=$14,published_at=$15,source_query=$16,
+      experience=$8,employment=$9,schedule=$10,work_format=$11,description=$12,key_skills_json=$13::jsonb,url=$14,published_at=$15,source_query=$16,
       content_hash=$17,updated_at=$18 where id=$19`, [...values, id]);
-    if (changed) { await client.query('delete from scores where vacancy_id=$1', [id]); await client.query('delete from prefilter_scores where vacancy_id=$1', [id]); }
+    if (changed) {
+      await client.query('delete from score_alert_details where vacancy_id=$1', [id]);
+      await client.query('update user_vacancies set score=null,score_updated_at=null where vacancy_id=$1', [id]);
+      await client.query('delete from prefilter_scores where vacancy_id=$1', [id]);
+    }
     return { id, needsScore: changed, duplicate: false };
   });
 }
@@ -283,7 +290,7 @@ export async function hasVacancySourceId(source: string, sourceId: string): Prom
 }
 function rowToCandidate(row: Row): VacancyCandidate {
   return { source: String(row.source), sourceId: String(row.source_id), url: String(row.url), searchName: String(row.search_name), title: String(row.title),
-    summary: String(row.summary), publishedAt: String(row.published_at), payload: JSON.parse(String(row.payload_json)), listingHash: String(row.listing_hash),
+    summary: String(row.summary), publishedAt: isoTimestamp(row.published_at), payload: jsonValue(row.payload_json), listingHash: String(row.listing_hash),
     status: String(row.status), attempts: Number(row.attempts), combinedScore: row.combined_score == null ? null : Number(row.combined_score) };
 }
 export async function recordVacancyCandidate(userId: string, raw: VacancyCandidateInput): Promise<boolean> {
@@ -296,10 +303,10 @@ export async function recordVacancyCandidate(userId: string, raw: VacancyCandida
     const discovered = !existing && !vacancy;
     const changed = Boolean(existing && String(existing.listing_hash) !== hash);
     if (!existing) await client.query(`insert into vacancy_candidates(source,source_id,url,search_name,title,summary,published_at,payload_json,
-      listing_hash,status,vacancy_id,first_seen_at,last_seen_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$12)`,
+      listing_hash,status,vacancy_id,first_seen_at,last_seen_at) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$12)`,
       [input.source,input.sourceId,input.url,input.searchName,input.title,summary,publishedAt,payload,hash,vacancy?'normalized':'discovered',vacancy?.id??null,timestamp]);
     else { await client.query(`update vacancy_candidates set url=$1,search_name=$2,title=$3,
-      summary=$4,published_at=$5,payload_json=$6,listing_hash=$7,last_seen_at=$8,prefilter_context_hash=case when $9 then null else prefilter_context_hash end,
+      summary=$4,published_at=$5,payload_json=$6::jsonb,listing_hash=$7,last_seen_at=$8,prefilter_context_hash=case when $9 then null else prefilter_context_hash end,
       status=case when $9 and status in ('filtered','failed','queued','discovered') then 'discovered' else status end where source=$10 and source_id=$11`,
       [input.url,input.searchName,input.title,summary,publishedAt,payload,hash,timestamp,changed,input.source,input.sourceId]); }
     if (await hasCv(userId, client)) await client.query(`insert into candidate_discoveries(user_id,source,source_id,search_name,first_seen_at,last_seen_at)
@@ -318,7 +325,7 @@ export async function candidatesNeedingPrefilter(userId: string, contextHash: st
 }
 export async function saveCandidatePrefilter(userId: string, candidate: VacancyCandidate, contextHash: string, score: PrefilterScoreInput): Promise<void> {
   await ready(); await q(`insert into candidate_prefilter_scores(user_id,source,source_id,context_hash,listing_hash,regex_score,lexical_cosine,
-    semantic_cosine,semantic_status,combined_score,filtered,reasons_json,scored_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+    semantic_cosine,semantic_status,combined_score,filtered,reasons_json,scored_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13)
     on conflict(user_id,source,source_id) do update set context_hash=excluded.context_hash,listing_hash=excluded.listing_hash,
     regex_score=excluded.regex_score,lexical_cosine=excluded.lexical_cosine,semantic_cosine=excluded.semantic_cosine,
     semantic_status=excluded.semantic_status,combined_score=excluded.combined_score,filtered=excluded.filtered,
@@ -362,14 +369,14 @@ async function ensureUserVacancy(userId:string,vacancyId:number,client?:PoolClie
   if(client) await client.query(sql,[userId,vacancyId,now()]); else await q(sql,[userId,vacancyId,now()]);
 }
 export async function pendingVacancies(userId:string,limit:number):Promise<Vacancy[]>{ await ready(); return (await q(`select v.*,coalesce(uv.decision,'new') user_decision
-  from vacancies v left join scores s on s.user_id=$1 and s.vacancy_id=v.id left join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id
-  where s.vacancy_id is null and coalesce(uv.decision,'new') not in ('skipped','applied') and exists (select 1 from vacancy_candidates c
+  from vacancies v left join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id
+  where uv.score is null and coalesce(uv.decision,'new') not in ('skipped','applied') and exists (select 1 from vacancy_candidates c
   join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id where c.vacancy_id=v.id and d.user_id=$1)
   order by v.published_at desc limit $2`,[userId,limit])).map(rowToVacancy); }
 export async function vacanciesNeedingPrefilter(userId:string,contextHash:string,limit:number,semanticRequired=false):Promise<Vacancy[]>{
   await ready(); return (await q(`select v.*,coalesce(uv.decision,'new') user_decision from vacancies v
-    left join scores s on s.user_id=$1 and s.vacancy_id=v.id left join prefilter_scores p on p.user_id=$1 and p.vacancy_id=v.id
-    left join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where s.vacancy_id is null and coalesce(uv.decision,'new') not in ('skipped','applied')
+    left join prefilter_scores p on p.user_id=$1 and p.vacancy_id=v.id
+    left join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where uv.score is null and coalesce(uv.decision,'new') not in ('skipped','applied')
     and exists (select 1 from vacancy_candidates c join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id
       where c.vacancy_id=v.id and d.user_id=$1)
     and (p.vacancy_id is null or p.context_hash<>$2 or p.content_hash<>v.content_hash or ($3 and p.semantic_status in ('disabled','unavailable')))
@@ -389,7 +396,7 @@ export async function savePrefilterScore(userId:string,vacancyId:number,contextH
   await ready(); await withPostgresTransaction(async client=>{ if(!await hasCv(userId,client))throw new Error('An authoritative CV source is required.');
     await ensureUserVacancy(userId,vacancyId,client); await client.query(`insert into prefilter_scores(user_id,vacancy_id,context_hash,content_hash,
       regex_score,embedding_cosine,embedding_score,semantic_cosine,semantic_score,semantic_status,combined_score,filtered,audit_selected,reasons_json,scored_at)
-      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) on conflict(user_id,vacancy_id) do update set context_hash=excluded.context_hash,
+      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15) on conflict(user_id,vacancy_id) do update set context_hash=excluded.context_hash,
       content_hash=excluded.content_hash,regex_score=excluded.regex_score,embedding_cosine=excluded.embedding_cosine,embedding_score=excluded.embedding_score,
       semantic_cosine=excluded.semantic_cosine,semantic_score=excluded.semantic_score,semantic_status=excluded.semantic_status,combined_score=excluded.combined_score,
       filtered=excluded.filtered,audit_selected=excluded.audit_selected,reasons_json=excluded.reasons_json,scored_at=excluded.scored_at`,
@@ -399,23 +406,23 @@ export async function savePrefilterScore(userId:string,vacancyId:number,contextH
 function rowsToPrefiltered(rows:Row[]):PrefilteredVacancy[]{return rows.map(row=>({...rowToVacancy(row),prefilterScore:Number(row.prefilter_score),auditSelected:Boolean(row.audit_selected)}));}
 export async function rankedPendingVacancies(userId:string,contextHash:string,limit:number,auditSlots=0):Promise<PrefilteredVacancy[]>{
   await ready(); const query=async(filtered:boolean,queryLimit:number)=>rowsToPrefiltered(await q(`select v.*,uv.decision user_decision,p.combined_score prefilter_score,
-    p.audit_selected from vacancies v join prefilter_scores p on p.user_id=$1 and p.vacancy_id=v.id left join scores s on s.user_id=$1 and s.vacancy_id=v.id
-    join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where s.vacancy_id is null and uv.decision not in ('skipped','applied')
+    p.audit_selected from vacancies v join prefilter_scores p on p.user_id=$1 and p.vacancy_id=v.id
+    join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where uv.score is null and uv.decision not in ('skipped','applied')
     and p.context_hash=$2 and p.content_hash=v.content_hash and p.filtered=$3 ${filtered?'and p.audit_selected<>0':''}
     order by p.combined_score desc,v.published_at desc limit $4`,[userId,contextHash,Number(filtered),queryLimit]));
   const audit=await query(true,Math.min(limit,auditSlots)); return [...await query(false,Math.max(0,limit-audit.length)),...audit];
 }
 export async function prefilterQueueStats(userId:string,contextHash:string):Promise<{queued:number;filtered:number;auditQueued:number}>{
   await ready(); const row=await one(`select count(*) filter(where p.filtered=0) queued,count(*) filter(where p.filtered<>0) filtered,
-    count(*) filter(where p.filtered<>0 and p.audit_selected<>0) audit_queued from prefilter_scores p left join scores s
-    on s.user_id=p.user_id and s.vacancy_id=p.vacancy_id where p.user_id=$1 and p.context_hash=$2
-    and p.content_hash=(select content_hash from vacancies where id=p.vacancy_id) and s.vacancy_id is null`,[userId,contextHash]);
+    count(*) filter(where p.filtered<>0 and p.audit_selected<>0) audit_queued from prefilter_scores p
+    join user_vacancies uv on uv.user_id=p.user_id and uv.vacancy_id=p.vacancy_id where p.user_id=$1 and p.context_hash=$2
+    and p.content_hash=(select content_hash from vacancies where id=p.vacancy_id) and uv.score is null`,[userId,contextHash]);
   return {queued:Number(row?.queued??0),filtered:Number(row?.filtered??0),auditQueued:Number(row?.audit_queued??0)};
 }
 export async function prefilterCalibration(userId:string,contextHash:string,alertScore:number,minimumLabels:number):Promise<PrefilterCalibration>{
-  await ready(); const rows=await q(`select p.combined_score,p.filtered,p.audit_selected,s.score,uv.decision from prefilter_scores p
-    join scores s on s.user_id=p.user_id and s.vacancy_id=p.vacancy_id join vacancies v on v.id=p.vacancy_id
-    join user_vacancies uv on uv.user_id=p.user_id and uv.vacancy_id=p.vacancy_id where p.user_id=$1 and p.context_hash=$2 and p.content_hash=v.content_hash`,[userId,contextHash]);
+  await ready(); const rows=await q(`select p.combined_score,p.filtered,p.audit_selected,uv.score,uv.decision from prefilter_scores p
+    join vacancies v on v.id=p.vacancy_id join user_vacancies uv on uv.user_id=p.user_id and uv.vacancy_id=p.vacancy_id
+    where p.user_id=$1 and uv.score is not null and p.context_hash=$2 and p.content_hash=v.content_hash`,[userId,contextHash]);
   const compared=rows.length;let sumX=0,sumY=0,sumXY=0,sumXX=0,sumYY=0,audited=0,auditFalseNegatives=0,applied=0,skipped=0;
   for(const row of rows){const x=Number(row.combined_score),y=Number(row.score);sumX+=x;sumY+=y;sumXY+=x*y;sumXX+=x*x;sumYY+=y*y;
     if(row.audit_selected){audited++;if(y>=alertScore)auditFalseNegatives++;}if(row.decision==='applied'||row.decision==='applying')applied++;if(row.decision==='skipped')skipped++;}
@@ -426,38 +433,40 @@ export async function prefilterCalibration(userId:string,contextHash:string,aler
 
 export async function saveScore(userId:string,vacancyId:number,score:number,primaryTrack:string,summary:string,reasons:string[],gaps:string[],hardRejection:boolean):Promise<void>{
   await ready(); await withPostgresTransaction(async client=>{if(!await hasCv(userId,client))throw new Error('An authoritative CV source is required.');
-    await ensureUserVacancy(userId,vacancyId,client); const timestamp=now(); await client.query(`insert into scores(user_id,vacancy_id,score) values($1,$2,$3)
-      on conflict(user_id,vacancy_id) do update set score=excluded.score`,[userId,vacancyId,score]);
-    const rows=await txq(client,`update user_vacancies set score_updated_at=$1,updated_at=case when decision in ('alerted','digested') then $1 else updated_at end,
-      decision=case when decision in ('alerted','digested') then 'new' else decision end where user_id=$2 and vacancy_id=$3 returning decision`,[timestamp,userId,vacancyId]);
+    await ensureUserVacancy(userId,vacancyId,client); const timestamp=now();
+    const rows=await txq(client,`update user_vacancies set score=$1,score_updated_at=$2,
+      updated_at=case when decision in ('alerted','digested') then $2 else updated_at end,
+      decision=case when decision in ('alerted','digested') then 'new' else decision end
+      where user_id=$3 and vacancy_id=$4 returning decision`,[score,timestamp,userId,vacancyId]);
     if(score>=config.alertScore&&!hardRejection&&String(rows[0]?.decision??'new')==='new')await client.query(`insert into score_alert_details
-      (user_id,vacancy_id,primary_track,summary,reasons_json,gaps_json) values($1,$2,$3,$4,$5,$6) on conflict(user_id,vacancy_id) do update
+      (user_id,vacancy_id,primary_track,summary,reasons_json,gaps_json) values($1,$2,$3,$4,$5::jsonb,$6::jsonb) on conflict(user_id,vacancy_id) do update
       set primary_track=excluded.primary_track,summary=excluded.summary,reasons_json=excluded.reasons_json,gaps_json=excluded.gaps_json`,
       [userId,vacancyId,primaryTrack,summary,JSON.stringify(reasons),JSON.stringify(gaps)]);
     else await client.query('delete from score_alert_details where user_id=$1 and vacancy_id=$2',[userId,vacancyId]); });
 }
 function rowToScoredVacancy(row:Row):ScoredVacancy{return {...rowToVacancy(row),userId:String(row.score_user_id??row.user_id),score:Number(row.score)};}
 function rowToAlertVacancy(row:Row):AlertVacancy{return {...rowToScoredVacancy(row),primaryTrack:String(row.primary_track),summary:String(row.summary),
-  reasons:JSON.parse(String(row.reasons_json)) as string[],gaps:JSON.parse(String(row.gaps_json)) as string[]};}
-const scoredSelect=`select v.*,uv.decision user_decision,s.user_id score_user_id,s.score from vacancies v join scores s on s.vacancy_id=v.id
-  join user_vacancies uv on uv.user_id=s.user_id and uv.vacancy_id=v.id`;
-export async function getScoredVacancy(userId:string,id:number):Promise<ScoredVacancy|null>{await ready();const row=await one(`${scoredSelect} where s.user_id=$1 and v.id=$2`,[userId,id]);return row?rowToScoredVacancy(row):null;}
-export async function getScoredVacancyByApplyId(userId:string,applyId:string):Promise<ScoredVacancy|null>{await ready();const row=await one(`${scoredSelect} where s.user_id=$1 and v.apply_id=$2`,[userId,applyId]);return row?rowToScoredVacancy(row):null;}
+  reasons:jsonValue<string[]>(row.reasons_json),gaps:jsonValue<string[]>(row.gaps_json)};}
+const scoredSelect=`select v.*,uv.decision user_decision,uv.user_id score_user_id,uv.score from vacancies v
+  join user_vacancies uv on uv.vacancy_id=v.id and uv.score is not null`;
+export async function getScoredVacancy(userId:string,id:number):Promise<ScoredVacancy|null>{await ready();const row=await one(`${scoredSelect} where uv.user_id=$1 and v.id=$2`,[userId,id]);return row?rowToScoredVacancy(row):null;}
+export async function getScoredVacancyByApplyId(userId:string,applyId:string):Promise<ScoredVacancy|null>{await ready();const row=await one(`${scoredSelect} where uv.user_id=$1 and v.apply_id=$2`,[userId,applyId]);return row?rowToScoredVacancy(row):null;}
 export async function searchScoredVacancies(userId:string,input:string,limit=10):Promise<ScoredVacancy[]>{
   await ready();const tokens=input.toLowerCase().match(/[\p{L}\p{N}+#.]{2,}/gu)?.slice(0,12)??[];if(!tokens.length)return[];
-  const query=tokens.join(' ');return(await q(`${scoredSelect} where s.user_id=$1 and v.search_vector@@websearch_to_tsquery('simple',$2)
-    order by ts_rank(v.search_vector,websearch_to_tsquery('simple',$2)) desc,s.score desc limit $3`,[userId,query,Math.max(1,Math.min(limit,30))])).map(rowToScoredVacancy);
+  const query=tokens.join(' ');return(await q(`${scoredSelect} where uv.user_id=$1 and v.search_vector@@websearch_to_tsquery('simple',$2)
+    order by ts_rank(v.search_vector,websearch_to_tsquery('simple',$2)) desc,uv.score desc limit $3`,[userId,query,Math.max(1,Math.min(limit,30))])).map(rowToScoredVacancy);
 }
 export async function latestDigestVacanciesByApplyIdPrefix(userId:string,prefix:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
-  where s.user_id=$1 and uv.decision='digested' and uv.updated_at=(select max(updated_at) from user_vacancies where user_id=$1 and decision='digested')
-  and v.apply_id like $2 order by s.score desc,v.published_at desc limit 2`,[userId,`${prefix}%`])).map(rowToScoredVacancy);}
+  where uv.user_id=$1 and uv.decision='digested' and uv.updated_at=(select max(updated_at) from user_vacancies where user_id=$1 and decision='digested')
+  and v.apply_id like $2 order by uv.score desc,v.published_at desc limit 2`,[userId,`${prefix}%`])).map(rowToScoredVacancy);}
 export async function digestVacancies(userId:string,min:number,high:number,since:string|null):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
-  where s.user_id=$1 and s.score>=$2 and s.score<$3 and uv.decision='new' and uv.score_updated_at is not null
-  and ($4::text is null or uv.score_updated_at::timestamptz>$4::timestamptz) order by s.score desc,v.published_at desc`,[userId,min,high,since])).map(rowToScoredVacancy);}
+  where uv.user_id=$1 and uv.score>=$2 and uv.score<$3 and uv.decision='new' and uv.score_updated_at is not null
+  and ($4::timestamptz is null or uv.score_updated_at>$4::timestamptz) order by uv.score desc,v.published_at desc`,[userId,min,high,since])).map(rowToScoredVacancy);}
 export async function unsentHighScoreVacancies(userId:string,minScore:number,limit=30):Promise<AlertVacancy[]>{await ready();return(await q(`select v.*,
-  uv.decision user_decision,s.user_id score_user_id,s.score,d.primary_track,d.summary,d.reasons_json,d.gaps_json from vacancies v join scores s on s.vacancy_id=v.id
-  join user_vacancies uv on uv.user_id=s.user_id and uv.vacancy_id=v.id join score_alert_details d on d.user_id=s.user_id and d.vacancy_id=s.vacancy_id
-  where s.user_id=$1 and s.score>=$2 and uv.decision='new' order by s.score desc,v.published_at desc limit $3`,[userId,minScore,limit])).map(rowToAlertVacancy);}
+  uv.decision user_decision,uv.user_id score_user_id,uv.score,d.primary_track,d.summary,d.reasons_json,d.gaps_json from vacancies v
+  join user_vacancies uv on uv.vacancy_id=v.id and uv.score is not null
+  join score_alert_details d on d.user_id=uv.user_id and d.vacancy_id=uv.vacancy_id
+  where uv.user_id=$1 and uv.score>=$2 and uv.decision='new' order by uv.score desc,v.published_at desc limit $3`,[userId,minScore,limit])).map(rowToAlertVacancy);}
 export async function markAlerted(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{await client.query(`update user_vacancies
   set decision='alerted',updated_at=$1 where user_id=$2 and vacancy_id=$3 and decision='new'`,[now(),userId,id]);await client.query('delete from score_alert_details where user_id=$1 and vacancy_id=$2',[userId,id]);});}
 export async function markDigested(userId:string,ids:number[]):Promise<void>{await ready();if(!ids.length)return;await q(`update user_vacancies set decision='digested',updated_at=$1
@@ -465,10 +474,13 @@ export async function markDigested(userId:string,ids:number[]):Promise<void>{awa
 export async function skipVacancy(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{await ensureUserVacancy(userId,id,client);
   await client.query("update user_vacancies set decision='skipped',updated_at=$1 where user_id=$2 and vacancy_id=$3",[now(),userId,id]);});}
 export async function beginApplication(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{await ensureUserVacancy(userId,id,client);const timestamp=now();
-  await client.query(`insert into applications(user_id,vacancy_id,status,requested_at,updated_at) values($1,$2,'generating',$3,$3) on conflict(user_id,vacancy_id)
-  do update set status='generating',error=null,updated_at=excluded.updated_at`,[userId,id,timestamp]);await client.query("update user_vacancies set decision='applying',updated_at=$1 where user_id=$2 and vacancy_id=$3",[timestamp,userId,id]);});}
-export async function markApplicationReady(userId:string,id:number):Promise<void>{await ready();await q("update applications set status='ready',updated_at=$1 where user_id=$2 and vacancy_id=$3",[now(),userId,id]);}
-export async function markApplicationDelivered(userId:string,id:number):Promise<void>{await ready();await q("update user_vacancies set decision='applied',updated_at=$1 where user_id=$2 and vacancy_id=$3",[now(),userId,id]);}
-export async function failApplication(userId:string,id:number,error:string):Promise<void>{await ready();await withPostgresTransaction(async client=>{const timestamp=now();
-  await client.query("update applications set status='failed',error=$1,updated_at=$2 where user_id=$3 and vacancy_id=$4",[error,timestamp,userId,id]);
-  await client.query("update user_vacancies set decision='alerted',updated_at=$1 where user_id=$2 and vacancy_id=$3",[timestamp,userId,id]);});}
+  await client.query(`update user_vacancies set decision='applying',application_status='generating',application_error=null,
+    application_requested_at=coalesce(application_requested_at,$1),application_updated_at=$1,updated_at=$1 where user_id=$2 and vacancy_id=$3`,
+    [timestamp,userId,id]);});}
+export async function markApplicationReady(userId:string,id:number):Promise<void>{await ready();await q(`update user_vacancies set application_status='ready',
+  application_updated_at=$1 where user_id=$2 and vacancy_id=$3`,[now(),userId,id]);}
+export async function markApplicationDelivered(userId:string,id:number):Promise<void>{await ready();await q(`update user_vacancies set decision='applied',
+  application_updated_at=$1,updated_at=$1 where user_id=$2 and vacancy_id=$3`,[now(),userId,id]);}
+export async function failApplication(userId:string,id:number,error:string):Promise<void>{await ready();const timestamp=now();await q(`update user_vacancies
+  set decision='alerted',application_status='failed',application_error=$1,application_updated_at=$2,updated_at=$2
+  where user_id=$3 and vacancy_id=$4`,[error,timestamp,userId,id]);}
