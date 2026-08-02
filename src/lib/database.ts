@@ -263,78 +263,82 @@ export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; 
     publishedAt: validTimestamp(input.publishedAt,timestamp) };
   return withPostgresTransaction(async (client) => {
     await client.query("select pg_advisory_xact_lock(hashtext('vacancy:' || $1 || ':' || $2))", [v.source, v.sourceId]);
-    const existing = (await txq(client, 'select id,content_hash from vacancies where source=$1 and source_id=$2 for update', [v.source, v.sourceId]))[0];
+    const existing = (await txq(client, 'select id,apply_id,content_hash from vacancies where source=$1 and source_id=$2 for update',
+      [v.source, v.sourceId]))[0];
+    const id = existing ? Number(existing.id) : null, fingerprint = canonicalFingerprint(v.name,v.employer);
     const values = [v.name,v.employer,v.area,v.salaryFrom,v.salaryTo,v.salaryCurrency,v.salaryGross == null ? null : Number(v.salaryGross),
       v.experience,v.employment,v.schedule,v.workFormat,v.description,JSON.stringify(v.keySkills),v.url,v.publishedAt,v.sourceQuery,v.contentHash,timestamp];
-    if (!existing) {
-      const fingerprint = canonicalFingerprint(v.name, v.employer);
-      const similar = (await txq(client, 'select id,description from vacancies where canonical_fingerprint=$1 order by id desc limit 10', [fingerprint]))
+    if (!existing?.apply_id) {
+      const similar = (await txq(client, `select id,description from vacancies where canonical_fingerprint=$1
+        and ($2::bigint is null or id<>$2) order by id desc limit 10`, [fingerprint,id]))
         .find((row) => descriptionSimilarity(String(row.description), v.description) >= 0.55);
       if (similar) return { id: Number(similar.id), needsScore: false, duplicate: true };
       await client.query("select pg_advisory_xact_lock(hashtext('vacancy-apply-id'))");
       let applyId = newApplyId();
-      for (let attempt = 0; attempt < 20; attempt++) {
-        if (!(await txq(client, 'select 1 from vacancies where apply_id=$1', [applyId])).length) break;
-        applyId = newApplyId();
+      for (let attempt=0;attempt<20&&(await txq(client,'select 1 from vacancies where apply_id=$1',[applyId])).length;attempt++) applyId=newApplyId();
+      if ((await txq(client,'select 1 from vacancies where apply_id=$1',[applyId])).length) throw new Error('Could not allocate a unique vacancy apply ID.');
+      if (id != null) {
+        await client.query(`update vacancies set apply_id=$1,name=$2,employer=$3,area=$4,salary_from=$5,salary_to=$6,salary_currency=$7,
+          salary_gross=$8,experience=$9,employment=$10,schedule=$11,work_format=$12,description=$13,key_skills_json=$14::jsonb,url=$15,
+          published_at=$16,source_query=$17,content_hash=$18,updated_at=$19,canonical_fingerprint=$20,lifecycle_status='normalized',
+          normalized_vacancy_id=$21 where id=$21`,[applyId,...values,fingerprint,id]);
+        return { id, needsScore: true, duplicate: false };
       }
-      if ((await txq(client, 'select 1 from vacancies where apply_id=$1', [applyId])).length) {
-        throw new Error('Could not allocate a unique vacancy apply ID.');
-      }
-      const rows = await txq(client, `insert into vacancies(source,source_id,apply_id,name,employer,area,salary_from,salary_to,
-        salary_currency,salary_gross,experience,employment,schedule,work_format,description,key_skills_json,url,published_at,source_query,
-        content_hash,canonical_fingerprint,first_seen_at,updated_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,$19,$20,$21,$22,$23) returning id`,
-        [v.source, v.sourceId, applyId, ...values.slice(0,17), fingerprint, timestamp, timestamp]);
-      return { id: Number(rows[0]!.id), needsScore: true, duplicate: false };
+      const rows=await txq(client,`insert into vacancies(source,source_id,apply_id,name,employer,area,salary_from,salary_to,salary_currency,
+        salary_gross,experience,employment,schedule,work_format,description,key_skills_json,url,published_at,source_query,content_hash,
+        canonical_fingerprint,first_seen_at,updated_at,lifecycle_status) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,
+        $17,$18,$19,$20,$21,$22,$23,'normalized') returning id`,[v.source,v.sourceId,applyId,...values.slice(0,17),fingerprint,timestamp,timestamp]);
+      const insertedId=Number(rows[0]!.id); await client.query('update vacancies set normalized_vacancy_id=id where id=$1',[insertedId]);
+      return { id: insertedId, needsScore: true, duplicate: false };
     }
-    const id = Number(existing.id), changed = String(existing.content_hash) !== v.contentHash;
+    const normalizedId=Number(existing.id), changed=String(existing.content_hash)!==v.contentHash;
     await client.query(`update vacancies set name=$1,employer=$2,area=$3,salary_from=$4,salary_to=$5,salary_currency=$6,salary_gross=$7,
       experience=$8,employment=$9,schedule=$10,work_format=$11,description=$12,key_skills_json=$13::jsonb,url=$14,published_at=$15,source_query=$16,
-      content_hash=$17,updated_at=$18 where id=$19`, [...values, id]);
-    if (changed) await client.query(`update user_vacancies set score=null,score_updated_at=null,
-      prefilter_context_hash=null,prefilter_content_hash=null,prefilter_regex_score=null,prefilter_lexical_cosine=null,
-      prefilter_lexical_score=null,prefilter_score=null,prefilter_filtered=null,prefilter_audit_selected=null,
-      prefilter_reasons=null,prefilter_scored_at=null,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null
-      where vacancy_id=$1`, [id]);
-    return { id, needsScore: changed, duplicate: false };
+      content_hash=$17,updated_at=$18,lifecycle_status='normalized',normalized_vacancy_id=$19 where id=$19`,[...values,normalizedId]);
+    if (changed) await client.query(`update user_vacancies set score=null,score_updated_at=null,prefilter_context_hash=null,
+      prefilter_content_hash=null,prefilter_regex_score=null,prefilter_lexical_cosine=null,prefilter_lexical_score=null,prefilter_score=null,
+      prefilter_filtered=null,prefilter_audit_selected=null,prefilter_reasons=null,prefilter_scored_at=null,
+      alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null where vacancy_id=$1`,[normalizedId]);
+    return { id: normalizedId, needsScore: changed, duplicate: false };
   });
 }
 export async function hasVacancySourceId(source: string, sourceId: string): Promise<boolean> {
-  await ready(); return Boolean((await q('select 1 from vacancies where source=$1 and source_id=$2', [source, sourceId])).length);
+  await ready(); return Boolean((await q('select 1 from vacancies where source=$1 and source_id=$2 and apply_id is not null', [source, sourceId])).length);
 }
 function rowToCandidate(row: Row): VacancyCandidate {
   return { source: String(row.source), sourceId: String(row.source_id), url: String(row.url),
-    searchName: String(row.discovery_search_name ?? row.search_name), title: String(row.title),
-    summary: String(row.summary), publishedAt: isoTimestamp(row.published_at), payload: jsonValue(row.payload_json), listingHash: String(row.listing_hash),
-    status: String(row.status), attempts: Number(row.attempts), combinedScore: row.combined_score == null ? null : Number(row.combined_score) };
+    searchName: String(row.discovery_search_name ?? row.listing_search_name), title: String(row.listing_title),
+    summary: String(row.listing_summary ?? ''), publishedAt: isoTimestamp(row.published_at), payload: jsonValue(row.listing_payload),
+    listingHash: String(row.listing_hash), status: String(row.lifecycle_status), attempts: Number(row.normalization_attempts),
+    combinedScore: row.combined_score == null ? null : Number(row.combined_score) };
 }
 export async function recordVacancyCandidate(userId: string, raw: VacancyCandidateInput): Promise<boolean> {
   await ready(); const input = { ...raw, url: safeVacancyUrl(raw.source, raw.url) }; const timestamp = now(), summary = input.summary ?? '';
   const publishedAt = validTimestamp(input.publishedAt,timestamp), payload = JSON.stringify(input.payload ?? null);
   const hash = createHash('sha256').update(JSON.stringify([input.title, summary, input.url, payload])).digest('hex');
   return withPostgresTransaction(async (client) => {
-    const vacancy = (await txq(client, 'select id from vacancies where source=$1 and source_id=$2', [input.source,input.sourceId]))[0];
-    const existing = (await txq(client, 'select status,listing_hash from vacancy_candidates where source=$1 and source_id=$2 for update', [input.source,input.sourceId]))[0];
-    const discovered = !existing && !vacancy;
-    const changed = Boolean(existing && String(existing.listing_hash) !== hash);
-    if (!existing) await client.query(`insert into vacancy_candidates(source,source_id,url,search_name,title,summary,published_at,payload_json,
-      listing_hash,status,vacancy_id,first_seen_at,last_seen_at) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$12)`,
-      [input.source,input.sourceId,input.url,input.searchName,input.title,summary,publishedAt,payload,hash,vacancy?'normalized':'discovered',vacancy?.id??null,timestamp]);
-    else { await client.query(`update vacancy_candidates set url=$1,search_name=$2,title=$3,
-      summary=$4,published_at=$5,payload_json=$6::jsonb,listing_hash=$7,last_seen_at=$8,
-      status=case when $9 and status in ('filtered','failed','queued','discovered') then 'discovered' else status end where source=$10 and source_id=$11`,
-      [input.url,input.searchName,input.title,summary,publishedAt,payload,hash,timestamp,changed,input.source,input.sourceId]); }
-    if (await hasCv(userId, client)) await client.query(`insert into candidate_discoveries(user_id,source,source_id,search_name,first_seen_at,last_seen_at)
+    const existing=(await txq(client,'select id,apply_id,lifecycle_status,listing_hash from vacancies where source=$1 and source_id=$2 for update',
+      [input.source,input.sourceId]))[0];
+    const discovered=!existing, changed=Boolean(existing&&String(existing.listing_hash)!==hash);
+    if(!existing) await client.query(`insert into vacancies(source,source_id,url,published_at,first_seen_at,updated_at,listing_search_name,
+      listing_title,listing_summary,listing_payload,listing_hash,lifecycle_status,last_seen_at) values($1,$2,$3,$4,$5,$5,$6,$7,$8,$9::jsonb,$10,'discovered',$5)`,
+      [input.source,input.sourceId,input.url,publishedAt,timestamp,input.searchName,input.title,summary,payload,hash]);
+    else await client.query(`update vacancies set url=$1,listing_search_name=$2,listing_title=$3,listing_summary=$4,published_at=$5,
+      listing_payload=$6::jsonb,listing_hash=$7,last_seen_at=$8,updated_at=$8,lifecycle_status=case when $9 and apply_id is null
+      and lifecycle_status in ('filtered','failed','queued','discovered') then 'discovered' else lifecycle_status end where id=$10`,
+      [input.url,input.searchName,input.title,summary,publishedAt,payload,hash,timestamp,changed,existing.id]);
+    if(await hasCv(userId,client)) await client.query(`insert into candidate_discoveries(user_id,source,source_id,search_name,first_seen_at,last_seen_at)
       values($1,$2,$3,$4,$5,$5) on conflict(user_id,source,source_id) do update set search_name=excluded.search_name,last_seen_at=excluded.last_seen_at`,
       [userId,input.source,input.sourceId,input.searchName,timestamp]);
-    if (changed) await client.query(`update candidate_discoveries set context_hash=null,listing_hash=null,regex_score=null,
+    if(changed) await client.query(`update candidate_discoveries set context_hash=null,listing_hash=null,regex_score=null,
       lexical_cosine=null,combined_score=null,filtered=null,reasons_json=null,scored_at=null where source=$1 and source_id=$2`,
       [input.source,input.sourceId]);
     return discovered;
   });
 }
 export async function candidatesNeedingPrefilter(userId: string, contextHash: string, limit: number): Promise<VacancyCandidate[]> {
-  await ready(); return (await q(`select c.*,d.search_name discovery_search_name from vacancy_candidates c join candidate_discoveries d
-    on d.source=c.source and d.source_id=c.source_id and d.user_id=$1 where c.status in ('discovered','queued','filtered','failed') and
+  await ready(); return (await q(`select c.*,d.search_name discovery_search_name from vacancies c join candidate_discoveries d
+    on d.source=c.source and d.source_id=c.source_id and d.user_id=$1 where c.lifecycle_status in ('discovered','queued','filtered','failed') and
     (d.context_hash is null or d.context_hash<>$2 or d.listing_hash<>c.listing_hash)
     order by d.last_seen_at desc limit $3`, [userId,contextHash,limit])).map(rowToCandidate);
 }
@@ -346,9 +350,9 @@ export async function saveCandidatePrefilter(userId: string, candidate: VacancyC
 }
 export async function rankedCandidateQueueForUsers(userIds: string[], perUserLimit: number): Promise<VacancyCandidate[]> {
   await ready(); const queues = await Promise.all(userIds.map(async (userId) => (await q(`select c.*,d.search_name discovery_search_name,
-    d.combined_score from vacancy_candidates c join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id
-    where d.user_id=$1 and c.status in ('discovered','queued','filtered','failed') and d.filtered=0 and
-    (c.next_retry_at is null or c.next_retry_at<=$2) and c.source=any($4::text[])
+    d.combined_score from vacancies c join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id
+    where d.user_id=$1 and c.lifecycle_status in ('discovered','queued','filtered','failed') and d.filtered=0 and
+    (c.normalization_retry_at is null or c.normalization_retry_at<=$2) and c.source=any($4::text[])
     order by d.combined_score desc,c.published_at desc limit $3`,
     [userId,now(),perUserLimit,config.searchPlatforms])).map(rowToCandidate)));
   const selected = new Map<string,VacancyCandidate>(); for(let rank=0;rank<perUserLimit;rank++) for(const queue of queues) {
@@ -357,19 +361,22 @@ export async function rankedCandidateQueueForUsers(userIds: string[], perUserLim
 }
 export async function candidatesDueForRefresh(limit: number, days: number): Promise<VacancyCandidate[]> {
   await ready(); const before = new Date(Date.now()-days*86_400_000).toISOString();
-  return (await q(`select * from vacancy_candidates where status='normalized' and (last_checked_at is null or last_checked_at<$1)
+  return (await q(`select * from vacancies where lifecycle_status='normalized' and (last_checked_at is null or last_checked_at<$1)
     and source=any($3::text[]) order by coalesce(last_checked_at,first_seen_at) limit $2`,
     [before,limit,config.searchPlatforms])).map(rowToCandidate);
 }
 export async function markCandidateNormalized(candidate: VacancyCandidate, vacancyId: number, duplicate=false): Promise<void> {
-  await ready(); await q(`update vacancy_candidates set status=$1,vacancy_id=$2,attempts=attempts+1,last_checked_at=$3,last_error=null,next_retry_at=null
-    where source=$4 and source_id=$5`,[duplicate?'duplicate':'normalized',vacancyId,now(),candidate.source,candidate.sourceId]);
+  await ready(); await q(`update vacancies set lifecycle_status=$1,normalized_vacancy_id=$2,normalization_attempts=normalization_attempts+1,
+    last_checked_at=$3,normalization_error=null,normalization_retry_at=null where source=$4 and source_id=$5`,
+    [duplicate?'duplicate':'normalized',vacancyId,now(),candidate.source,candidate.sourceId]);
 }
-export async function markCandidateClosed(candidate: VacancyCandidate): Promise<void> { await ready(); await q(`update vacancy_candidates set status='closed',
-  attempts=attempts+1,last_checked_at=$1,last_error=null where source=$2 and source_id=$3`,[now(),candidate.source,candidate.sourceId]); }
+export async function markCandidateClosed(candidate: VacancyCandidate): Promise<void> { await ready(); await q(`update vacancies set lifecycle_status='closed',
+  normalization_attempts=normalization_attempts+1,last_checked_at=$1,normalization_error=null where source=$2 and source_id=$3`,
+  [now(),candidate.source,candidate.sourceId]); }
 export async function markCandidateFailed(candidate: VacancyCandidate, error: string): Promise<void> {
   await ready(); const attempts=candidate.attempts+1, delay=Math.min(1440,2**Math.min(attempts,10));
-  await q(`update vacancy_candidates set status='failed',attempts=$1,last_checked_at=$2,last_error=$3,next_retry_at=$4 where source=$5 and source_id=$6`,
+  await q(`update vacancies set lifecycle_status='failed',normalization_attempts=$1,last_checked_at=$2,normalization_error=$3,
+    normalization_retry_at=$4 where source=$5 and source_id=$6`,
     [attempts,now(),error.slice(0,1000),new Date(Date.now()+delay*60_000).toISOString(),candidate.source,candidate.sourceId]);
 }
 
@@ -382,14 +389,14 @@ async function ensureUserVacancy(userId:string,vacancyId:number,client?:PoolClie
 }
 export async function pendingVacancies(userId:string,limit:number):Promise<Vacancy[]>{ await ready(); return (await q(`select v.*,coalesce(uv.decision,'new') user_decision
   from vacancies v left join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id
-  where uv.score is null and coalesce(uv.decision,'new') not in ('skipped','applied') and exists (select 1 from vacancy_candidates c
-  join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id where c.vacancy_id=v.id and d.user_id=$1)
+  where uv.score is null and coalesce(uv.decision,'new') not in ('skipped','applied') and exists (select 1 from vacancies c
+  join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id where c.normalized_vacancy_id=v.id and d.user_id=$1)
   order by v.published_at desc limit $2`,[userId,limit])).map(rowToVacancy); }
 export async function vacanciesNeedingPrefilter(userId:string,contextHash:string,limit:number):Promise<Vacancy[]>{
   await ready(); return (await q(`select v.*,coalesce(uv.decision,'new') user_decision from vacancies v
     left join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where uv.score is null and coalesce(uv.decision,'new') not in ('skipped','applied')
-    and exists (select 1 from vacancy_candidates c join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id
-      where c.vacancy_id=v.id and d.user_id=$1)
+    and exists (select 1 from vacancies c join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id
+      where c.normalized_vacancy_id=v.id and d.user_id=$1)
     and (uv.vacancy_id is null or uv.prefilter_context_hash is null or uv.prefilter_context_hash<>$2 or uv.prefilter_content_hash<>v.content_hash)
     order by v.published_at desc limit $3`,[userId,contextHash,limit])).map(rowToVacancy);
 }
