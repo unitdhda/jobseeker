@@ -84,7 +84,9 @@ CREATE TABLE IF NOT EXISTS user_delivery_windows (
   user_id TEXT PRIMARY KEY REFERENCES telegram_users(user_id) ON DELETE CASCADE,
   start_minutes INTEGER NOT NULL CHECK (start_minutes BETWEEN 0 AND 1439),
   end_minutes INTEGER NOT NULL CHECK (end_minutes BETWEEN 0 AND 1439),
+  digest_minutes INTEGER NOT NULL DEFAULT 540 CHECK (digest_minutes BETWEEN 0 AND 1439),
   timezone TEXT NOT NULL,
+  last_digest_at TEXT,
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS pending_deliveries (
@@ -126,6 +128,7 @@ CREATE TABLE IF NOT EXISTS user_vacancies (
   vacancy_id INTEGER NOT NULL REFERENCES vacancies(id) ON DELETE CASCADE,
   decision TEXT NOT NULL DEFAULT 'new' CHECK (decision IN ('new','alerted','digested','skipped','applying','applied')),
   first_relevant_at TEXT NOT NULL,
+  score_updated_at TEXT,
   updated_at TEXT NOT NULL,
   PRIMARY KEY (user_id,vacancy_id)
 );
@@ -133,14 +136,6 @@ CREATE TABLE IF NOT EXISTS scores (
   user_id TEXT NOT NULL REFERENCES telegram_users(user_id) ON DELETE CASCADE,
   vacancy_id INTEGER NOT NULL REFERENCES vacancies(id) ON DELETE CASCADE,
   score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
-  primary_track TEXT NOT NULL CHECK (length(trim(primary_track)) BETWEEN 1 AND 80),
-  summary TEXT NOT NULL,
-  reasons_json TEXT NOT NULL,
-  gaps_json TEXT NOT NULL,
-  hard_rejection INTEGER NOT NULL DEFAULT 0,
-  scored_at TEXT NOT NULL,
-  alert_sent_at TEXT,
-  digest_sent_at TEXT,
   PRIMARY KEY (user_id,vacancy_id)
 );
 CREATE TABLE IF NOT EXISTS prefilter_scores (
@@ -260,12 +255,8 @@ if (legacyMultiuser) {
           user_id TEXT NOT NULL REFERENCES telegram_users(user_id) ON DELETE CASCADE,
           vacancy_id INTEGER NOT NULL REFERENCES vacancies(id) ON DELETE CASCADE,
           score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
-          primary_track TEXT NOT NULL CHECK (length(trim(primary_track)) BETWEEN 1 AND 80),
-          summary TEXT NOT NULL,reasons_json TEXT NOT NULL,gaps_json TEXT NOT NULL,
-          hard_rejection INTEGER NOT NULL DEFAULT 0,scored_at TEXT NOT NULL,alert_sent_at TEXT,digest_sent_at TEXT,
           PRIMARY KEY (user_id,vacancy_id));
-        INSERT INTO scores SELECT ${owner},vacancy_id,score,primary_track,summary,reasons_json,gaps_json,
-          hard_rejection,scored_at,alert_sent_at,digest_sent_at FROM scores_single_user;
+        INSERT INTO scores SELECT ${owner},vacancy_id,score FROM scores_single_user;
         DROP TABLE scores_single_user;`);
     }
     if (tableExists('prefilter_scores') && !columns('prefilter_scores').includes('user_id')) {
@@ -395,6 +386,83 @@ if (columns('cv_templates').includes('language')) {
   db.prepare("INSERT INTO app_migrations(name,applied_at) VALUES ('single-cv-source-v3',?)").run(new Date().toISOString());
 }
 
+// Add per-user digest scheduling and score timing without expanding the minimal scores table.
+const deliveryColumns = columns('user_delivery_windows');
+if (!deliveryColumns.includes('digest_minutes')) {
+  db.exec('ALTER TABLE user_delivery_windows ADD COLUMN digest_minutes INTEGER NOT NULL DEFAULT 540 CHECK (digest_minutes BETWEEN 0 AND 1439)');
+}
+if (!deliveryColumns.includes('last_digest_at')) db.exec('ALTER TABLE user_delivery_windows ADD COLUMN last_digest_at TEXT');
+const scoreColumns = columns('scores');
+if (!columns('user_vacancies').includes('score_updated_at')) {
+  db.exec('ALTER TABLE user_vacancies ADD COLUMN score_updated_at TEXT');
+}
+if (scoreColumns.includes('scored_at')) {
+  db.exec(`UPDATE user_vacancies SET score_updated_at=(SELECT s.scored_at FROM scores s
+    WHERE s.user_id=user_vacancies.user_id AND s.vacancy_id=user_vacancies.vacancy_id)
+    WHERE score_updated_at IS NULL AND EXISTS
+      (SELECT 1 FROM scores s WHERE s.user_id=user_vacancies.user_id AND s.vacancy_id=user_vacancies.vacancy_id)`);
+} else {
+  db.exec(`UPDATE user_vacancies SET score_updated_at=updated_at WHERE score_updated_at IS NULL AND EXISTS
+    (SELECT 1 FROM scores s WHERE s.user_id=user_vacancies.user_id AND s.vacancy_id=user_vacancies.vacancy_id)`);
+}
+
+// Keep durable scores minimal. Alert explanations are retained only until their Telegram alert is delivered.
+if (['primary_track','summary','reasons_json','gaps_json','hard_rejection','scored_at','alert_sent_at','digest_sent_at']
+  .some((column) => scoreColumns.includes(column))) {
+  db.exec('PRAGMA foreign_keys=OFF');
+  db.exec('BEGIN');
+  try {
+    db.exec(`DROP INDEX IF EXISTS scores_user_score_idx;
+      ALTER TABLE scores RENAME TO scores_with_explanations;
+      CREATE TABLE scores (
+        user_id TEXT NOT NULL REFERENCES telegram_users(user_id) ON DELETE CASCADE,
+        vacancy_id INTEGER NOT NULL REFERENCES vacancies(id) ON DELETE CASCADE,
+        score INTEGER NOT NULL CHECK (score BETWEEN 0 AND 100),
+        PRIMARY KEY (user_id,vacancy_id));
+      INSERT INTO scores(user_id,vacancy_id,score)
+        SELECT user_id,vacancy_id,score FROM scores_with_explanations;
+      CREATE TABLE score_alert_details (
+        user_id TEXT NOT NULL,
+        vacancy_id INTEGER NOT NULL,
+        primary_track TEXT NOT NULL CHECK (length(trim(primary_track)) BETWEEN 1 AND 80),
+        summary TEXT NOT NULL,reasons_json TEXT NOT NULL,gaps_json TEXT NOT NULL,
+        PRIMARY KEY (user_id,vacancy_id),
+        FOREIGN KEY (user_id,vacancy_id) REFERENCES scores(user_id,vacancy_id) ON DELETE CASCADE);
+      INSERT INTO score_alert_details(user_id,vacancy_id,primary_track,summary,reasons_json,gaps_json)
+        SELECT s.user_id,s.vacancy_id,s.primary_track,s.summary,s.reasons_json,s.gaps_json
+        FROM scores_with_explanations s
+        WHERE s.score>=${config.alertScore} AND s.hard_rejection=0 AND s.alert_sent_at IS NULL
+          AND EXISTS (SELECT 1 FROM user_vacancies uv WHERE uv.user_id=s.user_id
+            AND uv.vacancy_id=s.vacancy_id AND uv.decision='new');
+      DROP TABLE scores_with_explanations;`);
+    db.prepare("INSERT OR REPLACE INTO app_migrations(name,applied_at) VALUES ('minimal-scores-v1',?)")
+      .run(new Date().toISOString());
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  } finally {
+    db.exec('PRAGMA foreign_keys=ON');
+  }
+} else if (!db.prepare("SELECT 1 FROM app_migrations WHERE name='minimal-scores-v1'").get()) {
+  db.prepare("INSERT INTO app_migrations(name,applied_at) VALUES ('minimal-scores-v1',?)").run(new Date().toISOString());
+}
+db.exec(`CREATE TABLE IF NOT EXISTS score_alert_details (
+  user_id TEXT NOT NULL,
+  vacancy_id INTEGER NOT NULL,
+  primary_track TEXT NOT NULL CHECK (length(trim(primary_track)) BETWEEN 1 AND 80),
+  summary TEXT NOT NULL,
+  reasons_json TEXT NOT NULL,
+  gaps_json TEXT NOT NULL,
+  PRIMARY KEY (user_id,vacancy_id),
+  FOREIGN KEY (user_id,vacancy_id) REFERENCES scores(user_id,vacancy_id) ON DELETE CASCADE
+);
+DELETE FROM score_alert_details WHERE NOT EXISTS (
+  SELECT 1 FROM scores s JOIN user_vacancies uv ON uv.user_id=s.user_id AND uv.vacancy_id=s.vacancy_id
+  WHERE s.user_id=score_alert_details.user_id AND s.vacancy_id=score_alert_details.vacancy_id
+    AND s.score>=${config.alertScore} AND uv.decision='new'
+);`);
+
 // Incremental compatibility for older candidate/vacancy layouts.
 const vacancyColumns = columns('vacancies');
 if (!vacancyColumns.includes('apply_id')) {
@@ -437,6 +505,9 @@ for (const row of db.prepare('SELECT id FROM vacancies WHERE apply_id IS NULL').
   do applyId = newApplyId(); while (applyIdExists.get(applyId));
   saveApplyId.run(applyId, row.id);
 }
+// Global Telegram cron overrides and queued cron deliveries are obsolete; CYCLE_CRON is process-owned.
+db.exec('DELETE FROM global_scheduler_settings; DELETE FROM pending_deliveries;');
+
 db.exec(`
 CREATE UNIQUE INDEX IF NOT EXISTS vacancies_apply_id_idx ON vacancies(apply_id);
 CREATE INDEX IF NOT EXISTS user_vacancies_decision_idx ON user_vacancies(user_id,decision);
@@ -570,6 +641,55 @@ export function userUsageSummaries(): UserUsageSummary[] {
     }));
 }
 
+function flueHistoryTablesExist(): boolean {
+  return ['flue_agent_submissions','flue_submission_chunks','flue_conversation_streams',
+    'flue_conversation_stream_batches','flue_conversation_stream_batch_chunks','flue_attachments','flue_attachment_chunks']
+    .every(tableExists);
+}
+
+/** Remove a completed one-shot agent session while preserving active sessions for crash recovery. */
+export function purgeSettledAgentSession(agentName: string, sessionId: string): boolean {
+  if (!flueHistoryTablesExist()) return false;
+  const sessionKey = `agent-session:${JSON.stringify([agentName, sessionId, 'default', 'default'])}`;
+  const submissions = db.prepare('SELECT submission_id,status FROM flue_agent_submissions WHERE session_key=?')
+    .all(sessionKey);
+  if (!submissions.length || submissions.some((row) => !['settled','joined'].includes(String(row.status)))) return false;
+  const streamPath = `agents/${agentName}/${sessionId}`;
+  db.exec('BEGIN');
+  try {
+    for (const row of submissions) {
+      const submissionId = String(row.submission_id);
+      db.prepare('DELETE FROM flue_submission_chunks WHERE submission_id=?').run(submissionId);
+      db.prepare('DELETE FROM flue_conversation_stream_batches WHERE submission_id=?').run(submissionId);
+    }
+    db.prepare('DELETE FROM flue_attachment_chunks WHERE stream_path=?').run(streamPath);
+    db.prepare('DELETE FROM flue_attachments WHERE stream_path=?').run(streamPath);
+    db.prepare('DELETE FROM flue_conversation_stream_batch_chunks WHERE path=?').run(streamPath);
+    db.prepare('DELETE FROM flue_conversation_stream_batches WHERE path=?').run(streamPath);
+    db.prepare('DELETE FROM flue_conversation_streams WHERE path=?').run(streamPath);
+    db.prepare('DELETE FROM flue_agent_submissions WHERE session_key=?').run(sessionKey);
+    db.exec('COMMIT');
+    return true;
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
+}
+
+export function purgeSettledAgentSessions(): number {
+  if (!flueHistoryTablesExist()) return 0;
+  const keys = db.prepare(`SELECT session_key FROM flue_agent_submissions GROUP BY session_key
+    HAVING SUM(CASE WHEN status NOT IN ('settled','joined') THEN 1 ELSE 0 END)=0`).all();
+  let purged = 0;
+  for (const row of keys) {
+    const sessionKey = String(row.session_key);
+    if (!sessionKey.startsWith('agent-session:')) continue;
+    try {
+      const identity = JSON.parse(sessionKey.slice('agent-session:'.length)) as unknown;
+      if (Array.isArray(identity) && typeof identity[0] === 'string' && typeof identity[1] === 'string'
+        && purgeSettledAgentSession(identity[0], identity[1])) purged++;
+    } catch { /* Ignore conversation keys from incompatible Flue versions. */ }
+  }
+  return purged;
+}
+
 export function deleteUserData(userId: string): void {
   db.exec('BEGIN');
   try {
@@ -602,24 +722,22 @@ export function deleteUserData(userId: string): void {
   } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 
+purgeSettledAgentSessions();
+
 export function exportUserData(userId: string): Record<string, unknown> {
-  const user = getTelegramUser(userId);
-  if (!user) throw new Error('User was not found.');
-  const cvRow = db.prepare(`SELECT cv_sha256,cv_text,document_json,source_format,original_filename,
-    media_type,parser_name,parser_version,updated_at FROM cv_templates WHERE user_id=?`).get(userId);
-  const cvSource = cvRow ? { ...cvRow, document_json: JSON.parse(String(cvRow.document_json)) } : null;
-  const profiles = db.prepare('SELECT platform,profile_json,updated_at FROM search_profiles WHERE user_id=? ORDER BY platform').all(userId)
-    .map((row) => ({ platform: row.platform, profile: JSON.parse(String(row.profile_json)), updatedAt: row.updated_at }));
-  const scores = db.prepare(`SELECT s.vacancy_id,v.apply_id,v.source,v.source_id,v.name,v.employer,v.url,s.score,s.primary_track,
-    s.summary,s.reasons_json,s.gaps_json,s.hard_rejection,s.scored_at,uv.decision FROM scores s
-    JOIN vacancies v ON v.id=s.vacancy_id LEFT JOIN user_vacancies uv ON uv.user_id=s.user_id AND uv.vacancy_id=s.vacancy_id
-    WHERE s.user_id=? ORDER BY s.scored_at DESC`).all(userId).map((row) => ({ ...row,
-      reasons_json: JSON.parse(String(row.reasons_json)), gaps_json: JSON.parse(String(row.gaps_json)) }));
-  return { exportedAt: new Date().toISOString(), user, deliveryWindow: getDeliveryWindow(userId),
-    cvSource, searchProfiles: profiles, scores,
-    usage: db.prepare('SELECT kind,occurred_at FROM usage_events WHERE user_id=? ORDER BY occurred_at').all(userId),
-    discoveries: db.prepare(`SELECT source,source_id,search_name,first_seen_at,last_seen_at FROM candidate_discoveries
-      WHERE user_id=? ORDER BY last_seen_at DESC`).all(userId) };
+  if (!getTelegramUser(userId)) throw new Error('User was not found.');
+  const cvRow = db.prepare('SELECT cv_text,document_json FROM cv_templates WHERE user_id=?').get(userId);
+  const searchProfiles = db.prepare('SELECT platform,profile_json FROM search_profiles WHERE user_id=? ORDER BY platform').all(userId)
+    .map((row) => ({ platform: String(row.platform), profile: JSON.parse(String(row.profile_json)) }));
+  const scores = db.prepare(`SELECT v.url,s.score FROM scores s JOIN vacancies v ON v.id=s.vacancy_id
+    WHERE s.user_id=? ORDER BY s.score DESC,v.url`).all(userId)
+    .map((row) => ({ url: String(row.url), score: Number(row.score) }));
+  return {
+    cvSource: cvRow ? String(cvRow.cv_text) : null,
+    normalizedDocument: cvRow ? JSON.parse(String(cvRow.document_json)) : null,
+    searchProfiles,
+    scores,
+  };
 }
 
 export interface Vacancy {
@@ -688,41 +806,29 @@ export function getSearchProfile<T>(userId: string, platform: string): T | null 
   return row ? JSON.parse(String(row.profile_json)) as T : null;
 }
 
-export type GlobalScheduleName = 'scrape' | 'notify' | 'digest';
-export function getGlobalScheduleCron(name: GlobalScheduleName): string | null {
-  const row = db.prepare('SELECT cron FROM global_scheduler_settings WHERE name=?').get(name);
-  return row ? String(row.cron) : null;
+export interface DeliverySettings {
+  startMinutes: number; endMinutes: number; digestMinutes: number; timezone: string; lastDigestAt: string | null;
 }
-export function saveGlobalScheduleCron(name: GlobalScheduleName, cron: string): void {
-  db.prepare(`INSERT INTO global_scheduler_settings(name,cron,updated_at) VALUES (?,?,?)
-    ON CONFLICT(name) DO UPDATE SET cron=excluded.cron,updated_at=excluded.updated_at`).run(name, cron, new Date().toISOString());
+export function getDeliverySettings(userId: string): DeliverySettings | null {
+  const row = db.prepare(`SELECT start_minutes,end_minutes,digest_minutes,timezone,last_digest_at
+    FROM user_delivery_windows WHERE user_id=?`).get(userId);
+  return row ? { startMinutes: Number(row.start_minutes), endMinutes: Number(row.end_minutes),
+    digestMinutes: Number(row.digest_minutes), timezone: String(row.timezone),
+    lastDigestAt: row.last_digest_at == null ? null : String(row.last_digest_at) } : null;
 }
-export interface DeliveryWindow { startMinutes: number; endMinutes: number; timezone: string }
-export function getDeliveryWindow(userId: string): DeliveryWindow | null {
-  const row = db.prepare('SELECT start_minutes,end_minutes,timezone FROM user_delivery_windows WHERE user_id=?').get(userId);
-  return row ? { startMinutes: Number(row.start_minutes), endMinutes: Number(row.end_minutes), timezone: String(row.timezone) } : null;
-}
-export function saveDeliveryWindow(userId: string, window: DeliveryWindow | null): void {
-  if (!window) { db.prepare('DELETE FROM user_delivery_windows WHERE user_id=?').run(userId); return; }
-  db.prepare(`INSERT INTO user_delivery_windows(user_id,start_minutes,end_minutes,timezone,updated_at) VALUES (?,?,?,?,?)
+export function saveDeliverySettings(userId: string, settings: Omit<DeliverySettings, 'lastDigestAt'>): void {
+  db.prepare(`INSERT INTO user_delivery_windows
+    (user_id,start_minutes,end_minutes,digest_minutes,timezone,last_digest_at,updated_at) VALUES (?,?,?,?,?,NULL,?)
     ON CONFLICT(user_id) DO UPDATE SET start_minutes=excluded.start_minutes,end_minutes=excluded.end_minutes,
-    timezone=excluded.timezone,updated_at=excluded.updated_at`)
-    .run(userId, window.startMinutes, window.endMinutes, window.timezone, new Date().toISOString());
+    digest_minutes=excluded.digest_minutes,timezone=excluded.timezone,updated_at=excluded.updated_at`)
+    .run(userId, settings.startMinutes, settings.endMinutes, settings.digestMinutes, settings.timezone, new Date().toISOString());
 }
-export type DeliveryKind = 'notify' | 'digest';
-export function queueDelivery(userId: string, kind: DeliveryKind): void {
-  db.prepare(`INSERT INTO pending_deliveries(user_id,kind,queued_at) VALUES (?,?,?)
-    ON CONFLICT(user_id,kind) DO NOTHING`).run(userId, kind, new Date().toISOString());
+export function markDigestRun(userId: string, deliveredAt: string): void {
+  db.prepare(`INSERT INTO user_delivery_windows
+    (user_id,start_minutes,end_minutes,digest_minutes,timezone,last_digest_at,updated_at) VALUES (?,0,0,540,?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET last_digest_at=excluded.last_digest_at,updated_at=excluded.updated_at`)
+    .run(userId, config.timezone, deliveredAt, deliveredAt);
 }
-export function pendingDeliveries(): Array<{ userId: string; kind: DeliveryKind }> {
-  return db.prepare(`SELECT p.user_id,p.kind FROM pending_deliveries p JOIN telegram_users u ON u.user_id=p.user_id
-    WHERE u.status='approved' ORDER BY p.queued_at`).all()
-    .map((row) => ({ userId: String(row.user_id), kind: String(row.kind) as DeliveryKind }));
-}
-export function clearPendingDelivery(userId: string, kind: DeliveryKind): void {
-  db.prepare('DELETE FROM pending_deliveries WHERE user_id=? AND kind=?').run(userId, kind);
-}
-
 export function upsertVacancy(v: VacancyInput): { id: number; needsScore: boolean; duplicate: boolean } {
   v = { ...v, url: safeVacancyUrl(v.source, v.url) };
   const existing = db.prepare('SELECT id,content_hash FROM vacancies WHERE source=? AND source_id=?').get(v.source, v.sourceId);
@@ -809,9 +915,21 @@ export function saveCandidatePrefilter(candidate: VacancyCandidate, contextHash:
       score.embeddingCosine, score.semanticCosine, score.semanticStatus, score.combinedScore, JSON.stringify(score.reasons),
       score.filtered ? 'filtered' : 'queued', candidate.source, candidate.sourceId);
 }
-export function rankedCandidateQueue(limit: number): VacancyCandidate[] {
-  return db.prepare(`SELECT * FROM vacancy_candidates WHERE status IN ('queued','failed') AND (next_retry_at IS NULL OR next_retry_at<=?)
-    ORDER BY combined_score DESC,published_at DESC LIMIT ?`).all(new Date().toISOString(), limit).map(rowToCandidate);
+export function rankedCandidateQueueForUsers(userIds: string[], perUserLimit: number): VacancyCandidate[] {
+  const now = new Date().toISOString();
+  const query = db.prepare(`SELECT c.* FROM vacancy_candidates c
+    JOIN candidate_discoveries d ON d.source=c.source AND d.source_id=c.source_id
+    WHERE d.user_id=? AND c.status IN ('queued','failed') AND (c.next_retry_at IS NULL OR c.next_retry_at<=?)
+    ORDER BY c.combined_score DESC,c.published_at DESC LIMIT ?`);
+  const queues = userIds.map((userId) => query.all(userId, now, perUserLimit).map(rowToCandidate));
+  const selected = new Map<string, VacancyCandidate>();
+  for (let rank = 0; rank < perUserLimit; rank++) {
+    for (const queue of queues) {
+      const candidate = queue[rank];
+      if (candidate) selected.set(`${candidate.source}:${candidate.sourceId}`, candidate);
+    }
+  }
+  return [...selected.values()];
 }
 export function candidatesDueForRefresh(limit: number, days: number): VacancyCandidate[] {
   const before = new Date(Date.now() - days * 86_400_000).toISOString();
@@ -920,14 +1038,14 @@ export function prefilterQueueStats(userId: string, contextHash: string): { queu
 }
 export interface PrefilterCalibration { compared: number; correlation: number | null; audited: number; auditFalseNegatives: number; applied: number; skipped: number; feedbackLabels: number; readyForAdjustment: boolean }
 export function prefilterCalibration(userId: string, contextHash: string, alertScore: number, minimumLabels: number): PrefilterCalibration {
-  const rows = db.prepare(`SELECT p.combined_score,p.filtered,p.audit_selected,s.score,s.hard_rejection,uv.decision
+  const rows = db.prepare(`SELECT p.combined_score,p.filtered,p.audit_selected,s.score,uv.decision
     FROM prefilter_scores p JOIN scores s ON s.user_id=p.user_id AND s.vacancy_id=p.vacancy_id
     JOIN vacancies v ON v.id=p.vacancy_id JOIN user_vacancies uv ON uv.user_id=p.user_id AND uv.vacancy_id=p.vacancy_id
     WHERE p.user_id=? AND p.context_hash=? AND p.content_hash=v.content_hash`).all(userId, contextHash);
   const compared = rows.length; let sumX=0,sumY=0,sumXY=0,sumXX=0,sumYY=0,audited=0,auditFalseNegatives=0,applied=0,skipped=0;
   for (const row of rows) {
     const x=Number(row.combined_score),y=Number(row.score); sumX+=x;sumY+=y;sumXY+=x*y;sumXX+=x*x;sumYY+=y*y;
-    if (row.audit_selected) { audited++; if (y>=alertScore && !row.hard_rejection) auditFalseNegatives++; }
+    if (row.audit_selected) { audited++; if (y>=alertScore) auditFalseNegatives++; }
     if (row.decision==='applied'||row.decision==='applying') applied++; if (row.decision==='skipped') skipped++;
   }
   const denominator=Math.sqrt((compared*sumXX-sumX*sumX)*(compared*sumYY-sumY*sumY));
@@ -935,23 +1053,42 @@ export function prefilterCalibration(userId: string, contextHash: string, alertS
   return { compared,correlation,audited,auditFalseNegatives,applied,skipped,feedbackLabels,readyForAdjustment:feedbackLabels>=minimumLabels };
 }
 
-export function saveScore(userId: string, vacancyId: number, score: number, primaryTrack: string, summary: string, reasons: string[], gaps: string[], hardRejection: boolean): void {
+export function saveScore(userId: string, vacancyId: number, score: number, primaryTrack: string, summary: string,
+  reasons: string[], gaps: string[], hardRejection: boolean): void {
   if (!hasCv(userId)) throw new Error('An authoritative CV source is required.');
   ensureUserVacancy(userId, vacancyId);
-  db.prepare(`INSERT INTO scores(user_id,vacancy_id,score,primary_track,summary,reasons_json,gaps_json,hard_rejection,scored_at)
-    VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,vacancy_id) DO UPDATE SET score=excluded.score,primary_track=excluded.primary_track,
-    summary=excluded.summary,reasons_json=excluded.reasons_json,gaps_json=excluded.gaps_json,hard_rejection=excluded.hard_rejection,
-    scored_at=excluded.scored_at,alert_sent_at=NULL,digest_sent_at=NULL`)
-    .run(userId, vacancyId, score, primaryTrack, summary, JSON.stringify(reasons), JSON.stringify(gaps), Number(hardRejection), new Date().toISOString());
+  const now = new Date().toISOString();
+  db.exec('BEGIN');
+  try {
+    db.prepare(`INSERT INTO scores(user_id,vacancy_id,score) VALUES (?,?,?)
+      ON CONFLICT(user_id,vacancy_id) DO UPDATE SET score=excluded.score`).run(userId, vacancyId, score);
+    db.prepare(`UPDATE user_vacancies SET score_updated_at=?,
+      updated_at=CASE WHEN decision IN ('alerted','digested') THEN ? ELSE updated_at END,
+      decision=CASE WHEN decision IN ('alerted','digested') THEN 'new' ELSE decision END
+      WHERE user_id=? AND vacancy_id=?`).run(now, now, userId, vacancyId);
+    const decision = String(db.prepare('SELECT decision FROM user_vacancies WHERE user_id=? AND vacancy_id=?')
+      .get(userId, vacancyId)?.decision ?? 'new');
+    if (score >= config.alertScore && !hardRejection && decision === 'new') {
+      db.prepare(`INSERT INTO score_alert_details
+        (user_id,vacancy_id,primary_track,summary,reasons_json,gaps_json) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(user_id,vacancy_id) DO UPDATE SET primary_track=excluded.primary_track,summary=excluded.summary,
+        reasons_json=excluded.reasons_json,gaps_json=excluded.gaps_json`)
+        .run(userId, vacancyId, primaryTrack, summary, JSON.stringify(reasons), JSON.stringify(gaps));
+    } else db.prepare('DELETE FROM score_alert_details WHERE user_id=? AND vacancy_id=?').run(userId, vacancyId);
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
-export interface ScoredVacancy extends Vacancy { userId: string; score: number; primaryTrack: string; summary: string; reasons: string[]; gaps: string[]; hardRejection: boolean }
+export interface ScoredVacancy extends Vacancy { userId: string; score: number }
+export interface AlertVacancy extends ScoredVacancy { primaryTrack: string; summary: string; reasons: string[]; gaps: string[] }
 function rowToScoredVacancy(row: Record<string, unknown>): ScoredVacancy {
-  return { ...rowToVacancy(row), userId: String(row.score_user_id ?? row.user_id), score: Number(row.score),
-    primaryTrack: String(row.primary_track), summary: String(row.summary), reasons: JSON.parse(String(row.reasons_json)) as string[],
-    gaps: JSON.parse(String(row.gaps_json)) as string[], hardRejection: Boolean(row.hard_rejection) };
+  return { ...rowToVacancy(row), userId: String(row.score_user_id ?? row.user_id), score: Number(row.score) };
 }
-const scoredSelect = `SELECT v.*,uv.decision user_decision,s.user_id score_user_id,s.score,s.primary_track,s.summary,
-  s.reasons_json,s.gaps_json,s.hard_rejection FROM vacancies v JOIN scores s ON s.vacancy_id=v.id
+function rowToAlertVacancy(row: Record<string, unknown>): AlertVacancy {
+  return { ...rowToScoredVacancy(row), primaryTrack: String(row.primary_track), summary: String(row.summary),
+    reasons: JSON.parse(String(row.reasons_json)) as string[], gaps: JSON.parse(String(row.gaps_json)) as string[] };
+}
+const scoredSelect = `SELECT v.*,uv.decision user_decision,s.user_id score_user_id,s.score
+  FROM vacancies v JOIN scores s ON s.vacancy_id=v.id
   JOIN user_vacancies uv ON uv.user_id=s.user_id AND uv.vacancy_id=v.id`;
 export function getScoredVacancy(userId: string, id: number): ScoredVacancy | null {
   const row = db.prepare(`${scoredSelect} WHERE s.user_id=? AND v.id=?`).get(userId, id); return row ? rowToScoredVacancy(row) : null;
@@ -968,26 +1105,35 @@ export function searchScoredVacancies(userId: string, input: string, limit = 10)
     .all(userId, query, Math.max(1, Math.min(limit, 30))).map(rowToScoredVacancy);
 }
 export function latestDigestVacanciesByApplyIdPrefix(userId: string, prefix: string): ScoredVacancy[] {
-  return db.prepare(`${scoredSelect} WHERE s.user_id=? AND s.digest_sent_at=(SELECT MAX(digest_sent_at) FROM scores WHERE user_id=? AND digest_sent_at IS NOT NULL)
+  return db.prepare(`${scoredSelect} WHERE s.user_id=? AND uv.decision='digested'
+    AND uv.updated_at=(SELECT MAX(updated_at) FROM user_vacancies WHERE user_id=? AND decision='digested')
     AND v.apply_id LIKE ? ORDER BY s.score DESC,v.published_at DESC LIMIT 2`).all(userId, userId, `${prefix}%`).map(rowToScoredVacancy);
 }
-export function digestVacancies(userId: string, min: number, high: number, limit=30): ScoredVacancy[] {
-  return db.prepare(`${scoredSelect} WHERE s.user_id=? AND s.score>=? AND s.score<? AND s.digest_sent_at IS NULL
-    AND uv.decision NOT IN ('skipped','applying','applied') ORDER BY s.score DESC,v.published_at DESC LIMIT ?`)
-    .all(userId,min,high,limit).map(rowToScoredVacancy);
+export function digestVacancies(userId: string, min: number, high: number, since: string | null): ScoredVacancy[] {
+  return db.prepare(`${scoredSelect} WHERE s.user_id=? AND s.score>=? AND s.score<? AND uv.decision='new'
+    AND uv.score_updated_at IS NOT NULL AND (? IS NULL OR julianday(uv.score_updated_at)>julianday(?))
+    ORDER BY s.score DESC,v.published_at DESC`).all(userId,min,high,since,since).map(rowToScoredVacancy);
 }
-export function unsentHighScoreVacancies(userId: string, minScore: number, limit=30): ScoredVacancy[] {
-  return db.prepare(`${scoredSelect} WHERE s.user_id=? AND s.score>=? AND s.hard_rejection=0 AND s.alert_sent_at IS NULL
-    AND uv.decision NOT IN ('skipped','applying','applied') ORDER BY s.score DESC,v.published_at DESC LIMIT ?`)
-    .all(userId,minScore,limit).map(rowToScoredVacancy);
+export function unsentHighScoreVacancies(userId: string, minScore: number, limit=30): AlertVacancy[] {
+  return db.prepare(`SELECT v.*,uv.decision user_decision,s.user_id score_user_id,s.score,
+    d.primary_track,d.summary,d.reasons_json,d.gaps_json FROM vacancies v
+    JOIN scores s ON s.vacancy_id=v.id JOIN user_vacancies uv ON uv.user_id=s.user_id AND uv.vacancy_id=v.id
+    JOIN score_alert_details d ON d.user_id=s.user_id AND d.vacancy_id=s.vacancy_id
+    WHERE s.user_id=? AND s.score>=? AND uv.decision='new' ORDER BY s.score DESC,v.published_at DESC LIMIT ?`)
+    .all(userId,minScore,limit).map(rowToAlertVacancy);
 }
 export function markAlerted(userId: string, id: number): void {
-  const now=new Date().toISOString(); db.prepare('UPDATE scores SET alert_sent_at=? WHERE user_id=? AND vacancy_id=?').run(now,userId,id);
-  db.prepare("UPDATE user_vacancies SET decision='alerted',updated_at=? WHERE user_id=? AND vacancy_id=? AND decision='new'").run(now,userId,id);
+  const now=new Date().toISOString();
+  db.exec('BEGIN');
+  try {
+    db.prepare("UPDATE user_vacancies SET decision='alerted',updated_at=? WHERE user_id=? AND vacancy_id=? AND decision='new'")
+      .run(now,userId,id);
+    db.prepare('DELETE FROM score_alert_details WHERE user_id=? AND vacancy_id=?').run(userId,id);
+    db.exec('COMMIT');
+  } catch (error) { db.exec('ROLLBACK'); throw error; }
 }
 export function markDigested(userId: string, ids: number[]): void {
   const now=new Date().toISOString(); for (const id of ids) {
-    db.prepare('UPDATE scores SET digest_sent_at=? WHERE user_id=? AND vacancy_id=?').run(now,userId,id);
     db.prepare("UPDATE user_vacancies SET decision='digested',updated_at=? WHERE user_id=? AND vacancy_id=? AND decision='new'").run(now,userId,id);
   }
 }

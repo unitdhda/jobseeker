@@ -1,156 +1,150 @@
 import { Cron } from 'croner';
 import { config } from '../config.ts';
 import {
-  approvedUsers, clearPendingDelivery, getDeliveryWindow, getGlobalScheduleCron, pendingDeliveries,
-  queueDelivery, saveDeliveryWindow, saveGlobalScheduleCron, type DeliveryKind, type DeliveryWindow,
-  type GlobalScheduleName,
+  approvedUsers, getDeliverySettings, markDigestRun, saveDeliverySettings, type DeliverySettings,
 } from './database.ts';
 import { errorMessage } from './logging.ts';
 
 type GlobalHandler = () => Promise<unknown>;
 type UserHandler = (userId: string) => Promise<unknown>;
 
-const jobs = new Map<GlobalScheduleName, Cron>();
-const runningDeliveries = new Set<string>();
+const defaultDigestMinutes = 9 * 60;
+let cycleJob: Cron | undefined;
+let cycleRunning = false;
 let scrapeHandler: GlobalHandler | undefined;
 let notifyHandler: UserHandler | undefined;
 let digestHandler: UserHandler | undefined;
-let deliveryPoller: Cron | undefined;
-
-const defaults: Record<GlobalScheduleName, string> = {
-  scrape: config.scrapeCron,
-  notify: config.notifyCron,
-  digest: config.digestCron,
-};
 
 function validateCron(pattern: string): void {
   const fields = pattern.trim().split(/\s+/);
-  if (fields.length !== 5 && fields.length !== 6) throw new Error('Cron must contain 5 fields, or 6 fields with seconds.');
+  if (fields.length !== 5 && fields.length !== 6) throw new Error('CYCLE_CRON must contain 5 fields, or 6 fields with seconds.');
   const probe = new Cron(pattern, { timezone: config.timezone, paused: true });
-  if (!probe.nextRun()) throw new Error('Cron expression has no future run time.');
+  if (!probe.nextRun()) throw new Error('CYCLE_CRON has no future run time.');
   probe.stop();
 }
 
-function localMinutes(date: Date, timezone: string): number {
-  const parts = new Intl.DateTimeFormat('en-GB', {
-    timeZone: timezone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
-  }).formatToParts(date);
-  const hour = Number(parts.find((part) => part.type === 'hour')?.value);
-  const minute = Number(parts.find((part) => part.type === 'minute')?.value);
+export function parseClockMinutes(value: string): number {
+  const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
+  if (!match) throw new Error('Use HH:MM, for example 09:30.');
+  const hour = Number(match[1]); const minute = Number(match[2]);
+  if (hour > 23 || minute > 59) throw new Error('Time must be between 00:00 and 23:59.');
   return hour * 60 + minute;
 }
 
+export function normalizeUtcOffset(value: string): string {
+  const match = /^([+-])(\d{1,2})(?::(00|30))?$/.exec(value.trim());
+  if (!match) throw new Error('Use a UTC offset such as +3, -5, or +3:30.');
+  const hour = Number(match[2]); const minute = Number(match[3] ?? '00');
+  if (hour > 14 || (hour === 14 && minute !== 0)) throw new Error('UTC offset must be between -14:00 and +14:00.');
+  if (hour === 0 && minute === 0) return '+00:00';
+  return `${match[1]}${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+}
+
+function offsetMinutes(timezone: string): number | null {
+  const match = /^([+-])(\d{2}):(\d{2})$/.exec(timezone);
+  if (!match) return null;
+  const total = Number(match[2]) * 60 + Number(match[3]);
+  return match[1] === '-' ? -total : total;
+}
+
+function localParts(date: Date, timezone: string): { minutes: number; dateKey: string } {
+  const offset = offsetMinutes(timezone);
+  if (offset != null) {
+    const shifted = new Date(date.getTime() + offset * 60_000);
+    return {
+      minutes: shifted.getUTCHours() * 60 + shifted.getUTCMinutes(),
+      dateKey: shifted.toISOString().slice(0, 10),
+    };
+  }
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value ?? '';
+  return { minutes: Number(part('hour')) * 60 + Number(part('minute')),
+    dateKey: `${part('year')}-${part('month')}-${part('day')}` };
+}
+
+function effectiveSettings(userId: string): DeliverySettings {
+  return getDeliverySettings(userId) ?? { startMinutes: 0, endMinutes: 0, digestMinutes: defaultDigestMinutes,
+    timezone: config.timezone, lastDigestAt: null };
+}
+
 export function isWithinDeliveryWindow(userId: string, date = new Date()): boolean {
-  const window = getDeliveryWindow(userId);
-  if (!window) return true;
-  const minutes = localMinutes(date, window.timezone);
-  return window.startMinutes < window.endMinutes
-    ? minutes >= window.startMinutes && minutes < window.endMinutes
-    : minutes >= window.startMinutes || minutes < window.endMinutes;
+  const settings = effectiveSettings(userId);
+  if (settings.startMinutes === settings.endMinutes) return true;
+  const minutes = localParts(date, settings.timezone).minutes;
+  return settings.startMinutes < settings.endMinutes
+    ? minutes >= settings.startMinutes && minutes < settings.endMinutes
+    : minutes >= settings.startMinutes || minutes < settings.endMinutes;
 }
 
-async function deliver(userId: string, kind: DeliveryKind, queueWhenClosed: boolean): Promise<void> {
-  if (!isWithinDeliveryWindow(userId)) {
-    if (queueWhenClosed) queueDelivery(userId, kind);
-    return;
-  }
-  const handler = kind === 'notify' ? notifyHandler : digestHandler;
-  if (!handler) throw new Error('Delivery schedules have not been initialized.');
-  const key = `${userId}:${kind}`;
-  if (runningDeliveries.has(key)) return;
-  runningDeliveries.add(key);
+export function isDigestDue(userId: string, date = new Date()): boolean {
+  const settings = effectiveSettings(userId);
+  const local = localParts(date, settings.timezone);
+  if (local.minutes < settings.digestMinutes) return false;
+  if (!settings.lastDigestAt) return true;
+  return localParts(new Date(settings.lastDigestAt), settings.timezone).dateKey < local.dateKey;
+}
+
+function timeText(minutes: number): string {
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+export function deliverySettingsStatus(userId: string): string {
+  const configured = getDeliverySettings(userId);
+  const settings = effectiveSettings(userId);
+  const alerts = settings.startMinutes === settings.endMinutes ? 'anytime'
+    : `${timeText(settings.startMinutes)}–${timeText(settings.endMinutes)}`;
+  const timezone = offsetMinutes(settings.timezone) == null ? settings.timezone : `UTC${settings.timezone}`;
+  return `alerts ${alerts}; digest ${timeText(settings.digestMinutes)}; ${timezone}${configured ? '' : ' (default)'}`;
+}
+
+export function updateDeliverySettings(userId: string, start: string, end: string, digest: string, timezone: string): void {
+  const startMinutes = parseClockMinutes(start); const endMinutes = parseClockMinutes(end);
+  if (startMinutes === endMinutes) throw new Error('Notification start and end must differ.');
+  saveDeliverySettings(userId, { startMinutes, endMinutes, digestMinutes: parseClockMinutes(digest),
+    timezone: normalizeUtcOffset(timezone) });
+}
+
+async function sendAlerts(userId: string, now: Date): Promise<void> {
+  if (!notifyHandler || !isWithinDeliveryWindow(userId, now)) return;
+  try { await notifyHandler(userId); }
+  catch (error) { console.error(`Alert delivery failed for user ${userId}: ${errorMessage(error)}`); }
+}
+
+async function sendDigest(userId: string, now: Date): Promise<void> {
+  if (!digestHandler || !isDigestDue(userId, now)) return;
   try {
-    await handler(userId);
-    clearPendingDelivery(userId, kind);
-  } catch (error) {
-    queueDelivery(userId, kind);
-    console.error(`${kind} delivery failed for user ${userId}: ${errorMessage(error)}`);
-  } finally {
-    runningDeliveries.delete(key);
-  }
+    await digestHandler(userId);
+    markDigestRun(userId, now.toISOString());
+  } catch (error) { console.error(`Digest delivery failed for user ${userId}: ${errorMessage(error)}`); }
 }
 
-async function dispatch(kind: DeliveryKind): Promise<void> {
-  for (const user of approvedUsers()) await deliver(user.userId, kind, true);
-}
-
-export async function flushPendingDeliveries(): Promise<void> {
-  for (const pending of pendingDeliveries()) await deliver(pending.userId, pending.kind, false);
-}
-
-function createJob(name: GlobalScheduleName, pattern: string): Cron {
-  return new Cron(pattern, {
-    timezone: config.timezone,
-    protect: true,
-    catch: (error) => console.error(`${name} schedule failed: ${errorMessage(error)}`),
-  }, async () => {
-    if (name === 'scrape') {
-      if (!scrapeHandler) throw new Error('Scrape schedule has not been initialized.');
-      await scrapeHandler();
-    } else await dispatch(name);
-  });
+export async function runScheduledCycle(): Promise<void> {
+  if (cycleRunning) return;
+  if (!scrapeHandler || !notifyHandler || !digestHandler) throw new Error('Cycle schedule has not been initialized.');
+  cycleRunning = true;
+  try {
+    try { await scrapeHandler(); }
+    catch (error) { console.error(`Scrape cycle failed: ${errorMessage(error)}`); }
+    const now = new Date();
+    for (const user of approvedUsers()) await sendAlerts(user.userId, now);
+    for (const user of approvedUsers()) await sendDigest(user.userId, now);
+  } finally { cycleRunning = false; }
 }
 
 export function initializeSchedules(scrape: GlobalHandler, notify: UserHandler, digest: UserHandler): void {
   scrapeHandler = scrape; notifyHandler = notify; digestHandler = digest;
+  validateCron(config.cycleCron);
   if (!config.runJobs) return;
-  for (const name of ['scrape', 'notify', 'digest'] as const) {
-    const pattern = getGlobalScheduleCron(name) ?? defaults[name];
-    validateCron(pattern);
-    jobs.set(name, createJob(name, pattern));
-  }
-  deliveryPoller = new Cron('* * * * *', { timezone: 'UTC', protect: true,
-    catch: (error) => console.error(`Pending delivery poll failed: ${errorMessage(error)}`) }, flushPendingDeliveries);
-}
-
-export function scheduleStatus(name: GlobalScheduleName): { cron: string; nextRun: Date | null } {
-  const cron = getGlobalScheduleCron(name) ?? defaults[name];
-  const job = jobs.get(name);
-  if (job) return { cron, nextRun: job.nextRun() };
-  validateCron(cron);
-  const probe = new Cron(cron, { timezone: config.timezone, paused: true });
-  const nextRun = probe.nextRun(); probe.stop();
-  return { cron, nextRun };
-}
-
-export function updateSchedule(name: GlobalScheduleName, pattern: string): { cron: string; nextRun: Date | null } {
-  const cron = pattern.trim(); validateCron(cron);
-  const replacement = config.runJobs ? createJob(name, cron) : undefined;
-  try { saveGlobalScheduleCron(name, cron); } catch (error) { replacement?.stop(); throw error; }
-  jobs.get(name)?.stop();
-  if (replacement) jobs.set(name, replacement); else jobs.delete(name);
-  return { cron, nextRun: replacement?.nextRun() ?? null };
-}
-
-function parseMinutes(value: string): number {
-  const match = /^(\d{2}):(\d{2})$/.exec(value);
-  if (!match) throw new Error('Times must use HH:MM format.');
-  const hour = Number(match[1]); const minute = Number(match[2]);
-  if (hour > 23 || minute > 59) throw new Error('Time is outside the valid 00:00–23:59 range.');
-  return hour * 60 + minute;
-}
-function timeText(minutes: number): string {
-  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
-}
-export function deliveryWindowStatus(userId: string): string {
-  const window = getDeliveryWindow(userId);
-  return window ? `${timeText(window.startMinutes)}-${timeText(window.endMinutes)} ${window.timezone}` : 'anytime';
-}
-export function updateDeliveryWindow(userId: string, input: string): DeliveryWindow | null {
-  const value = input.trim();
-  if (value.toLowerCase() === 'off') { saveDeliveryWindow(userId, null); void flushPendingDeliveries(); return null; }
-  const match = /^(\d{2}:\d{2})-(\d{2}:\d{2})\s+(\S+)$/.exec(value);
-  if (!match) throw new Error('Use /window HH:MM-HH:MM Area/City, or /window off.');
-  const startMinutes = parseMinutes(match[1]); const endMinutes = parseMinutes(match[2]);
-  if (startMinutes === endMinutes) throw new Error('Start and end times must differ; use /window off for anytime.');
-  try { new Intl.DateTimeFormat('en', { timeZone: match[3] }).format(); }
-  catch { throw new Error(`Unknown IANA timezone: ${match[3]}`); }
-  const window = { startMinutes, endMinutes, timezone: match[3] };
-  saveDeliveryWindow(userId, window); void flushPendingDeliveries();
-  return window;
+  cycleJob = new Cron(config.cycleCron, {
+    timezone: config.timezone,
+    protect: true,
+    catch: (error) => console.error(`Cycle schedule failed: ${errorMessage(error)}`),
+  }, runScheduledCycle);
 }
 
 export function stopSchedules(): void {
-  for (const job of jobs.values()) job.stop();
-  deliveryPoller?.stop();
+  cycleJob?.stop();
 }

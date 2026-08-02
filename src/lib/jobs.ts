@@ -1,5 +1,5 @@
 import { config } from '../config.ts';
-import { approvedUsers, usageInLast24Hours } from './database.ts';
+import { approvedUsers } from './database.ts';
 import { scrapeHh } from './hh.ts';
 import { scrapeHireHi } from './hirehi.ts';
 import {
@@ -12,7 +12,6 @@ import type { HireHiSearchProfile } from '../platforms/hirehi.ts';
 import type { AvitoSearchProfile, GetmatchSearchProfile, TextSearchProfile } from '../platforms/additional.ts';
 import { trace } from './trace.ts';
 import { processCandidateQueue } from './candidate-queue.ts';
-import { nextFairScoreRound } from './fairness.ts';
 import { errorMessage } from './logging.ts';
 import { mapConcurrent } from './adaptive-concurrency.ts';
 
@@ -45,7 +44,7 @@ export async function runScrapeCycle(): Promise<ScrapeCycleResult | null> {
   try {
     const users = approvedUsers(true);
     trace('cycle.start', { users: users.map((user) => user.userId), platforms: config.searchPlatforms,
-      scoreBatchSize: config.scoreBatchSize });
+      scoreLimitPerUser: config.userScoreLimitPerCycle });
     const platforms: Record<string, PlatformScrapeResult> = {};
     for (const user of users) {
       const profiles = await ensureCvAndSearchProfiles(user.userId);
@@ -86,36 +85,16 @@ export async function runScrapeCycle(): Promise<ScrapeCycleResult | null> {
     for (const [source, count] of Object.entries(queue.bySource)) {
       if (platforms[source]) platforms[source].newVacancies = count;
     }
-    let attempted = 0;
-    const usage = new Map(users.map((user) => [user.userId, usageInLast24Hours(user.userId, 'score')]));
-    const cycleUsage = new Map(users.map((user) => [user.userId, 0]));
-    while (attempted < config.scoreBatchSize) {
-      let progressed = false;
-      const round = nextFairScoreRound(users.map((user) => ({
-        userId: user.userId,
-        used: usage.get(user.userId) ?? 0,
-        cycleUsed: cycleUsage.get(user.userId) ?? 0,
-        unlimited: user.userId === config.telegramUserId,
-      })), config.scoreBatchSize - attempted, config.userDailyScoreLimit, config.userScoreLimitPerCycle);
-      if (!round.length) break;
-      const counts = await mapConcurrent(round, config.scoreAgentConcurrencyMax, async (allocation) => {
-        try {
-          return await scorePendingVacancies(allocation.userId, undefined,
-            (phase, current, total) => cycleStatus?.set(phase, current, total), allocation.limit);
-        } catch (error) {
-          console.error(`Scoring allocation failed for user ${allocation.userId}: ${errorMessage(error)}`);
-          return 0;
-        }
-      });
-      for (const [index, allocation] of round.entries()) {
-        const count = counts[index];
-        attempted += count;
-        usage.set(allocation.userId, (usage.get(allocation.userId) ?? 0) + count);
-        cycleUsage.set(allocation.userId, (cycleUsage.get(allocation.userId) ?? 0) + count);
-        if (count) progressed = true;
+    const scoreCounts = await mapConcurrent(users, config.scoreAgentConcurrencyMax, async (user) => {
+      try {
+        return await scorePendingVacancies(user.userId, undefined,
+          (phase, current, total) => cycleStatus?.set(phase, current, total), config.userScoreLimitPerCycle);
+      } catch (error) {
+        console.error(`Scoring allocation failed for user ${user.userId}: ${errorMessage(error)}`);
+        return 0;
       }
-      if (!progressed) break;
-    }
+    });
+    const attempted = scoreCounts.reduce((sum, count) => sum + count, 0);
     const totals = Object.values(platforms).reduce((sum, platform) => ({
       searches: sum.searches + platform.searches, seen: sum.seen + platform.seen,
       discovered: sum.discovered + platform.discovered, newVacancies: sum.newVacancies + platform.newVacancies,

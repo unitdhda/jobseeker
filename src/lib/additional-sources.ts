@@ -1,6 +1,6 @@
 import { config } from '../config.ts';
 import type { AvitoSearchProfile, GetmatchSearchProfile, TextSearchProfile } from '../platforms/additional.ts';
-import { recordVacancyCandidate, type VacancyCandidate, type VacancyInput } from './database.ts';
+import { type VacancyCandidate, type VacancyInput } from './database.ts';
 import {
   asObject, fetchSourceHtml, hashedVacancy, htmlText, jobPostings, parseSalaryText,
   plainText, sourceUserAgent, structuredVacancy, type JsonObject,
@@ -8,6 +8,7 @@ import {
 import { trace } from './trace.ts';
 import { fetchSourceJson } from './safe-http.ts';
 import { errorMessage } from './logging.ts';
+import { VacancySearchCollector } from './vacancy-search-collector.ts';
 
 function pause(min = 250, max = 650): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, min + Math.random() * (max - min)));
@@ -20,8 +21,8 @@ async function scrapeStructuredDetailPages(
   source: 'habr' | 'geekjob', userId: string, profile: TextSearchProfile,
   searchUrl: (query: string, page: number) => string, linkPattern: RegExp, idPattern: RegExp,
 ): Promise<ScrapeResult> {
-  const links = new Map<string, { url: string; searchName: string; title: string }>();
-  for (const search of profile.searches) {
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  searches: for (const search of profile.searches) {
     for (let page = 1; page <= config.additionalMaxPages; page++) {
       try {
         const url = searchUrl(search.query, page);
@@ -31,10 +32,16 @@ async function scrapeStructuredDetailPages(
         for (const match of html.matchAll(linkPattern)) {
           const url = new URL(match[1], searchUrl(search.query, page)).toString().split('?')[0];
           const id = url.match(idPattern)?.[1];
-          if (id && !links.has(id)) links.set(id, { url, searchName: search.name, title: htmlText(match[2] ?? '') || search.name });
-          if (id) found++;
+          if (id) {
+            found++;
+            collector.record({ source, sourceId: id, url, searchName: search.name,
+              title: htmlText(match[2] ?? '') || search.name, summary: search.name });
+          }
+          if (collector.complete) break;
         }
         trace('scrape.search.result', { platform: source, search: search.name, page, found });
+        if (collector.complete) break searches;
+        if (!found) break;
         await pause();
       } catch (error) {
         console.error(`Failed to read ${source} search ${search.name} page ${page}: ${errorMessage(error)}`);
@@ -42,13 +49,7 @@ async function scrapeStructuredDetailPages(
       }
     }
   }
-
-  let discovered = 0;
-  for (const [sourceId, link] of links) {
-    if (recordVacancyCandidate(userId, { source, sourceId, url: link.url, searchName: link.searchName,
-      title: link.title, summary: link.searchName })) discovered++;
-  }
-  return { seen: links.size, discovered };
+  return collector.result();
 }
 
 export function scrapeHabr(userId: string, profile: TextSearchProfile): Promise<ScrapeResult> {
@@ -62,7 +63,7 @@ export function scrapeHabr(userId: string, profile: TextSearchProfile): Promise<
 
 export async function scrapeGeekJob(userId: string, profile: TextSearchProfile): Promise<ScrapeResult> {
   // GeekJob's documented qs form currently returns empty pages, so filter its public listing locally by title.
-  const links = new Map<string, { url: string; searchName: string }>();
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
   for (let page = 1; page <= config.additionalMaxPages; page++) {
     const url = new URL('/vacancies', 'https://geekjob.ru');
     if (page > 1) url.searchParams.set('page', String(page));
@@ -75,24 +76,23 @@ export async function scrapeGeekJob(userId: string, profile: TextSearchProfile):
         const search = profile.searches.find((candidate) => candidate.query.toLowerCase().split(/\s+/)
           .filter((term) => term.length > 2 && !['developer','разработчик','engineer'].includes(term))
           .some((term) => title.includes(term)));
-        if (search && !links.has(match[2])) links.set(match[2], {
-          url: new URL(match[1], 'https://geekjob.ru').toString(), searchName: search.name,
-        });
-        if (search) found++;
+        if (search) {
+          found++;
+          collector.record({ source: 'geekjob', sourceId: match[2],
+            url: new URL(match[1], 'https://geekjob.ru').toString(), searchName: search.name,
+            title: htmlText(match[3]) || search.name, summary: search.name });
+        }
+        if (collector.complete) break;
       }
       trace('scrape.search.result', { platform: 'geekjob', page, found });
+      if (collector.complete || !found) break;
       await pause();
     } catch (error) {
       console.error(`Failed to read GeekJob page ${page}: ${errorMessage(error)}`);
       break;
     }
   }
-  let discovered = 0;
-  for (const [sourceId, link] of links) {
-    if (recordVacancyCandidate(userId, { source: 'geekjob', sourceId, url: link.url, searchName: link.searchName,
-      title: link.searchName, summary: link.searchName })) discovered++;
-  }
-  return { seen: links.size, discovered };
+  return collector.result();
 }
 
 function classSection(html: string, className: string, tag = '[a-z0-9]+'): string {
@@ -142,18 +142,19 @@ export async function scrapeGetmatch(userId: string, profile: GetmatchSearchProf
   trace('scrape.search.result', { platform: 'getmatch', matched: links.size });
   const candidates = [...links.entries()].sort((a, b) => b[1].lastmod.localeCompare(a[1].lastmod))
     .slice(0, config.getmatchMaxCandidates);
-  let discovered = 0;
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
   for (const [sourceId, link] of candidates) {
     const title = new URL(link.url).pathname.split('/').pop()?.replace(/^\d+-/, '').replaceAll('-', ' ') ?? link.searchName;
-    if (recordVacancyCandidate(userId, { source: 'getmatch', sourceId, url: link.url, searchName: link.searchName,
-      title, summary: link.searchName, publishedAt: link.lastmod })) discovered++;
+    collector.record({ source: 'getmatch', sourceId, url: link.url, searchName: link.searchName,
+      title, summary: link.searchName, publishedAt: link.lastmod });
+    if (collector.complete) break;
   }
-  return { seen: links.size, discovered };
+  return collector.result();
 }
 
 export async function scrapeRabota(userId: string, profile: TextSearchProfile): Promise<ScrapeResult> {
-  const postings = new Map<string, { posting: JsonObject; searchName: string }>();
-  for (const search of profile.searches) {
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  searches: for (const search of profile.searches) {
     for (let page = 1; page <= config.additionalMaxPages; page++) {
       try {
         const url = new URL(`/vacancy/${encodeURIComponent(search.query)}/`, 'https://www.rabota.ru');
@@ -166,8 +167,14 @@ export async function scrapeRabota(userId: string, profile: TextSearchProfile): 
           const postingUrl = plainText(posting.url);
           const id = postingUrl.match(/\/vacancy\/(\d+)/)?.[1]
             ?? plainText(asObject(posting.identifier)?.value);
-          if (id && !postings.has(id)) postings.set(id, { posting, searchName: search.name });
+          if (id) collector.record({ source: 'rabota', sourceId: id,
+            url: postingUrl || `https://www.rabota.ru/vacancy/${id}/`, searchName: search.name,
+            title: plainText(posting.title) || search.name, summary: plainText(posting.description).slice(0, 1_000),
+            publishedAt: plainText(posting.datePosted), payload: posting });
+          if (collector.complete) break;
         }
+        if (collector.complete) break searches;
+        if (!pagePostings.length) break;
         await pause();
       } catch (error) {
         console.error(`Failed to read Работа.ру search ${search.name} page ${page}: ${errorMessage(error)}`);
@@ -175,14 +182,7 @@ export async function scrapeRabota(userId: string, profile: TextSearchProfile): 
       }
     }
   }
-  let discovered = 0;
-  for (const [sourceId, item] of postings) {
-    const url = plainText(item.posting.url) || `https://www.rabota.ru/vacancy/${sourceId}/`;
-    if (recordVacancyCandidate(userId, { source: 'rabota', sourceId, url, searchName: item.searchName,
-      title: plainText(item.posting.title) || item.searchName, summary: plainText(item.posting.description).slice(0, 1_000),
-      publishedAt: plainText(item.posting.datePosted), payload: item.posting })) discovered++;
-  }
-  return { seen: postings.size, discovered };
+  return collector.result();
 }
 
 function avitoSlug(value: string): string {
@@ -234,8 +234,8 @@ function avitoVacancy(item: JsonObject, sourceQuery: string): VacancyInput {
 }
 
 export async function scrapeAvito(userId: string, profile: AvitoSearchProfile): Promise<ScrapeResult> {
-  const items = new Map<string, { item: JsonObject; searchName: string }>();
-  for (const search of profile.searches) {
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  searches: for (const search of profile.searches) {
     for (let page = 1; page <= config.additionalMaxPages; page++) {
       try {
         const path = search.query === 'информационные технологии'
@@ -250,9 +250,16 @@ export async function scrapeAvito(userId: string, profile: AvitoSearchProfile): 
         const pageItems = avitoItems(JSON.parse(state));
         trace('scrape.search.result', { platform: 'avito', search: search.name, page, found: pageItems.length });
         for (const item of pageItems) {
-          const id = String(item.id);
-          if (!items.has(id)) items.set(id, { item, searchName: search.name });
+          const sourceId = String(item.id);
+          const title = plainText(item.title);
+          const summary = `${plainText(avitoStep(item, 'DescriptionStep', 'description')?.description)} ${plainText(avitoStep(item, 'ParamsStep', 'params')?.text)}`.slice(0, 1_000);
+          collector.record({ source: 'avito', sourceId,
+            url: new URL(plainText(item.urlPath).split('?')[0], 'https://www.avito.ru').toString(),
+            searchName: search.name, title, summary, payload: item });
+          if (collector.complete) break;
         }
+        if (collector.complete) break searches;
+        if (!pageItems.length) break;
         await pause(500, 1_000);
       } catch (error) {
         console.error(`Failed to read Avito search ${search.name} page ${page}: ${errorMessage(error)}`);
@@ -260,21 +267,13 @@ export async function scrapeAvito(userId: string, profile: AvitoSearchProfile): 
       }
     }
   }
-  let discovered = 0;
-  for (const [sourceId, entry] of items) {
-    const title = plainText(entry.item.title);
-    const summary = `${plainText(avitoStep(entry.item, 'DescriptionStep', 'description')?.description)} ${plainText(avitoStep(entry.item, 'ParamsStep', 'params')?.text)}`.slice(0, 1_000);
-    if (recordVacancyCandidate(userId, { source: 'avito', sourceId,
-      url: new URL(plainText(entry.item.urlPath).split('?')[0], 'https://www.avito.ru').toString(),
-      searchName: entry.searchName, title, summary, payload: entry.item })) discovered++;
-  }
-  return { seen: items.size, discovered };
+  return collector.result();
 }
 
 export async function scrapeSuperJob(userId: string, profile: TextSearchProfile): Promise<ScrapeResult> {
   if (!config.superJobApiKey) throw new Error('SUPERJOB_API_KEY is required to enable the SuperJob source');
-  const objects = new Map<string, { vacancy: JsonObject; searchName: string }>();
-  for (const search of profile.searches) {
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  searches: for (const search of profile.searches) {
     for (let page = 0; page < config.additionalMaxPages; page++) {
       const url = new URL('/2.0/vacancies/', 'https://api.superjob.ru');
       url.searchParams.set('keyword', search.query); url.searchParams.set('town', String(config.superJobTownId));
@@ -287,21 +286,21 @@ export async function scrapeSuperJob(userId: string, profile: TextSearchProfile)
       const pageObjects = Array.isArray(data?.objects) ? data.objects : [];
       trace('scrape.search.result', { platform: 'superjob', search: search.name, page: page + 1, found: pageObjects.length });
       for (const vacancy of pageObjects) {
-        const object = asObject(vacancy); const id = object ? plainText(object.id) : '';
-        if (object && id && !objects.has(id)) objects.set(id, { vacancy: object, searchName: search.name });
+        const object = asObject(vacancy); const sourceId = object ? plainText(object.id) : '';
+        if (object && sourceId) {
+          const published = Number(object.date_published);
+          collector.record({ source: 'superjob', sourceId, url: plainText(object.link), searchName: search.name,
+            title: plainText(object.profession), summary: htmlText(plainText(object.candidat)).slice(0, 1_000),
+            publishedAt: Number.isFinite(published) ? new Date(published * 1_000).toISOString() : undefined,
+            payload: object });
+        }
+        if (collector.complete) break;
       }
+      if (collector.complete) break searches;
+      if (!pageObjects.length) break;
     }
   }
-  let discovered = 0;
-  for (const [sourceId, entry] of objects) {
-    const vacancy = entry.vacancy;
-    const published = Number(vacancy.date_published);
-    if (recordVacancyCandidate(userId, { source: 'superjob', sourceId, url: plainText(vacancy.link), searchName: entry.searchName,
-      title: plainText(vacancy.profession), summary: htmlText(plainText(vacancy.candidat)).slice(0, 1_000),
-      publishedAt: Number.isFinite(published) ? new Date(published * 1_000).toISOString() : undefined,
-      payload: vacancy })) discovered++;
-  }
-  return { seen: objects.size, discovered };
+  return collector.result();
 }
 
 export async function normalizeAdditionalCandidate(candidate: VacancyCandidate): Promise<VacancyInput | null> {
