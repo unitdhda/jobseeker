@@ -151,7 +151,7 @@ export async function purgeSettledAgentSessions(): Promise<number> {
 }
 export async function deleteUserData(userId: string): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
-    for (const table of ['candidate_prefilter_scores','candidate_discoveries','user_vacancies','profiles','usage_events','telegram_sessions'] as const) {
+    for (const table of ['candidate_discoveries','user_vacancies','profiles','usage_events','telegram_sessions'] as const) {
       await client.query(`delete from ${table} where user_id=$1`, [userId]);
     }
     await client.query(`update telegram_users set delivery_start_minutes=null,delivery_end_minutes=null,digest_minutes=null,
@@ -326,33 +326,30 @@ export async function recordVacancyCandidate(userId: string, raw: VacancyCandida
     if (await hasCv(userId, client)) await client.query(`insert into candidate_discoveries(user_id,source,source_id,search_name,first_seen_at,last_seen_at)
       values($1,$2,$3,$4,$5,$5) on conflict(user_id,source,source_id) do update set search_name=excluded.search_name,last_seen_at=excluded.last_seen_at`,
       [userId,input.source,input.sourceId,input.searchName,timestamp]);
-    if (changed) await client.query('delete from candidate_prefilter_scores where source=$1 and source_id=$2', [input.source,input.sourceId]);
+    if (changed) await client.query(`update candidate_discoveries set context_hash=null,listing_hash=null,regex_score=null,
+      lexical_cosine=null,combined_score=null,filtered=null,reasons_json=null,scored_at=null where source=$1 and source_id=$2`,
+      [input.source,input.sourceId]);
     return discovered;
   });
 }
 export async function candidatesNeedingPrefilter(userId: string, contextHash: string, limit: number): Promise<VacancyCandidate[]> {
   await ready(); return (await q(`select c.*,d.search_name discovery_search_name from vacancy_candidates c join candidate_discoveries d
-    on d.source=c.source and d.source_id=c.source_id and d.user_id=$1 left join candidate_prefilter_scores p
-    on p.user_id=d.user_id and p.source=c.source and p.source_id=c.source_id where c.status in ('discovered','queued','filtered','failed') and
-    (p.source_id is null or p.context_hash<>$2 or p.listing_hash<>c.listing_hash)
+    on d.source=c.source and d.source_id=c.source_id and d.user_id=$1 where c.status in ('discovered','queued','filtered','failed') and
+    (d.context_hash is null or d.context_hash<>$2 or d.listing_hash<>c.listing_hash)
     order by d.last_seen_at desc limit $3`, [userId,contextHash,limit])).map(rowToCandidate);
 }
 export async function saveCandidatePrefilter(userId: string, candidate: VacancyCandidate, contextHash: string, score: PrefilterScoreInput): Promise<void> {
-  await ready(); await q(`insert into candidate_prefilter_scores(user_id,source,source_id,context_hash,listing_hash,regex_score,lexical_cosine,
-    combined_score,filtered,reasons_json,scored_at) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11)
-    on conflict(user_id,source,source_id) do update set context_hash=excluded.context_hash,listing_hash=excluded.listing_hash,
-    regex_score=excluded.regex_score,lexical_cosine=excluded.lexical_cosine,combined_score=excluded.combined_score,
-    filtered=excluded.filtered,reasons_json=excluded.reasons_json,scored_at=excluded.scored_at`,
-    [userId,candidate.source,candidate.sourceId,contextHash,candidate.listingHash,score.regexScore,score.lexicalCosine,
-      score.combinedScore,Number(score.filtered),JSON.stringify(score.reasons),now()]);
+  await ready(); await q(`update candidate_discoveries set context_hash=$1,listing_hash=$2,regex_score=$3,lexical_cosine=$4,
+    combined_score=$5,filtered=$6,reasons_json=$7::jsonb,scored_at=$8 where user_id=$9 and source=$10 and source_id=$11`,
+    [contextHash,candidate.listingHash,score.regexScore,score.lexicalCosine,score.combinedScore,Number(score.filtered),
+      JSON.stringify(score.reasons),now(),userId,candidate.source,candidate.sourceId]);
 }
 export async function rankedCandidateQueueForUsers(userIds: string[], perUserLimit: number): Promise<VacancyCandidate[]> {
-  await ready(); const queues = await Promise.all(userIds.map(async (userId) => (await q(`select c.*,d.search_name discovery_search_name,p.combined_score from vacancy_candidates c join candidate_discoveries d
-    on d.source=c.source and d.source_id=c.source_id join candidate_prefilter_scores p
-    on p.user_id=d.user_id and p.source=c.source and p.source_id=c.source_id where d.user_id=$1
-    and c.status in ('discovered','queued','filtered','failed') and p.filtered=0 and
+  await ready(); const queues = await Promise.all(userIds.map(async (userId) => (await q(`select c.*,d.search_name discovery_search_name,
+    d.combined_score from vacancy_candidates c join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id
+    where d.user_id=$1 and c.status in ('discovered','queued','filtered','failed') and d.filtered=0 and
     (c.next_retry_at is null or c.next_retry_at<=$2) and c.source=any($4::text[])
-    order by p.combined_score desc,c.published_at desc limit $3`,
+    order by d.combined_score desc,c.published_at desc limit $3`,
     [userId,now(),perUserLimit,config.searchPlatforms])).map(rowToCandidate)));
   const selected = new Map<string,VacancyCandidate>(); for(let rank=0;rank<perUserLimit;rank++) for(const queue of queues) {
     const candidate=queue[rank]; if(candidate) selected.set(`${candidate.source}:${candidate.sourceId}`,candidate); }
