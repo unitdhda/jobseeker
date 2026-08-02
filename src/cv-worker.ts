@@ -1,5 +1,5 @@
-import { extractCvDocument } from './lib/cv-adapters.ts';
-import type { ExtractedCvDocument } from './lib/cv-adapters.ts';
+import { extractCvDocument } from './cv.ts';
+import type { ExtractedCvDocument } from './cv.ts';
 
 interface CvWorkerRequest {
   filename: string;

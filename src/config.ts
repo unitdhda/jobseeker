@@ -1,4 +1,4 @@
-import { dirname, join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 
 function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
   const raw = process.env[name];
@@ -57,17 +57,14 @@ if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
   throw new Error('SCORE_AGENT_CONCURRENCY_MIN must not exceed SCORE_AGENT_CONCURRENCY_MAX.');
 }
 
-const databasePath = resolve(process.env.DATABASE_PATH ?? './data/jobseeker.db');
-
 export const config = {
-  databasePath,
-  hhBrowserDataPath: resolve(process.env.HH_BROWSER_DATA_PATH ?? join(dirname(databasePath), 'hh-browser')),
-  model: process.env.FLUE_MODEL ?? 'openai-codex/gpt-5.6-terra',
-  thinkingLevel: thinkingLevelEnv('FLUE_THINKING_LEVEL', 'high'),
-  scoringModel: process.env.FLUE_SCORING_MODEL ?? 'openai-codex/gpt-5.6-luna',
-  scoringThinkingLevel: thinkingLevelEnv('FLUE_SCORING_THINKING_LEVEL', 'medium'),
-  scoringFallbackModel: process.env.FLUE_SCORING_FALLBACK_MODEL ?? 'openai/gpt-5.4-mini',
-  scoringFallbackThinkingLevel: thinkingLevelEnv('FLUE_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
+  hhBrowserDataPath: resolve(process.env.HH_BROWSER_DATA_PATH ?? './data/hh-browser'),
+  model: process.env.AI_MODEL ?? 'openai-codex/gpt-5.6-terra',
+  thinkingLevel: thinkingLevelEnv('AI_THINKING_LEVEL', 'high'),
+  scoringModel: process.env.AI_SCORING_MODEL ?? 'openai-codex/gpt-5.6-luna',
+  scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
+  scoringFallbackModel: process.env.AI_SCORING_FALLBACK_MODEL ?? 'openai/gpt-5.4-mini',
+  scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
   hhAreaId: process.env.HH_AREA_ID ?? '1',
   playwrightChromiumPath: process.env.PLAYWRIGHT_CHROMIUM_PATH,
   playwrightHeadless: booleanEnv('PLAYWRIGHT_HEADLESS', true),

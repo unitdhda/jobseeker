@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { adaptiveConcurrency, AdaptiveTaskPool, KeyedTaskScheduler, mapConcurrent } from '../src/lib/adaptive-concurrency.ts';
+import { adaptiveConcurrency, AdaptiveTaskPool, KeyedTaskScheduler, mapConcurrent } from '../src/concurrency.ts';
 
 test('LLM scoring concurrency scales from five to ten with queued load', () => {
   assert.equal(adaptiveConcurrency(0, 5, 10), 0);

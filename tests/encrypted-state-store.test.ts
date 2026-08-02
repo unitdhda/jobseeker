@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { decryptRuntimeState, encryptRuntimeState } from '../src/lib/encrypted-state-store.ts';
+import { decryptRuntimeState, encryptRuntimeState } from '../src/runtime-state.ts';
 
 const originalKey = process.env.RUNTIME_STATE_ENCRYPTION_KEY;
 
