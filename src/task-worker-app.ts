@@ -7,6 +7,7 @@ import {
   alertDeliveryTaskKind,digestDeliveryTaskKind,handleAlertDeliveryTask,handleDigestDeliveryTask,
 } from './lib/delivery-background-tasks.ts';
 import { errorMessage } from './lib/logging.ts';
+import { persistenceReady } from './lib/readiness.ts';
 
 const workerId=process.env.K_REVISION?.trim()||process.env.HOSTNAME?.trim()||`task-worker-${process.pid}`;
 const executionSecret=process.env.TASK_EXECUTION_SECRET?.trim()??'';
@@ -27,6 +28,10 @@ function authorized(provided: string|undefined): boolean {
 }
 
 app.get('/health',(c)=>c.json({ ok:true }));
+app.get('/ready',async(c)=> {
+  try { return c.json({ ok:true,persistence:await persistenceReady() }); }
+  catch(error) { console.error(`Worker readiness check failed: ${errorMessage(error)}`); return c.json({ ok:false },503); }
+});
 app.post('/tasks/execute',async(c)=> {
   if (!authorized(c.req.header('X-Task-Execution-Secret'))) return c.json({ ok:false },401);
   let body: unknown;

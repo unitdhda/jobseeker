@@ -161,3 +161,5 @@ npm start           # собранный сервер и Telegram-бот
 ```
 
 Локально/VPS архитектура остаётся однопроцессной с управляемым child worker. В cloud-режиме публичный webhook только валидирует и ставит durable task, а `npm run start:task-worker` запускает приватный HTTP worker. Задачи имеют Postgres leases, ограниченные повторы, checkpoints и сериализацию по пользователю; Cloud Tasks вызывает worker с OIDC, а дополнительный секрет проверяется приложением. Общие вакансии дедуплицируются, а резюме, оценки и отклики изолированы по пользователям.
+
+Пошаговое создание bounded cloud-ресурсов, staging и порядок cutover описаны в [`docs/cloud-run.md`](docs/cloud-run.md).

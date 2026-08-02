@@ -22,6 +22,7 @@ RUN npm ci --omit=dev && \
     npm cache clean --force && \
     chmod -R a+rX /ms-playwright
 COPY --from=build /app/dist ./dist
+COPY fonts ./fonts
 
 RUN mkdir -p /app/data /app/auth && \
     chown -R node:node /app && \
