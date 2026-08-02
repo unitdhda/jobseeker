@@ -14,6 +14,7 @@ export default defineConfig({
           worker: resolve('src/worker.ts'),
           'cv-worker': resolve('src/cv-worker.ts'),
           'run-cycle': resolve('src/scripts/run-cycle.ts'),
+          'task-worker': resolve('src/task-worker-server.ts'),
         } } } };
       },
     },

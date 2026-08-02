@@ -5,6 +5,8 @@ if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for the
 const d = await import('../src/lib/database.ts');
 const sessions = await import('../src/lib/telegram-sessions.ts');
 const webhook = await import('../src/lib/telegram-webhook-receipts.ts');
+const tasks = await import('../src/lib/background-tasks.ts');
+const taskWorkers = await import('../src/lib/background-task-worker.ts');
 const suffix = `${Date.now()}-${process.pid}`;
 const userId = `integration-${suffix}`;
 const sourceId = `integration-${suffix}`;
@@ -35,6 +37,59 @@ try {
   await webhook.releaseTelegramUserUpdateLease(userId, leaseUpdateId);
   assert.equal(await webhook.claimTelegramUserUpdateLease(userId, leaseUpdateId + 1), true);
   await webhook.releaseTelegramUserUpdateLease(userId, leaseUpdateId + 1);
+
+  const retryKind=`integration-retry-${suffix}`; const retryKey=`integration:a-retry:${suffix}`;
+  const enqueued=await tasks.enqueueBackgroundTask({ taskKey:retryKey,kind:retryKind,userId,payload:{ value:1 },maxAttempts:3 });
+  assert.equal(enqueued.created,true);
+  assert.equal((await tasks.enqueueBackgroundTask({ taskKey:retryKey,kind:retryKind,userId,payload:{ value:1 },maxAttempts:3 })).created,false);
+  await assert.rejects(tasks.enqueueBackgroundTask({ taskKey:retryKey,kind:retryKind,userId,payload:{ value:2 } }),/different task/);
+  const firstClaim=await tasks.claimBackgroundTask({ workerId:`integration-a-${suffix}`,kinds:[retryKind],leaseMs:60_000 });
+  assert.equal(firstClaim?.attempts,1); assert.ok(firstClaim?.leaseOwner);
+  assert.deepEqual(await tasks.saveBackgroundTaskCheckpoint(retryKey,firstClaim!.leaseOwner!,{ prepared:true }),{ prepared:true });
+  assert.ok(await tasks.renewBackgroundTaskLease(retryKey,firstClaim!.leaseOwner!,60_000));
+  assert.equal(await tasks.failBackgroundTask(retryKey,firstClaim!.leaseOwner!,new Error('temporary'),{ retryAfterMs:0 }),'queued');
+  const retryClaim=await tasks.claimBackgroundTask({ workerId:`integration-b-${suffix}`,kinds:[retryKind],leaseMs:60_000 });
+  assert.equal(retryClaim?.attempts,2); assert.deepEqual(retryClaim?.checkpoint,{ prepared:true });
+  await tasks.completeBackgroundTask(retryKey,retryClaim!.leaseOwner!,{ delivered:true });
+  const completedTask=await tasks.getBackgroundTask(retryKey);
+  assert.equal(completedTask?.state,'completed'); assert.deepEqual(completedTask?.payload,{});
+  assert.deepEqual(completedTask?.checkpoint,{ prepared:true,delivered:true });
+
+  const serialKind=`integration-serial-${suffix}`; const serialKeyA=`integration:b-serial-a:${suffix}`;
+  const serialKeyB=`integration:c-serial-b:${suffix}`;
+  await tasks.enqueueBackgroundTask({ taskKey:serialKeyA,kind:serialKind,userId,payload:{} });
+  await tasks.enqueueBackgroundTask({ taskKey:serialKeyB,kind:serialKind,userId,payload:{} });
+  const serialA=await tasks.claimBackgroundTask({ workerId:`integration-a-${suffix}`,kinds:[serialKind],leaseMs:60_000 });
+  assert.ok(serialA); assert.equal(await tasks.claimBackgroundTask({ workerId:`integration-b-${suffix}`,kinds:[serialKind],leaseMs:60_000 }),null);
+  await tasks.completeBackgroundTask(serialA!.taskKey,serialA!.leaseOwner!);
+  const serialB=await tasks.claimBackgroundTask({ workerId:`integration-b-${suffix}`,kinds:[serialKind],leaseMs:60_000 });
+  assert.ok(serialB); await tasks.completeBackgroundTask(serialB!.taskKey,serialB!.leaseOwner!);
+
+  const failureKind=`integration-failure-${suffix}`; const failureKey=`integration:d-failure:${suffix}`;
+  await tasks.enqueueBackgroundTask({ taskKey:failureKey,kind:failureKind,userId,payload:{ private:'discard-me' },maxAttempts:1 });
+  const failure=await tasks.claimBackgroundTask({ workerId:`integration-f-${suffix}`,kinds:[failureKind],leaseMs:60_000 });
+  assert.equal(await tasks.failBackgroundTask(failureKey,failure!.leaseOwner!,new Error('See person@example.com at https://example.com')),'failed');
+  const failedTask=await tasks.getBackgroundTask(failureKey);
+  assert.equal(failedTask?.state,'failed'); assert.deepEqual(failedTask?.payload,{});
+  assert.doesNotMatch(failedTask?.lastError??'',/person@example\.com|https:\/\//);
+
+  const expiryKind=`integration-expiry-${suffix}`; const expiryKey=`integration:e-expiry:${suffix}`;
+  await tasks.enqueueBackgroundTask({ taskKey:expiryKey,kind:expiryKind,userId,payload:{ private:'discard-me' },maxAttempts:1 });
+  const expiring=await tasks.claimBackgroundTask({ workerId:`integration-e-${suffix}`,kinds:[expiryKind],leaseMs:60_000 });
+  assert.ok(expiring);
+  await postgresQuery("update background_tasks set lease_expires_at=now()-interval '1 second' where task_key=$1",[expiryKey]);
+  await postgresQuery("update coordination_leases set lease_expires_at=now()-interval '1 second' where lease_owner=$1",[expiring!.leaseOwner]);
+  assert.equal(await tasks.claimBackgroundTask({ workerId:`integration-e2-${suffix}`,kinds:[expiryKind],leaseMs:60_000 }),null);
+  assert.equal((await tasks.getBackgroundTask(expiryKey))?.state,'failed');
+
+  const workerKind=`integration-worker-${suffix}`; const workerKey=`integration:f-worker:${suffix}`;
+  await tasks.enqueueBackgroundTask({ taskKey:workerKey,kind:workerKind,userId,payload:{ value:42 } });
+  const taskWorker=new taskWorkers.BackgroundTaskWorker({ workerId:`integration-worker-${suffix}`,
+    handlers:{ [workerKind]:async(task,context)=> {
+      assert.equal(task.payload.value,42); await context.checkpoint({ handled:true }); return { delivered:true };
+    } } });
+  assert.equal(await taskWorker.runTask(workerKey),'completed');
+  assert.deepEqual((await tasks.getBackgroundTask(workerKey))?.checkpoint,{ handled:true,delivered:true });
 
   await d.saveCvSource(userId, 'cv.txt', `cv-${suffix}`, {
     text: 'Integration CV with TypeScript PostgreSQL distributed systems experience. '.repeat(5),

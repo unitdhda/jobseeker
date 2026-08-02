@@ -1,4 +1,4 @@
-import { runScrapeCycle } from './lib/jobs.ts';
+import { runSingletonScrapeCycle } from './lib/singleton-cycle.ts';
 import { ensureCvAndSearchProfiles, tailorApplication } from './lib/workflows.ts';
 import { config } from './config.ts';
 import { getCvHash, purgeSettledAgentSessions, requireApprovedUser, usageInLast24Hours } from './lib/database.ts';
@@ -17,7 +17,7 @@ function send(message: JobWorkerMessage): void {
 
 async function execute(request: JobWorkerRequest): Promise<unknown> {
   if (request.type === 'run-cycle') {
-    return runScrapeCycle((userId, task) => userScheduler.run(userId, task));
+    return runSingletonScrapeCycle((userId, task) => userScheduler.run(userId, task));
   }
   return userScheduler.run(request.userId, async () => {
     if (request.type === 'refresh-user') {

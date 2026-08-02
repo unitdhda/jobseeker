@@ -6,6 +6,7 @@ import {
   handleTelegramWebhookUpdate, initializeTelegramWebhookMode, sendDailyDigest, sendPendingAlerts, startTelegramBot,
 } from './lib/telegram.ts';
 import { errorMessage } from './lib/logging.ts';
+import { enqueueTelegramUpdateTask } from './lib/telegram-task-dispatch.ts';
 import {
   claimTelegramUpdate, claimTelegramUserUpdateLease, completeTelegramUpdate, failTelegramUpdate,
   releaseTelegramUserUpdateLease, telegramUpdateUserId,
@@ -26,6 +27,15 @@ app.post('/telegram/webhook', async (c) => {
   catch { return c.json({ ok: false }, 400); }
   const updateId = Number((update as { update_id?: unknown })?.update_id);
   if (!Number.isSafeInteger(updateId) || updateId < 0) return c.json({ ok: false }, 400);
+  if (config.telegramWebhookAsync) {
+    try {
+      const created=await enqueueTelegramUpdateTask(update,updateId);
+      return c.json({ ok:true,queued:true,duplicate:!created });
+    } catch(error) {
+      console.error(`Telegram webhook enqueue failed: ${errorMessage(error)}`);
+      return c.json({ ok:false },500);
+    }
+  }
   if (!await claimTelegramUpdate(updateId)) return c.json({ ok: true, duplicate: true });
   const userId = telegramUpdateUserId(update);
   let userLease = false;

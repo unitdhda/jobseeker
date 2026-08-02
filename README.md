@@ -54,7 +54,7 @@ npm run dev
 curl http://127.0.0.1:3000/health
 ```
 
-Локально и на VPS Telegram по умолчанию работает через long polling, поэтому публичный порт не нужен. Для Cloud Run поддерживается режим `TELEGRAM_MODE=webhook` с проверкой `TELEGRAM_WEBHOOK_SECRET`; одновременно включают только один способ получения обновлений.
+Локально и на VPS Telegram по умолчанию работает через long polling, поэтому публичный порт не нужен. Для Cloud Run используется `TELEGRAM_MODE=webhook`: публичный сервис проверяет `TELEGRAM_WEBHOOK_SECRET`, сохраняет обновление в Postgres и при `TELEGRAM_WEBHOOK_ASYNC=true` идемпотентно передаёт его приватному worker через Cloud Tasks. Одновременно включают только один способ получения обновлений.
 
 ## Настройка `.env`
 
@@ -87,7 +87,11 @@ TIMEZONE=Europe/Moscow
 | `DATABASE_URL` | Переключает Flue и весь business repository на Supabase/Postgres | локально не нужна |
 | `TELEGRAM_MODE` | `polling`, `webhook` или `off` | `polling` через `.env.example` |
 | `TELEGRAM_WEBHOOK_SECRET` | Секрет заголовка Telegram webhook, минимум 32 URL-safe символа | для webhook |
-| `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | Доступ backend к приватному encrypted state bucket | для cloud runtime |
+| `TELEGRAM_WEBHOOK_ASYNC` | Сохраняет webhook как durable task и отправляет его приватному worker | `false` |
+| `CLOUD_TASKS_PROJECT/LOCATION/QUEUE` | Очередь Google Cloud Tasks для webhook work | для async webhook |
+| `CLOUD_TASKS_WORKER_URL`, `CLOUD_TASKS_SERVICE_ACCOUNT` | Приватный Cloud Run worker и OIDC service account | для async webhook |
+| `TASK_EXECUTION_SECRET` | Дополнительная проверка Cloud Tasks → worker, 32+ URL-safe символа | для async webhook |
+| `SUPABASE_URL`, `SUPABASE_SECRET_KEY` `SUPABASE_SECRET_KEY` | Доступ backend к приватному encrypted state bucket | для cloud runtime |
 | `RUNTIME_STATE_ENCRYPTION_KEY` | 32-байтный hex-ключ AES-256-GCM | для cloud runtime |
 
 ### Поиск и расписание
@@ -155,4 +159,4 @@ npm run run:cycle   # один цикл без постоянного Telegram p
 npm start           # собранный сервер и Telegram-бот
 ```
 
-Архитектура остаётся однопроцессной с управляемым child worker: сервер отвечает за Telegram и расписание, а worker выполняет поиск, LLM-оценку и подготовку документов. Общие вакансии дедуплицируются, а резюме, оценки и отклики изолированы по пользователям.
+Локально/VPS архитектура остаётся однопроцессной с управляемым child worker. В cloud-режиме публичный webhook только валидирует и ставит durable task, а `npm run start:task-worker` запускает приватный HTTP worker. Задачи имеют Postgres leases, ограниченные повторы, checkpoints и сериализацию по пользователю; Cloud Tasks вызывает worker с OIDC, а дополнительный секрет проверяется приложением. Общие вакансии дедуплицируются, а резюме, оценки и отклики изолированы по пользователям.
