@@ -14,7 +14,7 @@
     "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "test:postgres": "tsx --env-file=.env.cloud tests/database-postgres.integration.ts",
     "cv:prepare": "bun src/scripts/prepare-cv.ts",
-    "run:cycle": "bun src/scripts/run-cycle.ts"
+    "run:cycle": "bun src/cycle.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.81.1",

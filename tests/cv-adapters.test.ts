@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import AdmZip from 'adm-zip';
 import test from 'node:test';
-import { extractCvDocument } from '../src/lib/cv-adapters.ts';
-import { extractCvDocumentIsolated } from '../src/lib/cv-parser-client.ts';
-import { compilePlainTextCv } from '../src/lib/typst.ts';
+import { extractCvDocument } from '../src/cv.ts';
+import { extractCvDocumentIsolated } from '../src/cv.ts';
+import { compilePlainTextCv } from '../src/documents.ts';
 
 const content = 'Experienced engineer with extensive delivery ownership, architecture, mentoring, testing, operations, quality, and product collaboration.';
 function wordDocument(): Buffer {

@@ -1,6 +1,6 @@
 import { chmod, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
-import { getEncryptedRuntimeState, putEncryptedRuntimeState } from '../lib/encrypted-state-store.ts';
+import { getEncryptedRuntimeState, putEncryptedRuntimeState } from '../runtime-state.ts';
 
 const providerId = 'openai-codex';
 const objectPath = 'oauth/codex.json';

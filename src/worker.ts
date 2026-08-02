@@ -1,10 +1,10 @@
-import { runSingletonScrapeCycle } from './lib/singleton-cycle.ts';
-import { ensureCvAndSearchProfiles, tailorApplication } from './lib/workflows.ts';
+import { runSingletonScrapeCycle } from './vacancies/jobs.ts';
+import { ensureCvAndSearchProfiles, tailorApplication } from './workflows.ts';
 import { config } from './config.ts';
-import { getCvHash, requireApprovedUser, usageInLast24Hours } from './lib/database.ts';
-import type { JobWorkerMessage, JobWorkerRequest, RefreshUserResult, SerializedApplication } from './lib/job-worker-protocol.ts';
-import { errorMessage } from './lib/logging.ts';
-import { KeyedTaskScheduler } from './lib/adaptive-concurrency.ts';
+import { getCvHash, requireApprovedUser, usageInLast24Hours } from './database.ts';
+import type { JobWorkerMessage, JobWorkerRequest, RefreshUserResult, SerializedApplication } from './worker-client.ts';
+import { errorMessage } from './observability.ts';
+import { KeyedTaskScheduler } from './concurrency.ts';
 
 const userScheduler = new KeyedTaskScheduler(config.userWorkflowConcurrency);
 let stopping = false;

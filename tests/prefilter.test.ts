@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { careerProfileSchema, type CareerProfile } from '../src/lib/career-profile.ts';
-import { prefilterVacancy } from '../src/lib/prefilter.ts';
-import type { Vacancy } from '../src/lib/database.ts';
+import { careerProfileSchema, type CareerProfile } from '../src/prefilter.ts';
+import { prefilterVacancy } from '../src/prefilter.ts';
+import type { Vacancy } from '../src/database.ts';
 import * as v from 'valibot';
-import { textSearchProfileSchema } from '../src/platforms/additional.ts';
+import { textSearchProfileSchema } from '../src/vacancies/additional.ts';
 
 function vacancy(name: string, description: string, keySkills: string[] = []): Vacancy {
   return { id: 1, source: 'hh', sourceId: '1', applyId: 'aaaaaa', name, employer: 'Employer', area: 'Remote',

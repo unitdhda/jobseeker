@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { closePostgresPool, postgresQuery } from '../src/lib/postgres.ts';
+import { closePostgresPool, postgresQuery } from '../src/postgres.ts';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for the Postgres integration test.');
-const d = await import('../src/lib/database.ts');
-const sessions = await import('../src/lib/telegram-sessions.ts');
-const webhook = await import('../src/lib/telegram-webhook-receipts.ts');
+const d = await import('../src/database.ts');
+const sessions = await import('../src/telegram-state.ts');
+const webhook = await import('../src/telegram-state.ts');
 const suffix = `${Date.now()}-${process.pid}`;
 const userId = `integration-${suffix}`;
 const sourceId = `integration-${suffix}`;
