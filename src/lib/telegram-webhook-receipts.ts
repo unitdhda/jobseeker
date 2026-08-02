@@ -58,11 +58,11 @@ export async function claimTelegramUserUpdateLease(userId: string, updateId: num
     localUserLeases.set(userId, { updateId, expiresAt: expiresAt.getTime() });
     return true;
   }
-  const rows = await postgresQuery(`insert into telegram_user_update_leases(user_id,update_id,lease_expires_at,updated_at)
-    values($1,$2,$3,now()) on conflict(user_id) do update set update_id=excluded.update_id,
+  const rows = await postgresQuery(`insert into coordination_leases(resource_key,lease_owner,lease_expires_at,updated_at)
+    values($1,$2,$3,now()) on conflict(resource_key) do update set lease_owner=excluded.lease_owner,
     lease_expires_at=excluded.lease_expires_at,updated_at=excluded.updated_at
-    where telegram_user_update_leases.lease_expires_at<=now() or telegram_user_update_leases.update_id=excluded.update_id
-    returning user_id`, [userId, updateId, expiresAt]);
+    where coordination_leases.lease_expires_at<=now() or coordination_leases.lease_owner=excluded.lease_owner
+    returning resource_key`, [`telegram-user:${userId}`, String(updateId), expiresAt]);
   return Boolean(rows.length);
 }
 
@@ -71,5 +71,6 @@ export async function releaseTelegramUserUpdateLease(userId: string, updateId: n
     if (localUserLeases.get(userId)?.updateId === updateId) localUserLeases.delete(userId);
     return;
   }
-  await postgresQuery('delete from telegram_user_update_leases where user_id=$1 and update_id=$2', [userId, updateId]);
+  await postgresQuery('delete from coordination_leases where resource_key=$1 and lease_owner=$2',
+    [`telegram-user:${userId}`, String(updateId)]);
 }

@@ -12,6 +12,16 @@ const chatId = `integration-chat-${suffix}`;
 const leaseUpdateId = 7_000_000_000_000_000 + process.pid * 2;
 let vacancyId: number | undefined;
 try {
+  const legacyTables = await postgresQuery<{ table_name: string }>(`select table_name from information_schema.tables
+    where table_schema='public' and table_name=any($1::text[]) order by table_name`,
+    [['app_migrations','applications','global_scheduler_settings','pending_deliveries','scores','telegram_user_update_leases']]);
+  assert.deepEqual(legacyTables, []);
+  const consolidatedColumns = await postgresQuery<{ column_name: string; data_type: string }>(`select column_name,data_type
+    from information_schema.columns where table_schema='public' and table_name='user_vacancies'`);
+  assert.equal(consolidatedColumns.find((column) => column.column_name === 'score')?.data_type, 'integer');
+  assert.equal(consolidatedColumns.find((column) => column.column_name === 'application_updated_at')?.data_type,
+    'timestamp with time zone');
+
   const touched = await d.touchTelegramUser({ userId, chatId, displayName: 'Integration Test' });
   assert.equal(touched.status, 'unregistered');
   assert.equal((await d.requestAccess({ userId, chatId, displayName: 'Integration Test' })).user.status, 'pending');
@@ -74,7 +84,7 @@ try {
   assert.equal(await d.getCvHash(userId), null);
   console.info('Postgres business repository integration passed.');
 } finally {
-  await postgresQuery('delete from telegram_user_update_leases where user_id=$1', [userId]).catch(() => undefined);
+  await postgresQuery('delete from coordination_leases where resource_key=$1', [`telegram-user:${userId}`]).catch(() => undefined);
   await postgresQuery('delete from telegram_users where user_id=$1', [userId]).catch(() => undefined);
   await postgresQuery('delete from vacancy_candidates where source_id=$1', [sourceId]).catch(() => undefined);
   if (vacancyId != null) await postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
