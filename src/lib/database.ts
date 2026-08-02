@@ -97,12 +97,12 @@ export async function listTelegramUsers(limit: number, offset: number): Promise<
   return { users: rows.map(rowToUser), total: Number(count?.count ?? 0) };
 }
 export async function approvedUsers(requireCv = false): Promise<TelegramUser[]> {
-  await ready(); const cv = requireCv ? 'and exists (select 1 from cv_templates c where c.user_id=u.user_id)' : '';
+  await ready(); const cv = requireCv ? 'and exists (select 1 from profiles p where p.user_id=u.user_id)' : '';
   return (await q(`select u.* from telegram_users u where u.status='approved' ${cv} order by u.is_owner desc,u.user_id`)).map(rowToUser);
 }
 async function hasCv(userId: string, client?: PoolClient): Promise<boolean> {
-  const rows = client ? await txq(client, 'select 1 from cv_templates where user_id=$1', [userId])
-    : await q('select 1 from cv_templates where user_id=$1', [userId]);
+  const rows = client ? await txq(client, 'select 1 from profiles where user_id=$1', [userId])
+    : await q('select 1 from profiles where user_id=$1', [userId]);
   return Boolean(rows.length);
 }
 export async function recordUsage(userId: string, kind: UsageKind): Promise<void> {
@@ -151,10 +151,11 @@ export async function purgeSettledAgentSessions(): Promise<number> {
 }
 export async function deleteUserData(userId: string): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
-    for (const table of ['candidate_prefilter_scores','candidate_discoveries','user_delivery_windows','prefilter_scores',
-      'user_vacancies','search_profiles','cv_templates','usage_events','telegram_sessions'] as const) {
+    for (const table of ['candidate_prefilter_scores','candidate_discoveries','user_vacancies','profiles','usage_events','telegram_sessions'] as const) {
       await client.query(`delete from ${table} where user_id=$1`, [userId]);
     }
+    await client.query(`update telegram_users set delivery_start_minutes=null,delivery_end_minutes=null,digest_minutes=null,
+      delivery_timezone=null,last_digest_at=null where user_id=$1`, [userId]);
     const sessionPattern = `%"${userId.replaceAll('%', '\\%').replaceAll('_', '\\_')}-%`;
     const submissions = await txq(client, "select submission_id from flue_agent_submissions where session_key like $1 escape '\\'", [sessionPattern]);
     const ids = submissions.map((row) => String(row.submission_id));
@@ -171,14 +172,14 @@ export async function deleteUserData(userId: string): Promise<void> {
 }
 export async function exportUserData(userId: string): Promise<Record<string, unknown>> {
   await ready(); if (!await getTelegramUser(userId)) throw new Error('User was not found.');
-  const [cv, profiles, scores] = await Promise.all([one('select cv_text,document_json from cv_templates where user_id=$1', [userId]),
-    q('select platform,profile_json from search_profiles where user_id=$1 order by platform', [userId]),
+  const [profile, scores] = await Promise.all([one('select cv_text,document_json,search_profiles from profiles where user_id=$1', [userId]),
     q('select v.url,uv.score from user_vacancies uv join vacancies v on v.id=uv.vacancy_id where uv.user_id=$1 and uv.score is not null order by uv.score desc,v.url', [userId])]);
-  const careerRow = profiles.find((row) => String(row.platform) === careerProfilePlatformId);
-  return { cvSource: cv ? String(cv.cv_text) : null, normalizedDocument: cv ? jsonValue(cv.document_json) : null,
-    careerProfile: careerRow ? (jsonValue<{ profile?: unknown }>(careerRow.profile_json)).profile ?? null : null,
-    searchProfiles: profiles.filter((row) => String(row.platform) !== careerProfilePlatformId)
-      .map((row) => ({ platform: String(row.platform), profile: jsonValue(row.profile_json) })),
+  const profiles = profile ? jsonValue<Record<string, unknown>>(profile.search_profiles) : {};
+  const career = profiles[careerProfilePlatformId] as { profile?: unknown } | undefined;
+  return { cvSource: profile ? String(profile.cv_text) : null, normalizedDocument: profile ? jsonValue(profile.document_json) : null,
+    careerProfile: career?.profile ?? null,
+    searchProfiles: Object.entries(profiles).filter(([platform]) => platform !== careerProfilePlatformId)
+      .sort(([left], [right]) => left.localeCompare(right)).map(([platform, value]) => ({ platform, profile: value })),
     scores: scores.map((row) => ({ url: String(row.url), score: Number(row.score) })) };
 }
 
@@ -194,53 +195,56 @@ function rowToVacancy(row: Row): Vacancy {
 }
 export async function getCvSource(userId: string): Promise<CvSource | null> {
   await ready(); const row = await one(`select cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version
-    from cv_templates where user_id=$1`, [userId]);
+    from profiles where user_id=$1`, [userId]);
   return row ? { cvSha256: String(row.cv_sha256), cvText: String(row.cv_text), document: jsonValue(row.document_json),
     sourceFormat: String(row.source_format) as CvSource['sourceFormat'], originalFilename: String(row.original_filename),
     mediaType: String(row.media_type), parserName: String(row.parser_name), parserVersion: String(row.parser_version) } : null;
 }
 export async function getCvHash(userId: string): Promise<string | null> {
-  await ready(); const row = await one('select cv_sha256 from cv_templates where user_id=$1', [userId]); return row ? String(row.cv_sha256) : null;
+  await ready(); const row = await one('select cv_sha256 from profiles where user_id=$1', [userId]); return row ? String(row.cv_sha256) : null;
 }
 export async function saveCvSource(userId: string, originalFilename: string, cvSha256: string, extracted: ExtractedCvDocument): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
-    await client.query(`insert into cv_templates(user_id,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,updated_at)
-      values($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,$10) on conflict(user_id) do update set cv_sha256=excluded.cv_sha256,cv_text=excluded.cv_text,
+    await client.query(`insert into profiles(user_id,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,search_profiles,updated_at)
+      values($1,$2,$3,$4::jsonb,$5,$6,$7,$8,$9,'{}'::jsonb,$10) on conflict(user_id) do update set cv_sha256=excluded.cv_sha256,cv_text=excluded.cv_text,
       document_json=excluded.document_json,source_format=excluded.source_format,original_filename=excluded.original_filename,
-      media_type=excluded.media_type,parser_name=excluded.parser_name,parser_version=excluded.parser_version,updated_at=excluded.updated_at`,
+      media_type=excluded.media_type,parser_name=excluded.parser_name,parser_version=excluded.parser_version,search_profiles='{}'::jsonb,updated_at=excluded.updated_at`,
       [userId, cvSha256, extracted.text, JSON.stringify(extracted.document), extracted.sourceFormat, originalFilename,
         extracted.mediaType, extracted.parserName, extracted.parserVersion, now()]);
-    await client.query('delete from score_alert_details where user_id=$1', [userId]);
-    await client.query('update user_vacancies set score=null,score_updated_at=null where user_id=$1', [userId]);
-    await client.query('delete from prefilter_scores where user_id=$1', [userId]);
-    await client.query('delete from search_profiles where user_id=$1', [userId]);
+    await client.query(`update user_vacancies set score=null,score_updated_at=null,
+      prefilter_context_hash=null,prefilter_content_hash=null,prefilter_regex_score=null,prefilter_lexical_cosine=null,
+      prefilter_lexical_score=null,prefilter_score=null,prefilter_filtered=null,prefilter_audit_selected=null,
+      prefilter_reasons=null,prefilter_scored_at=null,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null
+      where user_id=$1`, [userId]);
   });
 }
 export async function saveSearchProfile(userId: string, platform: string, profile: unknown): Promise<void> {
   await ready(); if (!await hasCv(userId)) throw new Error('An authoritative CV source is required.');
-  await q(`insert into search_profiles(user_id,platform,profile_json,updated_at) values($1,$2,$3::jsonb,$4)
-    on conflict(user_id,platform) do update set profile_json=excluded.profile_json,updated_at=excluded.updated_at`,
+  await q(`update profiles set search_profiles=jsonb_set(search_profiles,array[$2::text],$3::jsonb,true),updated_at=$4 where user_id=$1`,
     [userId, platform, JSON.stringify(profile), now()]);
 }
-export async function clearSearchProfile(userId: string, platform: string): Promise<void> { await ready(); await q('delete from search_profiles where user_id=$1 and platform=$2', [userId, platform]); }
+export async function clearSearchProfile(userId: string, platform: string): Promise<void> {
+  await ready(); await q('update profiles set search_profiles=search_profiles-$2,updated_at=$3 where user_id=$1', [userId, platform, now()]);
+}
 export async function getSearchProfile<T>(userId: string, platform: string): Promise<T | null> {
-  await ready(); const row = await one('select profile_json from search_profiles where user_id=$1 and platform=$2', [userId, platform]);
-  return row ? jsonValue<T>(row.profile_json) : null;
+  await ready(); const row = await one('select search_profiles->$2 profile from profiles where user_id=$1', [userId, platform]);
+  return row?.profile == null ? null : jsonValue<T>(row.profile);
 }
 export async function getDeliverySettings(userId: string): Promise<DeliverySettings | null> {
-  await ready(); const row = await one('select start_minutes,end_minutes,digest_minutes,timezone,last_digest_at from user_delivery_windows where user_id=$1', [userId]);
-  return row ? { startMinutes: Number(row.start_minutes), endMinutes: Number(row.end_minutes), digestMinutes: Number(row.digest_minutes),
-    timezone: String(row.timezone), lastDigestAt: optionalIsoTimestamp(row.last_digest_at) } : null;
+  await ready(); const row = await one(`select delivery_start_minutes,delivery_end_minutes,digest_minutes,delivery_timezone,last_digest_at
+    from telegram_users where user_id=$1 and delivery_start_minutes is not null`, [userId]);
+  return row ? { startMinutes: Number(row.delivery_start_minutes), endMinutes: Number(row.delivery_end_minutes), digestMinutes: Number(row.digest_minutes),
+    timezone: String(row.delivery_timezone), lastDigestAt: optionalIsoTimestamp(row.last_digest_at) } : null;
 }
 export async function saveDeliverySettings(userId: string, settings: Omit<DeliverySettings, 'lastDigestAt'>): Promise<void> {
-  await ready(); await q(`insert into user_delivery_windows(user_id,start_minutes,end_minutes,digest_minutes,timezone,last_digest_at,updated_at)
-    values($1,$2,$3,$4,$5,null,$6) on conflict(user_id) do update set start_minutes=excluded.start_minutes,end_minutes=excluded.end_minutes,
-    digest_minutes=excluded.digest_minutes,timezone=excluded.timezone,updated_at=excluded.updated_at`,
+  await ready(); await q(`update telegram_users set delivery_start_minutes=$2,delivery_end_minutes=$3,digest_minutes=$4,
+    delivery_timezone=$5,updated_at=$6 where user_id=$1`,
     [userId, settings.startMinutes, settings.endMinutes, settings.digestMinutes, settings.timezone, now()]);
 }
 export async function markDigestRun(userId: string, deliveredAt: string): Promise<void> {
-  await ready(); await q(`insert into user_delivery_windows(user_id,start_minutes,end_minutes,digest_minutes,timezone,last_digest_at,updated_at)
-    values($1,0,0,540,$2,$3,$3) on conflict(user_id) do update set last_digest_at=excluded.last_digest_at,updated_at=excluded.updated_at`,
+  await ready(); await q(`update telegram_users set delivery_start_minutes=coalesce(delivery_start_minutes,0),
+    delivery_end_minutes=coalesce(delivery_end_minutes,0),digest_minutes=coalesce(digest_minutes,540),
+    delivery_timezone=coalesce(delivery_timezone,$2),last_digest_at=$3,updated_at=$3 where user_id=$1`,
     [userId, config.timezone, deliveredAt]);
 }
 
@@ -286,11 +290,11 @@ export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; 
     await client.query(`update vacancies set name=$1,employer=$2,area=$3,salary_from=$4,salary_to=$5,salary_currency=$6,salary_gross=$7,
       experience=$8,employment=$9,schedule=$10,work_format=$11,description=$12,key_skills_json=$13::jsonb,url=$14,published_at=$15,source_query=$16,
       content_hash=$17,updated_at=$18 where id=$19`, [...values, id]);
-    if (changed) {
-      await client.query('delete from score_alert_details where vacancy_id=$1', [id]);
-      await client.query('update user_vacancies set score=null,score_updated_at=null where vacancy_id=$1', [id]);
-      await client.query('delete from prefilter_scores where vacancy_id=$1', [id]);
-    }
+    if (changed) await client.query(`update user_vacancies set score=null,score_updated_at=null,
+      prefilter_context_hash=null,prefilter_content_hash=null,prefilter_regex_score=null,prefilter_lexical_cosine=null,
+      prefilter_lexical_score=null,prefilter_score=null,prefilter_filtered=null,prefilter_audit_selected=null,
+      prefilter_reasons=null,prefilter_scored_at=null,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null
+      where vacancy_id=$1`, [id]);
     return { id, needsScore: changed, duplicate: false };
   });
 }
@@ -386,44 +390,42 @@ export async function pendingVacancies(userId:string,limit:number):Promise<Vacan
   order by v.published_at desc limit $2`,[userId,limit])).map(rowToVacancy); }
 export async function vacanciesNeedingPrefilter(userId:string,contextHash:string,limit:number):Promise<Vacancy[]>{
   await ready(); return (await q(`select v.*,coalesce(uv.decision,'new') user_decision from vacancies v
-    left join prefilter_scores p on p.user_id=$1 and p.vacancy_id=v.id
     left join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where uv.score is null and coalesce(uv.decision,'new') not in ('skipped','applied')
     and exists (select 1 from vacancy_candidates c join candidate_discoveries d on d.source=c.source and d.source_id=c.source_id
       where c.vacancy_id=v.id and d.user_id=$1)
-    and (p.vacancy_id is null or p.context_hash<>$2 or p.content_hash<>v.content_hash)
+    and (uv.vacancy_id is null or uv.prefilter_context_hash is null or uv.prefilter_context_hash<>$2 or uv.prefilter_content_hash<>v.content_hash)
     order by v.published_at desc limit $3`,[userId,contextHash,limit])).map(rowToVacancy);
 }
 export async function savePrefilterScore(userId:string,vacancyId:number,contextHash:string,contentHash:string,score:PrefilterScoreInput):Promise<void>{
   await ready(); await withPostgresTransaction(async client=>{ if(!await hasCv(userId,client))throw new Error('An authoritative CV source is required.');
-    await ensureUserVacancy(userId,vacancyId,client); await client.query(`insert into prefilter_scores(user_id,vacancy_id,context_hash,content_hash,
-      regex_score,lexical_cosine,lexical_score,combined_score,filtered,audit_selected,reasons_json,scored_at)
-      values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11::jsonb,$12) on conflict(user_id,vacancy_id) do update set context_hash=excluded.context_hash,
-      content_hash=excluded.content_hash,regex_score=excluded.regex_score,lexical_cosine=excluded.lexical_cosine,lexical_score=excluded.lexical_score,
-      combined_score=excluded.combined_score,filtered=excluded.filtered,audit_selected=excluded.audit_selected,
-      reasons_json=excluded.reasons_json,scored_at=excluded.scored_at`,
-      [userId,vacancyId,contextHash,contentHash,score.regexScore,score.lexicalCosine,score.lexicalScore,
-        score.combinedScore,Number(score.filtered),Number(score.auditSelected),JSON.stringify(score.reasons),now()]); });
+    await ensureUserVacancy(userId,vacancyId,client); await client.query(`update user_vacancies set prefilter_context_hash=$1,
+      prefilter_content_hash=$2,prefilter_regex_score=$3,prefilter_lexical_cosine=$4,prefilter_lexical_score=$5,
+      prefilter_score=$6,prefilter_filtered=$7,prefilter_audit_selected=$8,prefilter_reasons=$9::jsonb,prefilter_scored_at=$10
+      where user_id=$11 and vacancy_id=$12`,[contextHash,contentHash,score.regexScore,score.lexicalCosine,score.lexicalScore,
+        score.combinedScore,Number(score.filtered),Number(score.auditSelected),JSON.stringify(score.reasons),now(),userId,vacancyId]); });
 }
 function rowsToPrefiltered(rows:Row[]):PrefilteredVacancy[]{return rows.map(row=>({...rowToVacancy(row),prefilterScore:Number(row.prefilter_score),auditSelected:Boolean(row.audit_selected)}));}
 export async function rankedPendingVacancies(userId:string,contextHash:string,limit:number,auditSlots=0):Promise<PrefilteredVacancy[]>{
-  await ready(); const query=async(filtered:boolean,queryLimit:number)=>rowsToPrefiltered(await q(`select v.*,uv.decision user_decision,p.combined_score prefilter_score,
-    p.audit_selected from vacancies v join prefilter_scores p on p.user_id=$1 and p.vacancy_id=v.id
+  await ready(); const query=async(filtered:boolean,queryLimit:number)=>rowsToPrefiltered(await q(`select v.*,uv.decision user_decision,
+    uv.prefilter_score,uv.prefilter_audit_selected audit_selected from vacancies v
     join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where uv.score is null and uv.decision not in ('skipped','applied')
-    and p.context_hash=$2 and p.content_hash=v.content_hash and p.filtered=$3 ${filtered?'and p.audit_selected<>0':''}
-    order by p.combined_score desc,v.published_at desc limit $4`,[userId,contextHash,Number(filtered),queryLimit]));
+    and uv.prefilter_context_hash=$2 and uv.prefilter_content_hash=v.content_hash and uv.prefilter_filtered=$3
+    ${filtered?'and uv.prefilter_audit_selected<>0':''} order by uv.prefilter_score desc,v.published_at desc limit $4`,
+    [userId,contextHash,Number(filtered),queryLimit]));
   const audit=await query(true,Math.min(limit,auditSlots)); return [...await query(false,Math.max(0,limit-audit.length)),...audit];
 }
 export async function prefilterQueueStats(userId:string,contextHash:string):Promise<{queued:number;filtered:number;auditQueued:number}>{
-  await ready(); const row=await one(`select count(*) filter(where p.filtered=0) queued,count(*) filter(where p.filtered<>0) filtered,
-    count(*) filter(where p.filtered<>0 and p.audit_selected<>0) audit_queued from prefilter_scores p
-    join user_vacancies uv on uv.user_id=p.user_id and uv.vacancy_id=p.vacancy_id where p.user_id=$1 and p.context_hash=$2
-    and p.content_hash=(select content_hash from vacancies where id=p.vacancy_id) and uv.score is null`,[userId,contextHash]);
+  await ready(); const row=await one(`select count(*) filter(where uv.prefilter_filtered=0) queued,
+    count(*) filter(where uv.prefilter_filtered<>0) filtered,
+    count(*) filter(where uv.prefilter_filtered<>0 and uv.prefilter_audit_selected<>0) audit_queued from user_vacancies uv
+    join vacancies v on v.id=uv.vacancy_id where uv.user_id=$1 and uv.prefilter_context_hash=$2
+    and uv.prefilter_content_hash=v.content_hash and uv.score is null`,[userId,contextHash]);
   return {queued:Number(row?.queued??0),filtered:Number(row?.filtered??0),auditQueued:Number(row?.audit_queued??0)};
 }
 export async function prefilterCalibration(userId:string,contextHash:string,alertScore:number,minimumLabels:number):Promise<PrefilterCalibration>{
-  await ready(); const rows=await q(`select p.combined_score,p.filtered,p.audit_selected,uv.score,uv.decision from prefilter_scores p
-    join vacancies v on v.id=p.vacancy_id join user_vacancies uv on uv.user_id=p.user_id and uv.vacancy_id=p.vacancy_id
-    where p.user_id=$1 and uv.score is not null and p.context_hash=$2 and p.content_hash=v.content_hash`,[userId,contextHash]);
+  await ready(); const rows=await q(`select uv.prefilter_score combined_score,uv.prefilter_filtered filtered,
+    uv.prefilter_audit_selected audit_selected,uv.score,uv.decision from user_vacancies uv join vacancies v on v.id=uv.vacancy_id
+    where uv.user_id=$1 and uv.score is not null and uv.prefilter_context_hash=$2 and uv.prefilter_content_hash=v.content_hash`,[userId,contextHash]);
   const compared=rows.length;let sumX=0,sumY=0,sumXY=0,sumXX=0,sumYY=0,audited=0,auditFalseNegatives=0,applied=0,skipped=0;
   for(const row of rows){const x=Number(row.combined_score),y=Number(row.score);sumX+=x;sumY+=y;sumXY+=x*y;sumXX+=x*x;sumYY+=y*y;
     if(row.audit_selected){audited++;if(y>=alertScore)auditFalseNegatives++;}if(row.decision==='applied'||row.decision==='applying')applied++;if(row.decision==='skipped')skipped++;}
@@ -439,11 +441,11 @@ export async function saveScore(userId:string,vacancyId:number,score:number,prim
       updated_at=case when decision in ('alerted','digested') then $2 else updated_at end,
       decision=case when decision in ('alerted','digested') then 'new' else decision end
       where user_id=$3 and vacancy_id=$4 returning decision`,[score,timestamp,userId,vacancyId]);
-    if(score>=config.alertScore&&!hardRejection&&String(rows[0]?.decision??'new')==='new')await client.query(`insert into score_alert_details
-      (user_id,vacancy_id,primary_track,summary,reasons_json,gaps_json) values($1,$2,$3,$4,$5::jsonb,$6::jsonb) on conflict(user_id,vacancy_id) do update
-      set primary_track=excluded.primary_track,summary=excluded.summary,reasons_json=excluded.reasons_json,gaps_json=excluded.gaps_json`,
-      [userId,vacancyId,primaryTrack,summary,JSON.stringify(reasons),JSON.stringify(gaps)]);
-    else await client.query('delete from score_alert_details where user_id=$1 and vacancy_id=$2',[userId,vacancyId]); });
+    const alert=score>=config.alertScore&&!hardRejection&&String(rows[0]?.decision??'new')==='new';
+    await client.query(`update user_vacancies set alert_primary_track=$1,alert_summary=$2,alert_reasons=$3::jsonb,alert_gaps=$4::jsonb
+      where user_id=$5 and vacancy_id=$6`,alert
+      ?[primaryTrack,summary,JSON.stringify(reasons),JSON.stringify(gaps),userId,vacancyId]
+      :[null,null,null,null,userId,vacancyId]); });
 }
 function rowToScoredVacancy(row:Row):ScoredVacancy{return {...rowToVacancy(row),userId:String(row.score_user_id??row.user_id),score:Number(row.score)};}
 function rowToAlertVacancy(row:Row):AlertVacancy{return {...rowToScoredVacancy(row),primaryTrack:String(row.primary_track),summary:String(row.summary),
@@ -464,12 +466,13 @@ export async function digestVacancies(userId:string,min:number,high:number,since
   where uv.user_id=$1 and uv.score>=$2 and uv.score<$3 and uv.decision='new' and uv.score_updated_at is not null
   and ($4::timestamptz is null or uv.score_updated_at>$4::timestamptz) order by uv.score desc,v.published_at desc`,[userId,min,high,since])).map(rowToScoredVacancy);}
 export async function unsentHighScoreVacancies(userId:string,minScore:number,limit=30):Promise<AlertVacancy[]>{await ready();return(await q(`select v.*,
-  uv.decision user_decision,uv.user_id score_user_id,uv.score,d.primary_track,d.summary,d.reasons_json,d.gaps_json from vacancies v
-  join user_vacancies uv on uv.vacancy_id=v.id and uv.score is not null
-  join score_alert_details d on d.user_id=uv.user_id and d.vacancy_id=uv.vacancy_id
-  where uv.user_id=$1 and uv.score>=$2 and uv.decision='new' order by uv.score desc,v.published_at desc limit $3`,[userId,minScore,limit])).map(rowToAlertVacancy);}
-export async function markAlerted(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{await client.query(`update user_vacancies
-  set decision='alerted',updated_at=$1 where user_id=$2 and vacancy_id=$3 and decision='new'`,[now(),userId,id]);await client.query('delete from score_alert_details where user_id=$1 and vacancy_id=$2',[userId,id]);});}
+  uv.decision user_decision,uv.user_id score_user_id,uv.score,uv.alert_primary_track primary_track,uv.alert_summary summary,
+  uv.alert_reasons reasons_json,uv.alert_gaps gaps_json from vacancies v join user_vacancies uv on uv.vacancy_id=v.id and uv.score is not null
+  where uv.user_id=$1 and uv.score>=$2 and uv.decision='new' and uv.alert_primary_track is not null
+  order by uv.score desc,v.published_at desc limit $3`,[userId,minScore,limit])).map(rowToAlertVacancy);}
+export async function markAlerted(userId:string,id:number):Promise<void>{await ready();await q(`update user_vacancies
+  set decision='alerted',updated_at=$1,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null
+  where user_id=$2 and vacancy_id=$3 and decision='new'`,[now(),userId,id]);}
 export async function markDigested(userId:string,ids:number[]):Promise<void>{await ready();if(!ids.length)return;await q(`update user_vacancies set decision='digested',updated_at=$1
   where user_id=$2 and vacancy_id=any($3::bigint[]) and decision='new'`,[now(),userId,ids]);}
 export async function skipVacancy(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{await ensureUserVacancy(userId,id,client);
