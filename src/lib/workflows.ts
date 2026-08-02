@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { init } from '@flue/runtime';
-import { PrepareSearchProfile, ScoreVacancy, TailorApplication } from '../agents/workflows.ts';
+import { PrepareSearchProfile, ScoreVacancies, TailorApplication } from '../agents/workflows.ts';
 import { config } from '../config.ts';
 import {
   beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy, getSearchProfile, getVacancy,
@@ -67,23 +67,85 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
   return profiles;
 }
 
-export async function scoreOne(userId: string, vacancyId: number): Promise<void> {
-  requireApprovedUser(userId);
-  const vacancy = getVacancy(vacancyId);
-  if (!vacancy) throw new Error(`Vacancy ${vacancyId} was not found.`);
-  trace('scoring.agent.start', { vacancyId, source: vacancy.source, sourceId: vacancy.sourceId,
-    name: vacancy.name, employer: vacancy.employer, contentHash: vacancy.contentHash });
-  const sessionId = `${userId}-vacancy-${vacancyId}-${vacancy.contentHash.slice(0, 12)}`;
-  const agent = init(ScoreVacancy, { id: sessionId });
-  recordUsage(userId, 'score');
+let scoringSubscriptionUnavailableUntil = 0;
+
+function subscriptionLimitText(error: unknown): string {
+  const parts: string[] = [];
+  let current: unknown = error;
+  for (let depth = 0; depth < 5 && current; depth++) {
+    if (current instanceof Error) {
+      parts.push(current.name, current.message);
+      current = current.cause;
+    } else if (typeof current === 'object') {
+      const value = current as Record<string, unknown>;
+      for (const key of ['code', 'type', 'message', 'details']) {
+        if (typeof value[key] === 'string') parts.push(value[key]);
+      }
+      current = value.cause;
+    } else { parts.push(String(current)); break; }
+  }
+  return parts.join(' ');
+}
+
+function isSubscriptionUsageLimit(error: unknown): boolean {
+  return /ChatGPT usage limit|usage_limit_reached|usage_not_included|GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached/i
+    .test(subscriptionLimitText(error));
+}
+
+function fallbackDuration(error: unknown): number {
+  const minutes = Number(/try again in ~?(\d+) min/i.exec(subscriptionLimitText(error))?.[1] ?? 60);
+  return Math.max(15, Math.min(Number.isFinite(minutes) ? minutes + 2 : 60, 24 * 60)) * 60_000;
+}
+
+function scoringApiFallbackConfigured(): boolean {
+  return Boolean(process.env.OPENAI_API_KEY);
+}
+
+async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provider: 'subscription' | 'api'): Promise<void> {
+  const fingerprint = createHash('sha256').update(vacancies.map((vacancy) =>
+    `${vacancy.id}:${vacancy.contentHash}`).join('|')).digest('hex').slice(0, 16);
+  const sessionId = `${userId}-vacancies-${fingerprint}-${provider}`;
+  const agent = init(ScoreVacancies, { id: sessionId });
   try {
     const receipt = await agent.dispatch({
-      initialData: { userId, vacancyId },
-      message: { kind: 'signal', type: 'vacancy.score', body: 'Load and score this vacancy now.' },
+      initialData: { userId, vacancyIds: vacancies.map((vacancy) => vacancy.id), provider },
+      message: { kind: 'signal', type: 'vacancies.score',
+        body: 'Load the shared CV and score every vacancy in this batch independently now.' },
     });
     await agent.read(receipt);
-    trace('scoring.agent.completed', { vacancyId });
-  } finally { purgeSettledAgentSession(ScoreVacancy.agentName, sessionId); }
+  } finally { purgeSettledAgentSession(ScoreVacancies.agentName, sessionId); }
+}
+
+async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
+  requireApprovedUser(userId);
+  if (!vacancies.length) return;
+  trace('scoring.agent.start', { vacancyIds: vacancies.map((vacancy) => vacancy.id),
+    sources: vacancies.map((vacancy) => vacancy.source), provider: config.scoringModel });
+  for (const vacancy of vacancies) recordUsage(userId, 'score');
+  if (Date.now() < scoringSubscriptionUnavailableUntil && scoringApiFallbackConfigured()) {
+    await dispatchScoringBatch(userId, vacancies, 'api');
+    trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id), provider: 'api-fallback' });
+    return;
+  }
+  try {
+    await dispatchScoringBatch(userId, vacancies, 'subscription');
+    trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id), provider: 'subscription' });
+  } catch (error) {
+    if (vacancies.every((vacancy) => getScoredVacancy(userId, vacancy.id))) {
+      trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id),
+        provider: 'subscription', recoveredAfterFinalTurnError: true });
+      return;
+    }
+    if (!isSubscriptionUsageLimit(error)) throw error;
+    scoringSubscriptionUnavailableUntil = Date.now() + fallbackDuration(error);
+    if (!scoringApiFallbackConfigured()) {
+      throw new Error('ChatGPT subscription usage limit reached and OPENAI_API_KEY is not configured for scoring fallback.',
+        { cause: error });
+    }
+    console.warn(`ChatGPT scoring limit reached; using metered OpenAI API fallback for ${vacancies.length} vacancies.`);
+    await dispatchScoringBatch(userId, vacancies, 'api');
+    trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id), provider: 'api-fallback' });
+  }
 }
 
 export async function scorePendingVacancies(
@@ -151,26 +213,32 @@ export async function scorePendingVacancies(
   } else {
     vacancies = pendingVacancies(userId, scoreLimit);
   }
+  const batches: Vacancy[][] = [];
+  for (let offset = 0; offset < vacancies.length; offset += config.scoreBatchSize) {
+    batches.push(vacancies.slice(offset, offset + config.scoreBatchSize));
+  }
   progress?.('scoring', 0, vacancies.length);
   trace('scoring.parallel.start', {
     vacancies: vacancies.length,
-    localConcurrency: adaptiveConcurrency(vacancies.length, config.scoreAgentConcurrencyMin, config.scoreAgentConcurrencyMax),
+    batches: batches.length,
+    batchSize: config.scoreBatchSize,
+    localConcurrency: adaptiveConcurrency(batches.length, config.scoreAgentConcurrencyMin, config.scoreAgentConcurrencyMax),
     poolActive: scoringPool.activeCount,
     poolQueued: scoringPool.queuedCount,
   });
   let completed = 0;
-  await Promise.all(vacancies.map((vacancy) => scoringPool.run(async () => {
+  await Promise.all(batches.map((batch) => scoringPool.run(async () => {
     try {
-      await scoreOne(userId, vacancy.id);
-      await afterScore?.(vacancy.id);
+      await scoreBatch(userId, batch);
+      for (const vacancy of batch) await afterScore?.(vacancy.id);
     } catch (error) {
-      console.error(`Failed to score vacancy ${vacancy.id}: ${errorMessage(error)}`);
+      console.error(`Failed to score vacancy batch [${batch.map((vacancy) => vacancy.id).join(',')}]: ${errorMessage(error)}`);
     } finally {
-      completed++;
+      completed += batch.length;
       progress?.('scoring', completed, vacancies.length);
     }
   })));
-  trace('scoring.parallel.completed', { vacancies: vacancies.length });
+  trace('scoring.parallel.completed', { vacancies: vacancies.length, batches: batches.length });
   if (calibrationContext) {
     trace('prefilter.calibration', prefilterCalibration(userId, calibrationContext, config.alertScore,
       config.prefilterCalibrationMinLabels));

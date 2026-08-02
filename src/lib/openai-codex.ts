@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
+import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import type { OAuthCredential, Provider } from '@earendil-works/pi-ai';
 import { setProvider } from '@flue/runtime';
 
@@ -51,7 +52,8 @@ async function validCredential(source: Provider): Promise<OAuthCredential> {
   return refreshInFlight;
 }
 
-export function registerOpenAICodexFileProvider(): void {
+export function registerOpenAIProviders(): void {
+  setProvider(openaiProvider());
   const source = openaiCodexProvider();
   const oauth = source.auth.oauth;
   if (!oauth) throw new Error('OpenAI Codex provider has no OAuth implementation.');

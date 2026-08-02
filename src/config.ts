@@ -20,9 +20,9 @@ function booleanEnv(name: string, fallback: boolean): boolean {
 
 const thinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 type ThinkingLevel = typeof thinkingLevels[number];
-function thinkingLevelEnv(): ThinkingLevel {
-  const value = process.env.FLUE_THINKING_LEVEL ?? 'high';
-  if (!thinkingLevels.includes(value as ThinkingLevel)) throw new Error(`Invalid FLUE_THINKING_LEVEL: ${value}`);
+function thinkingLevelEnv(name: string, fallback: ThinkingLevel): ThinkingLevel {
+  const value = process.env[name] ?? fallback;
+  if (!thinkingLevels.includes(value as ThinkingLevel)) throw new Error(`Invalid ${name}: ${value}`);
   return value as ThinkingLevel;
 }
 
@@ -51,7 +51,11 @@ if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
 export const config = {
   databasePath: resolve(process.env.DATABASE_PATH ?? './data/jobseeker.db'),
   model: process.env.FLUE_MODEL ?? 'openai-codex/gpt-5.6-terra',
-  thinkingLevel: thinkingLevelEnv(),
+  thinkingLevel: thinkingLevelEnv('FLUE_THINKING_LEVEL', 'high'),
+  scoringModel: process.env.FLUE_SCORING_MODEL ?? 'openai-codex/gpt-5.6-luna',
+  scoringThinkingLevel: thinkingLevelEnv('FLUE_SCORING_THINKING_LEVEL', 'medium'),
+  scoringFallbackModel: process.env.FLUE_SCORING_FALLBACK_MODEL ?? 'openai/gpt-5.4-mini',
+  scoringFallbackThinkingLevel: thinkingLevelEnv('FLUE_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
   hhAreaId: process.env.HH_AREA_ID ?? '1',
   playwrightChromiumPath: process.env.PLAYWRIGHT_CHROMIUM_PATH,
   playwrightHeadless: booleanEnv('PLAYWRIGHT_HEADLESS', true),
@@ -81,9 +85,12 @@ export const config = {
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
+  scoreBatchSize: integerEnv('SCORE_BATCH_SIZE', 3, 1, 20),
   userDailyApplicationLimit: integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100),
   userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 7, 1, 100),
   maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),
+  userWorkflowConcurrency: integerEnv('USER_WORKFLOW_CONCURRENCY', 3, 1, 20),
+  deliveryConcurrency: integerEnv('DELIVERY_CONCURRENCY', 5, 1, 20),
   accessRequestCooldownMinutes: integerEnv('ACCESS_REQUEST_COOLDOWN_MINUTES', 60, 1, 43_200),
   cvUploadSessionCooldownMinutes: integerEnv('CV_UPLOAD_SESSION_COOLDOWN_MINUTES', 15, 1, 1_440),
   alertScore,
