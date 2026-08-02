@@ -6,9 +6,7 @@ import {
   type Vacancy, type VacancyCandidate, type VacancyInput,
 } from './database.ts';
 import { prefilterVacancy } from './prefilter.ts';
-import { normalizeHhCandidates } from './hh.ts';
-import { normalizeHireHiCandidate, type HireHiListJob } from './hirehi.ts';
-import { normalizeAdditionalCandidate } from './additional-sources.ts';
+import { normalizePlatformCandidates } from '../platforms/registry.ts';
 import { trace } from './trace.ts';
 import { errorMessage } from './logging.ts';
 import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from './career-profile.ts';
@@ -47,9 +45,8 @@ async function prefilterCandidates(userIds: string[], progress?: QueueProgress):
   for (const profile of profiles) {
     for (const candidate of profile.candidates) {
       const vacancy = candidateVacancy(candidate);
-      const result = prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore, null, profile.careerProfile);
-      await saveCandidatePrefilter(profile.userId, candidate, profile.contextHash, { ...result,
-        semanticStatus: 'disabled', auditSelected: false });
+      const result = prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore, profile.careerProfile);
+      await saveCandidatePrefilter(profile.userId, candidate, profile.contextHash, { ...result, auditSelected: false });
       if (!result.filtered) queued++;
       trace('candidate.prefilter.scored', { userId: profile.userId, source: candidate.source,
         sourceId: candidate.sourceId, title: candidate.title, ...result });
@@ -57,11 +54,6 @@ async function prefilterCandidates(userIds: string[], progress?: QueueProgress):
     }
   }
   return { evaluated: total, queued };
-}
-
-async function normalizeOne(candidate: VacancyCandidate): Promise<VacancyInput | null> {
-  if (candidate.source === 'hirehi') return normalizeHireHiCandidate(candidate.payload as HireHiListJob, candidate.searchName);
-  return normalizeAdditionalCandidate(candidate);
 }
 
 export interface CandidateQueueResult { evaluated: number; queued: number; selected: number; refreshed: number; normalized: number; failed: number; closed: number; bySource: Record<string, number> }
@@ -76,14 +68,18 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
   trace('candidate.queue.ranked', { perUserBatchSize: config.normalizationBatchSizePerUser, capacity,
     selected: selected.map((candidate) => ({ source: candidate.source, sourceId: candidate.sourceId,
       title: candidate.title, score: candidate.combinedScore })) });
-  const hh = selected.filter((candidate) => candidate.source === 'hh');
-  const hhResults = await normalizeHhCandidates(hh);
+  const normalizationResults = new Map<string, VacancyInput | null | Error>();
+  for (const source of new Set(selected.map((candidate) => candidate.source))) {
+    const candidates = selected.filter((candidate) => candidate.source === source);
+    const results = await normalizePlatformCandidates(source,candidates);
+    for (const [sourceId,result] of results) normalizationResults.set(`${source}:${sourceId}`,result);
+  }
   let normalized = 0; let failed = 0; let closed = 0;
   const bySource: Record<string, number> = {};
   progress?.('normalization', 0, selected.length);
   for (const [index, candidate] of selected.entries()) {
     try {
-      const result = candidate.source === 'hh' ? hhResults.get(candidate.sourceId) : await normalizeOne(candidate);
+      const result = normalizationResults.get(`${candidate.source}:${candidate.sourceId}`);
       if (result instanceof Error) throw result;
       if (!result) { await markCandidateClosed(candidate); closed++; continue; }
       const saved = await upsertVacancy(result);

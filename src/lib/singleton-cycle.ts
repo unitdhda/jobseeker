@@ -1,19 +1,21 @@
-import { randomUUID } from 'node:crypto';
-import { runScrapeCycle,type ScrapeCycleResult,type UserTaskRunner } from './jobs.ts';
-import { withRenewingCoordinationLease } from './coordination-leases.ts';
+import { runScrapeCycle, type ScrapeCycleResult, type UserTaskRunner } from './jobs.ts';
+import { getPostgresPool } from './postgres.ts';
 
-export async function runSingletonScrapeCycle(runUserTask?:UserTaskRunner): Promise<ScrapeCycleResult|null> {
-  const owner=`${process.env.K_REVISION?.trim()||process.env.HOSTNAME?.trim()||process.pid}:${randomUUID()}`;
-  const execution=await withRenewingCoordinationLease({ resourceKey:'cycle:global',owner,leaseMs:5*60_000,
-    renewEveryMs:60_000 },async(signal)=> {
-    if (signal.aborted) throw new Error('Cycle lease was lost before execution.');
-    const result=await runScrapeCycle(runUserTask);
-    if (signal.aborted) throw new Error('Cycle lease was lost during execution.');
-    return result;
-  });
-  if (!execution.acquired) {
-    console.info('Skipping scrape cycle because another cycle owns the global lease.');
-    return null;
+export async function runSingletonScrapeCycle(runUserTask?: UserTaskRunner): Promise<ScrapeCycleResult | null> {
+  const client = await getPostgresPool().connect();
+  let acquired = false;
+  try {
+    const result = await client.query<{ acquired: boolean }>(
+      "select pg_try_advisory_lock(hashtext('jobseeker-cycle')) acquired",
+    );
+    acquired = Boolean(result.rows[0]?.acquired);
+    if (!acquired) {
+      console.info('Skipping scrape cycle because another cycle holds the PostgreSQL advisory lock.');
+      return null;
+    }
+    return await runScrapeCycle(runUserTask);
+  } finally {
+    if (acquired) await client.query("select pg_advisory_unlock(hashtext('jobseeker-cycle'))").catch(() => undefined);
+    client.release();
   }
-  return execution.result!;
 }

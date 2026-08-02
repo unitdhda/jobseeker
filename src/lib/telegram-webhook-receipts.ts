@@ -1,5 +1,4 @@
 import { hasPostgresDatabase, postgresQuery, withPostgresTransaction } from './postgres.ts';
-import { claimCoordinationLease,releaseCoordinationLease } from './coordination-leases.ts';
 
 const localReceipts = new Map<number, 'processing' | 'completed'>();
 let lastCleanup = 0;
@@ -42,19 +41,4 @@ export async function failTelegramUpdate(updateId: number, error: unknown): Prom
   const failureType = error instanceof Error ? error.name : 'UnknownError';
   await postgresQuery(`update telegram_update_receipts set state='failed',lease_expires_at=null,last_error=$2
     where update_id=$1`, [updateId, failureType.slice(0, 120)]);
-}
-
-export function telegramUpdateUserId(update: unknown): string | null {
-  if (!update || typeof update !== 'object') return null;
-  const value = update as { message?: { from?: { id?: unknown } }; callback_query?: { from?: { id?: unknown } } };
-  const id = value.message?.from?.id ?? value.callback_query?.from?.id;
-  return typeof id === 'number' || typeof id === 'string' ? String(id) : null;
-}
-
-export function claimTelegramUserUpdateLease(userId: string, updateId: number): Promise<boolean> {
-  return claimCoordinationLease(`telegram-user:${userId}`,String(updateId),5*60_000);
-}
-
-export function releaseTelegramUserUpdateLease(userId: string, updateId: number): Promise<void> {
-  return releaseCoordinationLease(`telegram-user:${userId}`,String(updateId));
 }

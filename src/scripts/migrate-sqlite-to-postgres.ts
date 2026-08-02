@@ -10,7 +10,7 @@ const copiedTables = [
   'candidate_prefilter_scores','usage_events',
 ] as const;
 const resetOnlyTables = [
-  'telegram_update_receipts','telegram_sessions','background_tasks','coordination_leases',
+  'telegram_update_receipts','telegram_sessions',
   'flue_submission_chunks','flue_attachments','flue_conversation_stream_batches','flue_conversation_streams',
   'flue_agent_submissions',
 ] as const;

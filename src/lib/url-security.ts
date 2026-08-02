@@ -3,12 +3,7 @@ import { lookup } from 'node:dns/promises';
 
 const sourceHosts: Record<string, ReadonlySet<string>> = {
   hh: new Set(['hh.ru', 'www.hh.ru']),
-  hirehi: new Set(['hirehi.ru', 'www.hirehi.ru']),
   habr: new Set(['career.habr.com']),
-  getmatch: new Set(['getmatch.ru', 'www.getmatch.ru']),
-  geekjob: new Set(['geekjob.ru', 'www.geekjob.ru']),
-  superjob: new Set(['api.superjob.ru', 'superjob.ru', 'www.superjob.ru']),
-  avito: new Set(['avito.ru', 'www.avito.ru']),
   rabota: new Set(['rabota.ru', 'www.rabota.ru']),
 };
 
