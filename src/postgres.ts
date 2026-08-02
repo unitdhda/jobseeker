@@ -23,36 +23,72 @@ function sslConfig(): PoolConfig['ssl'] {
   throw new Error('POSTGRES_SSL must be disable, require, or verify-full.');
 }
 
+function errorCode(error: unknown): string {
+  if (!error || typeof error !== 'object') return 'unknown';
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : 'unknown';
+}
+function errorText(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return `${errorCode(error)}: ${message.replace(/\s+/g,' ').slice(0,180)}`;
+}
+function transientConnectionError(error: unknown): boolean {
+  const code=errorCode(error);
+  if(['ECONNRESET','ECONNREFUSED','ETIMEDOUT','ENOTFOUND','EAI_AGAIN','57P01','57P02','57P03','08000','08001','08003','08004','08006','08007','08P01'].includes(code))return true;
+  return /connection terminated|connection timeout|server closed the connection|socket hang up/i.test(error instanceof Error?error.message:String(error));
+}
+const wait=(milliseconds:number)=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+
 export function getPostgresPool(): Pool {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error('DATABASE_URL is required for Postgres persistence.');
-  pool ??= new Pool({
+  if(pool)return pool;
+  const created=new Pool({
     connectionString,
     max: poolMaximum(),
     idleTimeoutMillis: 30_000,
     connectionTimeoutMillis: 10_000,
+    keepAlive:true,
+    keepAliveInitialDelayMillis:10_000,
     ssl: sslConfig(),
   });
-  return pool;
+  // pg emits transport failures outside the query promise for checked-out and idle clients.
+  // Always consume those events so a temporary network reset cannot terminate the worker process.
+  created.on('connect',(client)=>client.on('error',(error)=>
+    console.warn(`PostgreSQL client connection error: ${errorText(error)}`)));
+  created.on('error',(error)=>console.warn(`PostgreSQL idle connection error: ${errorText(error)}`));
+  pool=created;
+  return created;
 }
 
 export async function postgresQuery<T extends QueryResultRow = QueryResultRow>(text: string,
   params: unknown[] = []): Promise<T[]> {
-  return (await getPostgresPool().query<T>(text, params)).rows;
+  let lastError:unknown;
+  for(let attempt=0;attempt<3;attempt++){
+    try{return (await getPostgresPool().query<T>(text, params)).rows;}
+    catch(error){
+      lastError=error;if(!transientConnectionError(error)||attempt===2)throw error;
+      console.warn(`Retrying PostgreSQL query after connection failure (${attempt+1}/2): ${errorText(error)}`);
+      await wait(300*2**attempt);
+    }
+  }
+  throw lastError;
 }
 
 export async function withPostgresTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
   const client = await getPostgresPool().connect();
+  let failure:unknown;
   try {
     await client.query('BEGIN');
     const result = await fn(client);
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    failure=error;
+    await client.query('ROLLBACK').catch(()=>undefined);
     throw error;
   } finally {
-    client.release();
+    client.release(failure instanceof Error?failure:undefined);
   }
 }
 
