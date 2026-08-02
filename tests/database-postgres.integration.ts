@@ -86,7 +86,7 @@ try {
   assert.equal(await d.getCvHash(userId), null);
   console.info('Postgres business repository integration passed.');
 } finally {
-  await postgresQuery('delete from telegram_users where user_id=$1', [userId]).catch(() => undefined);
+  await postgresQuery('delete from users where user_id=$1', [userId]).catch(() => undefined);
   await postgresQuery('delete from vacancies where source_id=$1', [sourceId]).catch(() => undefined);
   if (vacancyId != null) await postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
   await closePostgresPool();
