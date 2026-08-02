@@ -289,7 +289,8 @@ export async function hasVacancySourceId(source: string, sourceId: string): Prom
   await ready(); return Boolean((await q('select 1 from vacancies where source=$1 and source_id=$2', [source, sourceId])).length);
 }
 function rowToCandidate(row: Row): VacancyCandidate {
-  return { source: String(row.source), sourceId: String(row.source_id), url: String(row.url), searchName: String(row.search_name), title: String(row.title),
+  return { source: String(row.source), sourceId: String(row.source_id), url: String(row.url),
+    searchName: String(row.discovery_search_name ?? row.search_name), title: String(row.title),
     summary: String(row.summary), publishedAt: isoTimestamp(row.published_at), payload: jsonValue(row.payload_json), listingHash: String(row.listing_hash),
     status: String(row.status), attempts: Number(row.attempts), combinedScore: row.combined_score == null ? null : Number(row.combined_score) };
 }
@@ -306,7 +307,7 @@ export async function recordVacancyCandidate(userId: string, raw: VacancyCandida
       listing_hash,status,vacancy_id,first_seen_at,last_seen_at) values($1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$12)`,
       [input.source,input.sourceId,input.url,input.searchName,input.title,summary,publishedAt,payload,hash,vacancy?'normalized':'discovered',vacancy?.id??null,timestamp]);
     else { await client.query(`update vacancy_candidates set url=$1,search_name=$2,title=$3,
-      summary=$4,published_at=$5,payload_json=$6::jsonb,listing_hash=$7,last_seen_at=$8,prefilter_context_hash=case when $9 then null else prefilter_context_hash end,
+      summary=$4,published_at=$5,payload_json=$6::jsonb,listing_hash=$7,last_seen_at=$8,
       status=case when $9 and status in ('filtered','failed','queued','discovered') then 'discovered' else status end where source=$10 and source_id=$11`,
       [input.url,input.searchName,input.title,summary,publishedAt,payload,hash,timestamp,changed,input.source,input.sourceId]); }
     if (await hasCv(userId, client)) await client.query(`insert into candidate_discoveries(user_id,source,source_id,search_name,first_seen_at,last_seen_at)
@@ -317,7 +318,7 @@ export async function recordVacancyCandidate(userId: string, raw: VacancyCandida
   });
 }
 export async function candidatesNeedingPrefilter(userId: string, contextHash: string, limit: number): Promise<VacancyCandidate[]> {
-  await ready(); return (await q(`select c.* from vacancy_candidates c join candidate_discoveries d
+  await ready(); return (await q(`select c.*,d.search_name discovery_search_name from vacancy_candidates c join candidate_discoveries d
     on d.source=c.source and d.source_id=c.source_id and d.user_id=$1 left join candidate_prefilter_scores p
     on p.user_id=d.user_id and p.source=c.source and p.source_id=c.source_id where c.status in ('discovered','queued','filtered','failed') and
     (p.source_id is null or p.context_hash<>$2 or p.listing_hash<>c.listing_hash or p.semantic_status='unavailable')
@@ -334,7 +335,7 @@ export async function saveCandidatePrefilter(userId: string, candidate: VacancyC
       score.semanticCosine,score.semanticStatus,score.combinedScore,Number(score.filtered),JSON.stringify(score.reasons),now()]);
 }
 export async function rankedCandidateQueueForUsers(userIds: string[], perUserLimit: number): Promise<VacancyCandidate[]> {
-  await ready(); const queues = await Promise.all(userIds.map(async (userId) => (await q(`select c.*,p.combined_score from vacancy_candidates c join candidate_discoveries d
+  await ready(); const queues = await Promise.all(userIds.map(async (userId) => (await q(`select c.*,d.search_name discovery_search_name,p.combined_score from vacancy_candidates c join candidate_discoveries d
     on d.source=c.source and d.source_id=c.source_id join candidate_prefilter_scores p
     on p.user_id=d.user_id and p.source=c.source and p.source_id=c.source_id where d.user_id=$1
     and c.status in ('discovered','queued','filtered','failed') and p.filtered=0 and
