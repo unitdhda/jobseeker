@@ -607,17 +607,25 @@ export function startTelegramBot(): void {
   } });
 }
 
+export async function initializeTelegramWebhookHandler(): Promise<void> {
+  if (config.telegramMode !== 'webhook') return;
+  const instance = configureTelegramBot();
+  if (!instance) throw new Error('TELEGRAM_BOT_TOKEN is required for webhook mode.');
+  await instance.init();
+}
+
 export async function handleTelegramWebhookUpdate(update: unknown): Promise<void> {
   if (config.telegramMode !== 'webhook') throw new Error('Telegram webhook mode is not enabled.');
   const instance = configureTelegramBot();
   if (!instance) throw new Error('TELEGRAM_BOT_TOKEN is required for webhook mode.');
+  if (!instance.botInfo) await instance.init();
   await instance.handleUpdate(update as Parameters<Bot['handleUpdate']>[0]);
 }
 
 export async function initializeTelegramWebhookMode(): Promise<void> {
+  await initializeTelegramWebhookHandler();
   if (config.telegramMode !== 'webhook') return;
-  const instance = configureTelegramBot();
-  if (!instance) throw new Error('TELEGRAM_BOT_TOKEN is required for webhook mode.');
+  const instance = configureTelegramBot()!;
   await registerTelegramCommands(instance);
   console.info('Telegram webhook handlers initialized; multi-user commands registered');
 }
