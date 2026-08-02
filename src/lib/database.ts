@@ -126,29 +126,6 @@ export async function userUsageSummaries(): Promise<UserUsageSummary[]> {
     applicationsTotal: Number(row.applications_total) }));
 }
 
-export async function purgeSettledAgentSession(agentName: string, sessionId: string): Promise<boolean> {
-  await ready(); const sessionKey = `agent-session:${JSON.stringify([agentName, sessionId, 'default', 'default'])}`;
-  return withPostgresTransaction(async (client) => {
-    const submissions = await txq(client, 'select submission_id,status from flue_agent_submissions where session_key=$1 for update', [sessionKey]);
-    if (!submissions.length || submissions.some((row) => !['settled', 'joined'].includes(String(row.status)))) return false;
-    const path = `agents/${agentName}/${sessionId}`; const ids = submissions.map((row) => String(row.submission_id));
-    await client.query('delete from flue_submission_chunks where submission_id=any($1::text[])', [ids]);
-    await client.query('delete from flue_conversation_stream_batches where submission_id=any($1::text[])', [ids]);
-    await client.query('delete from flue_attachments where stream_path=$1', [path]);
-    await client.query('delete from flue_conversation_stream_batches where path=$1', [path]);
-    await client.query('delete from flue_conversation_streams where path=$1', [path]);
-    await client.query('delete from flue_agent_submissions where session_key=$1', [sessionKey]);
-    return true;
-  });
-}
-export async function purgeSettledAgentSessions(): Promise<number> {
-  await ready(); const rows = await q(`select session_key from flue_agent_submissions group by session_key
-    having count(*) filter(where status not in ('settled','joined'))=0`); let purged = 0;
-  for (const row of rows) { const key = String(row.session_key); if (!key.startsWith('agent-session:')) continue;
-    try { const value = JSON.parse(key.slice(14)) as unknown; if (Array.isArray(value) && typeof value[0] === 'string'
-      && typeof value[1] === 'string' && await purgeSettledAgentSession(value[0], value[1])) purged++; } catch { /* incompatible key */ } }
-  return purged;
-}
 export async function deleteUserData(userId: string): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
     for (const table of ['user_vacancies','profiles','usage_events','user_state'] as const) {
@@ -156,18 +133,7 @@ export async function deleteUserData(userId: string): Promise<void> {
     }
     await client.query(`update users set delivery_start_minutes=null,delivery_end_minutes=null,digest_minutes=null,
       delivery_timezone=null,last_digest_at=null where user_id=$1`, [userId]);
-    const sessionPattern = `%"${userId.replaceAll('%', '\\%').replaceAll('_', '\\_')}-%`;
-    const submissions = await txq(client, "select submission_id from flue_agent_submissions where session_key like $1 escape '\\'", [sessionPattern]);
-    const ids = submissions.map((row) => String(row.submission_id));
-    if (ids.length) { await client.query('delete from flue_submission_chunks where submission_id=any($1::text[])', [ids]);
-      await client.query('delete from flue_conversation_stream_batches where submission_id=any($1::text[])', [ids]);
-      await client.query('delete from flue_agent_submissions where submission_id=any($1::text[])', [ids]); }
-    const streamPattern = `%/${userId.replaceAll('%', '\\%').replaceAll('_', '\\_')}-%`;
-    const paths = (await txq(client, "select path from flue_conversation_streams where path like $1 escape '\\'", [streamPattern]))
-      .map((row) => String(row.path));
-    if (paths.length) { await client.query('delete from flue_attachments where stream_path=any($1::text[])', [paths]);
-      await client.query('delete from flue_conversation_stream_batches where path=any($1::text[])', [paths]);
-      await client.query('delete from flue_conversation_streams where path=any($1::text[])', [paths]); }
+
   });
 }
 export async function exportUserData(userId: string): Promise<Record<string, unknown>> {

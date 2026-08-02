@@ -1,4 +1,4 @@
-import { observe, type PromptUsage } from '@flue/runtime';
+import type { Usage } from '@earendil-works/pi-ai';
 
 export interface LlmUsageTotals {
   turns: number;
@@ -37,7 +37,7 @@ const totals = emptyTotals();
 const byAgent = new Map<string, LlmUsageTotals>();
 const byModel = new Map<string, LlmUsageTotals>();
 
-function add(target: LlmUsageTotals, usage: PromptUsage): void {
+function add(target: LlmUsageTotals, usage: Usage): void {
   target.turns++;
   target.input += usage.input;
   target.output += usage.output;
@@ -51,24 +51,15 @@ function add(target: LlmUsageTotals, usage: PromptUsage): void {
   target.cost.total += usage.cost.total;
 }
 
-observe((event) => {
-  if (event.type !== 'turn' || !event.response.usage) return;
-  add(totals, event.response.usage);
-  const agent = event.agentName ?? 'unknown';
-  let agentTotals = byAgent.get(agent);
-  if (!agentTotals) {
-    agentTotals = emptyTotals();
-    byAgent.set(agent, agentTotals);
-  }
-  add(agentTotals, event.response.usage);
-  const model = `${event.request.providerId}/${event.request.requestedModel}`;
-  let modelTotals = byModel.get(model);
-  if (!modelTotals) {
-    modelTotals = emptyTotals();
-    byModel.set(model, modelTotals);
-  }
-  add(modelTotals, event.response.usage);
-});
+export function recordLlmUsage(agent: string, model: string, usage: Usage): void {
+  add(totals,usage);
+  let agentTotals=byAgent.get(agent);
+  if(!agentTotals){agentTotals=emptyTotals();byAgent.set(agent,agentTotals);}
+  add(agentTotals,usage);
+  let modelTotals=byModel.get(model);
+  if(!modelTotals){modelTotals=emptyTotals();byModel.set(model,modelTotals);}
+  add(modelTotals,usage);
+}
 
 function copy(source: LlmUsageTotals): LlmUsageTotals {
   return { ...source, cost: { ...source.cost } };
