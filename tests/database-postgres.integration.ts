@@ -5,13 +5,10 @@ if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for the
 const d = await import('../src/lib/database.ts');
 const sessions = await import('../src/lib/telegram-sessions.ts');
 const webhook = await import('../src/lib/telegram-webhook-receipts.ts');
-const tasks = await import('../src/lib/background-tasks.ts');
-const taskWorkers = await import('../src/lib/background-task-worker.ts');
 const suffix = `${Date.now()}-${process.pid}`;
 const userId = `integration-${suffix}`;
 const sourceId = `integration-${suffix}`;
 const chatId = `integration-chat-${suffix}`;
-const leaseUpdateId = 7_000_000_000_000_000 + process.pid * 2;
 let vacancyId: number | undefined;
 try {
   const legacyTables = await postgresQuery<{ table_name: string }>(`select table_name from information_schema.tables
@@ -32,64 +29,10 @@ try {
   assert.deepEqual(await sessions.getTelegramSession(userId, 'window-setup'), { step: 'start' });
   assert.equal((await sessions.claimTelegramSession(userId, 'cv-cooldown', {}, 60_000)).claimed, true);
   assert.equal((await sessions.claimTelegramSession(userId, 'cv-cooldown', {}, 60_000)).claimed, false);
-  assert.equal(await webhook.claimTelegramUserUpdateLease(userId, leaseUpdateId), true);
-  assert.equal(await webhook.claimTelegramUserUpdateLease(userId, leaseUpdateId + 1), false);
-  await webhook.releaseTelegramUserUpdateLease(userId, leaseUpdateId);
-  assert.equal(await webhook.claimTelegramUserUpdateLease(userId, leaseUpdateId + 1), true);
-  await webhook.releaseTelegramUserUpdateLease(userId, leaseUpdateId + 1);
-
-  const retryKind=`integration-retry-${suffix}`; const retryKey=`integration:a-retry:${suffix}`;
-  const enqueued=await tasks.enqueueBackgroundTask({ taskKey:retryKey,kind:retryKind,userId,payload:{ value:1 },maxAttempts:3 });
-  assert.equal(enqueued.created,true);
-  assert.equal((await tasks.enqueueBackgroundTask({ taskKey:retryKey,kind:retryKind,userId,payload:{ value:1 },maxAttempts:3 })).created,false);
-  await assert.rejects(tasks.enqueueBackgroundTask({ taskKey:retryKey,kind:retryKind,userId,payload:{ value:2 } }),/different task/);
-  const firstClaim=await tasks.claimBackgroundTask({ workerId:`integration-a-${suffix}`,kinds:[retryKind],leaseMs:60_000 });
-  assert.equal(firstClaim?.attempts,1); assert.ok(firstClaim?.leaseOwner);
-  assert.deepEqual(await tasks.saveBackgroundTaskCheckpoint(retryKey,firstClaim!.leaseOwner!,{ prepared:true }),{ prepared:true });
-  assert.ok(await tasks.renewBackgroundTaskLease(retryKey,firstClaim!.leaseOwner!,60_000));
-  assert.equal(await tasks.failBackgroundTask(retryKey,firstClaim!.leaseOwner!,new Error('temporary'),{ retryAfterMs:0 }),'queued');
-  const retryClaim=await tasks.claimBackgroundTask({ workerId:`integration-b-${suffix}`,kinds:[retryKind],leaseMs:60_000 });
-  assert.equal(retryClaim?.attempts,2); assert.deepEqual(retryClaim?.checkpoint,{ prepared:true });
-  await tasks.completeBackgroundTask(retryKey,retryClaim!.leaseOwner!,{ delivered:true });
-  const completedTask=await tasks.getBackgroundTask(retryKey);
-  assert.equal(completedTask?.state,'completed'); assert.deepEqual(completedTask?.payload,{});
-  assert.deepEqual(completedTask?.checkpoint,{ prepared:true,delivered:true });
-
-  const serialKind=`integration-serial-${suffix}`; const serialKeyA=`integration:b-serial-a:${suffix}`;
-  const serialKeyB=`integration:c-serial-b:${suffix}`;
-  await tasks.enqueueBackgroundTask({ taskKey:serialKeyA,kind:serialKind,userId,payload:{} });
-  await tasks.enqueueBackgroundTask({ taskKey:serialKeyB,kind:serialKind,userId,payload:{} });
-  const serialA=await tasks.claimBackgroundTask({ workerId:`integration-a-${suffix}`,kinds:[serialKind],leaseMs:60_000 });
-  assert.ok(serialA); assert.equal(await tasks.claimBackgroundTask({ workerId:`integration-b-${suffix}`,kinds:[serialKind],leaseMs:60_000 }),null);
-  await tasks.completeBackgroundTask(serialA!.taskKey,serialA!.leaseOwner!);
-  const serialB=await tasks.claimBackgroundTask({ workerId:`integration-b-${suffix}`,kinds:[serialKind],leaseMs:60_000 });
-  assert.ok(serialB); await tasks.completeBackgroundTask(serialB!.taskKey,serialB!.leaseOwner!);
-
-  const failureKind=`integration-failure-${suffix}`; const failureKey=`integration:d-failure:${suffix}`;
-  await tasks.enqueueBackgroundTask({ taskKey:failureKey,kind:failureKind,userId,payload:{ private:'discard-me' },maxAttempts:1 });
-  const failure=await tasks.claimBackgroundTask({ workerId:`integration-f-${suffix}`,kinds:[failureKind],leaseMs:60_000 });
-  assert.equal(await tasks.failBackgroundTask(failureKey,failure!.leaseOwner!,new Error('See person@example.com at https://example.com')),'failed');
-  const failedTask=await tasks.getBackgroundTask(failureKey);
-  assert.equal(failedTask?.state,'failed'); assert.deepEqual(failedTask?.payload,{});
-  assert.doesNotMatch(failedTask?.lastError??'',/person@example\.com|https:\/\//);
-
-  const expiryKind=`integration-expiry-${suffix}`; const expiryKey=`integration:e-expiry:${suffix}`;
-  await tasks.enqueueBackgroundTask({ taskKey:expiryKey,kind:expiryKind,userId,payload:{ private:'discard-me' },maxAttempts:1 });
-  const expiring=await tasks.claimBackgroundTask({ workerId:`integration-e-${suffix}`,kinds:[expiryKind],leaseMs:60_000 });
-  assert.ok(expiring);
-  await postgresQuery("update background_tasks set lease_expires_at=now()-interval '1 second' where task_key=$1",[expiryKey]);
-  await postgresQuery("update coordination_leases set lease_expires_at=now()-interval '1 second' where lease_owner=$1",[expiring!.leaseOwner]);
-  assert.equal(await tasks.claimBackgroundTask({ workerId:`integration-e2-${suffix}`,kinds:[expiryKind],leaseMs:60_000 }),null);
-  assert.equal((await tasks.getBackgroundTask(expiryKey))?.state,'failed');
-
-  const workerKind=`integration-worker-${suffix}`; const workerKey=`integration:f-worker:${suffix}`;
-  await tasks.enqueueBackgroundTask({ taskKey:workerKey,kind:workerKind,userId,payload:{ value:42 } });
-  const taskWorker=new taskWorkers.BackgroundTaskWorker({ workerId:`integration-worker-${suffix}`,
-    handlers:{ [workerKind]:async(task,context)=> {
-      assert.equal(task.payload.value,42); await context.checkpoint({ handled:true }); return { delivered:true };
-    } } });
-  assert.equal(await taskWorker.runTask(workerKey),'completed');
-  assert.deepEqual((await tasks.getBackgroundTask(workerKey))?.checkpoint,{ handled:true,delivered:true });
+  const updateId = 7_000_000_000_000_000 + process.pid;
+  assert.equal(await webhook.claimTelegramUpdate(updateId), true);
+  await webhook.completeTelegramUpdate(updateId);
+  assert.equal(await webhook.claimTelegramUpdate(updateId), false);
 
   await d.saveCvSource(userId, 'cv.txt', `cv-${suffix}`, {
     text: 'Integration CV with TypeScript PostgreSQL distributed systems experience. '.repeat(5),
@@ -110,8 +53,7 @@ try {
   vacancyId = saved.id;
   assert.equal(saved.duplicate, false);
   await d.savePrefilterScore(userId, vacancyId, `context-${suffix}`, `content-${suffix}`, { regexScore: 90,
-    embeddingCosine: 0.8, embeddingScore: 90, semanticCosine: null, semanticScore: null, semanticStatus: 'disabled',
-    combinedScore: 90, filtered: false, auditSelected: false, reasons: ['integration'] });
+    lexicalCosine: 0.8, lexicalScore: 90, combinedScore: 90, filtered: false, auditSelected: false, reasons: ['integration'] });
   assert.equal((await d.prefilterQueueStats(userId, `context-${suffix}`)).queued, 1);
   assert.equal((await d.rankedPendingVacancies(userId, `context-${suffix}`, 5))[0]?.id, vacancyId);
   await d.saveScore(userId, vacancyId, 91, 'Backend', 'Strong integration match', ['TypeScript'], ['None'], false);
@@ -124,9 +66,8 @@ try {
     searchName: 'integration', title: 'Integration Candidate', publishedAt: '' }), true);
   const candidate = (await d.candidatesNeedingPrefilter(userId, 'different-context', 10)).find((item) => item.sourceId === sourceId);
   assert.ok(candidate);
-  await d.saveCandidatePrefilter(userId, candidate, 'different-context', { regexScore: 88, embeddingCosine: 0.7, embeddingScore: 85,
-    semanticCosine: null, semanticScore: null, semanticStatus: 'disabled', combinedScore: 87, filtered: false,
-    auditSelected: false, reasons: ['integration'] });
+  await d.saveCandidatePrefilter(userId, candidate, 'different-context', { regexScore: 88, lexicalCosine: 0.7,
+    lexicalScore: 85, combinedScore: 87, filtered: false, auditSelected: false, reasons: ['integration'] });
   assert.equal((await d.rankedCandidateQueueForUsers([userId], 5))[0]?.sourceId, sourceId);
   await d.recordUsage(userId, 'score');
   assert.equal(await d.usageInLast24Hours(userId, 'score'), 1);
@@ -136,7 +77,6 @@ try {
   assert.equal(await d.getCvHash(userId), null);
   console.info('Postgres business repository integration passed.');
 } finally {
-  await postgresQuery('delete from coordination_leases where resource_key=$1', [`telegram-user:${userId}`]).catch(() => undefined);
   await postgresQuery('delete from telegram_users where user_id=$1', [userId]).catch(() => undefined);
   await postgresQuery('delete from vacancy_candidates where source_id=$1', [sourceId]).catch(() => undefined);
   if (vacancyId != null) await postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);

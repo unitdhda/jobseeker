@@ -1,23 +1,15 @@
 import { config } from '../config.ts';
 import { approvedUsers } from './database.ts';
-import { scrapeHh } from './hh.ts';
-import { scrapeHireHi } from './hirehi.ts';
-import {
-  scrapeAvito, scrapeGeekJob, scrapeGetmatch, scrapeHabr, scrapeRabota, scrapeSuperJob,
-} from './additional-sources.ts';
 import { startCycleStatus } from './telegram.ts';
 import { ensureCvAndSearchProfiles, scorePendingVacancies } from './workflows.ts';
-import type { HhSearchProfile } from '../platforms/hh.ts';
-import type { HireHiSearchProfile } from '../platforms/hirehi.ts';
-import type { AvitoSearchProfile, GetmatchSearchProfile, TextSearchProfile } from '../platforms/additional.ts';
+import { discoverPlatformVacancies } from '../platforms/registry.ts';
 import { trace } from './trace.ts';
 import { processCandidateQueue } from './candidate-queue.ts';
 import { errorMessage } from './logging.ts';
-import { AdaptiveTaskPool, mapConcurrent } from './adaptive-concurrency.ts';
+import { mapConcurrent } from './adaptive-concurrency.ts';
 import { llmUsageSince, llmUsageSnapshot, type LlmUsageReport } from './llm-usage.ts';
 
 let cycleRunning = false;
-const hhScrapePool = new AdaptiveTaskPool(1, 1);
 export type UserTaskRunner = <T>(userId: string, task: () => Promise<T>) => Promise<T>;
 const runDirectly: UserTaskRunner = (_userId, task) => task();
 
@@ -59,31 +51,9 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
           for (const platformId of config.searchPlatforms) {
             try {
               trace('scrape.platform.start', { userId: user.userId, platform: platformId, profile: profiles[platformId] });
-              if (platformId === 'hh') {
-                const profile = profiles.hh as HhSearchProfile | undefined;
-                if (!profile) throw new Error('HH search profile is unavailable');
-                const result = await hhScrapePool.run(() => scrapeHh(user.userId, profile));
-                addPlatformResult(platforms, platformId, { searches: profile.searches.length, ...result });
-              } else if (platformId === 'hirehi') {
-                const profile = profiles.hirehi as HireHiSearchProfile | undefined;
-                if (!profile) throw new Error('HireHi search profile is unavailable');
-                addPlatformResult(platforms, platformId, { searches: profile.searches.length, ...await scrapeHireHi(user.userId, profile) });
-              } else if (platformId === 'getmatch') {
-                const profile = profiles.getmatch as GetmatchSearchProfile | undefined;
-                if (!profile) throw new Error('getmatch search profile is unavailable');
-                addPlatformResult(platforms, platformId, { searches: profile.searches.length, ...await scrapeGetmatch(user.userId, profile) });
-              } else if (platformId === 'avito') {
-                const profile = profiles.avito as AvitoSearchProfile | undefined;
-                if (!profile) throw new Error('Avito search profile is unavailable');
-                addPlatformResult(platforms, platformId, { searches: profile.searches.length, ...await scrapeAvito(user.userId, profile) });
-              } else {
-                const profile = profiles[platformId] as TextSearchProfile | undefined;
-                if (!profile) throw new Error(`${platformId} search profile is unavailable`);
-                const scraper = platformId === 'habr' ? scrapeHabr : platformId === 'geekjob' ? scrapeGeekJob
-                  : platformId === 'superjob' ? scrapeSuperJob : platformId === 'rabota' ? scrapeRabota : undefined;
-                if (!scraper) throw new Error(`No scraper is registered for ${platformId}`);
-                addPlatformResult(platforms, platformId, { searches: profile.searches.length, ...await scraper(user.userId, profile) });
-              }
+              const profile = profiles[platformId];
+              if (!profile) throw new Error(`${platformId} search profile is unavailable`);
+              addPlatformResult(platforms, platformId, await discoverPlatformVacancies(platformId,user.userId,profile));
             } catch (error) {
               console.error(`Failed to scrape ${platformId} for user ${user.userId}: ${errorMessage(error)}`);
             }

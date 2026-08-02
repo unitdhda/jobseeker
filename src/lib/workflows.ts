@@ -195,18 +195,17 @@ export async function scorePendingVacancies(
       config.prefilterAuditPercent,
     ].join(':')).digest('hex');
     calibrationContext = contextHash;
-    const candidates = await vacanciesNeedingPrefilter(userId, contextHash, config.prefilterBatchSize, false);
+    const candidates = await vacanciesNeedingPrefilter(userId, contextHash, config.prefilterBatchSize);
     trace('prefilter.batch.start', { contextHash: contextHash.slice(0, 12), candidates: candidates.length,
       minimumScore: config.prefilterMinScore, auditPercent: config.prefilterAuditPercent });
     progress?.('filtering', 0, candidates.length);
     for (const [index, vacancy] of candidates.entries()) {
-      const result = prefilterVacancy(cvText, vacancy, config.prefilterMinScore, null, careerProfile);
+      const result = prefilterVacancy(cvText, vacancy, config.prefilterMinScore, careerProfile);
       const auditDigest = createHash('sha256').update(`${contextHash}:${vacancy.id}`).digest().readUInt32BE(0);
       const auditSelected = result.filtered && auditDigest / 0x1_0000_0000 * 100 < config.prefilterAuditPercent;
-      await savePrefilterScore(userId, vacancy.id, contextHash, vacancy.contentHash, { ...result,
-        semanticStatus: 'disabled', auditSelected });
+      await savePrefilterScore(userId, vacancy.id, contextHash, vacancy.contentHash, { ...result, auditSelected });
       trace('prefilter.vacancy.scored', { vacancyId: vacancy.id, source: vacancy.source, name: vacancy.name,
-        semanticStatus: 'disabled', auditSelected, ...result });
+        auditSelected, ...result });
       progress?.('filtering', index + 1, candidates.length);
     }
     const stats = await prefilterQueueStats(userId, contextHash);

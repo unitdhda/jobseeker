@@ -91,10 +91,8 @@ function relevanceCvText(input: string): string {
 
 export interface PrefilterResult {
   regexScore: number;
-  embeddingCosine: number;
-  embeddingScore: number;
-  semanticCosine: number | null;
-  semanticScore: number | null;
+  lexicalCosine: number;
+  lexicalScore: number;
   combinedScore: number;
   filtered: boolean;
   reasons: string[];
@@ -105,7 +103,7 @@ export function vacancySemanticText(vacancy: Vacancy): string {
 }
 
 export function prefilterVacancy(cvText: string, vacancy: Vacancy, minimumScore: number,
-  semanticCosine: number | null = null, careerProfile?: CareerProfile): PrefilterResult {
+  careerProfile?: CareerProfile): PrefilterResult {
   const profile = careerProfile ?? fallbackCareerProfile(cvText);
   const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy) }))
     .sort((left, right) => right.role + right.skills - left.role - left.skills);
@@ -116,21 +114,15 @@ export function prefilterVacancy(cvText: string, vacancy: Vacancy, minimumScore:
   if (best.matchedSkills.length) reasons.push(`evidenced skills: ${best.matchedSkills.slice(0, 8).join(', ')}`);
 
   const cleanCv = relevanceCvText(cvText);
-  const embeddingCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(`${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`));
-  const embeddingScore = Math.min(100, Math.round(embeddingCosine * 300));
-  // E5 has a high cross-occupation baseline. Only the upper similarity band contributes, and CV-derived evidence gates admission.
-  const semanticScore = semanticCosine == null ? null
-    : Math.max(0, Math.min(100, Math.round((semanticCosine - 0.91) / 0.07 * 100)));
-  let combinedScore = semanticScore == null
-    ? Math.round(regexScore * 0.75 + embeddingScore * 0.25)
-    : Math.round(regexScore * 0.55 + embeddingScore * 0.15 + semanticScore * 0.30);
-  if (embeddingCosine > 0) reasons.push(`lexical cosine: ${embeddingCosine.toFixed(3)}`);
-  if (semanticCosine != null) reasons.push(`semantic cosine: ${semanticCosine.toFixed(3)}`);
+  const lexicalCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(`${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`));
+  const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
+  let combinedScore = Math.round(regexScore * 0.75 + lexicalScore * 0.25);
+  if (lexicalCosine > 0) reasons.push(`lexical cosine: ${lexicalCosine.toFixed(3)}`);
   if (regexScore < 15 && combinedScore >= minimumScore) {
     combinedScore = Math.max(0, minimumScore - 1);
     reasons.push('semantic similarity lacked CV-derived role or skill evidence');
   }
   const filtered = combinedScore < minimumScore;
   if (filtered) reasons.push(`combined score below ${minimumScore}`);
-  return { regexScore, embeddingCosine, embeddingScore, semanticCosine, semanticScore, combinedScore, filtered, reasons };
+  return { regexScore, lexicalCosine, lexicalScore, combinedScore, filtered, reasons };
 }

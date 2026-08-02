@@ -50,7 +50,7 @@ gcloud run deploy "$WORKER_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_R
   --service-account="$WORKER_SA" --command=node --args=dist/task-worker.mjs --port=3000 \
   --cpu=2 --memory=2Gi --concurrency=1 --min-instances=0 --max-instances=3 --timeout=1800 \
   --execution-environment=gen2 --ingress=internal --no-allow-unauthenticated \
-  --set-env-vars="$COMMON_ENV,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=webhook,TELEGRAM_USER_ID=$TELEGRAM_USER_ID_VALUE,BACKGROUND_TASK_LEASE_MS=300000" \
+  --set-env-vars="$COMMON_ENV,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=webhook,TELEGRAM_USER_ID=$TELEGRAM_USER_ID_VALUE" \
   --set-secrets="$WORKER_SECRETS" --quiet
 WORKER_URL="$(gcloud run services describe "$WORKER_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(status.url)')"
 gcloud run services add-iam-policy-binding "$WORKER_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \

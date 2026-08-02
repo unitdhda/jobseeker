@@ -1,7 +1,7 @@
 import { runSingletonScrapeCycle } from '../lib/singleton-cycle.ts';
 import { startScriptRuntime } from './runtime.ts';
 import { persistHhBrowserState, restoreHhBrowserState } from '../lib/browser-state.ts';
-import { enqueueDueDeliveryTasks } from '../lib/delivery-background-tasks.ts';
+import { enqueueDueDeliveryTasks } from '../lib/cloud-tasks.ts';
 import { config } from '../config.ts';
 
 await restoreHhBrowserState();

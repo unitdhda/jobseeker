@@ -7,11 +7,8 @@ import {
 } from './lib/telegram.ts';
 import { errorMessage } from './lib/logging.ts';
 import { persistenceReady } from './lib/readiness.ts';
-import { enqueueTelegramUpdateTask } from './lib/telegram-task-dispatch.ts';
-import {
-  claimTelegramUpdate, claimTelegramUserUpdateLease, completeTelegramUpdate, failTelegramUpdate,
-  releaseTelegramUserUpdateLease, telegramUpdateUserId,
-} from './lib/telegram-webhook-receipts.ts';
+import { enqueueTelegramUpdateTask } from './lib/cloud-tasks.ts';
+import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './lib/telegram-webhook-receipts.ts';
 
 const app = new Hono();
 app.get('/health', (c) => c.json({ ok: true }));
@@ -42,13 +39,7 @@ app.post('/telegram/webhook', async (c) => {
     }
   }
   if (!await claimTelegramUpdate(updateId)) return c.json({ ok: true, duplicate: true });
-  const userId = telegramUpdateUserId(update);
-  let userLease = false;
   try {
-    if (userId) {
-      userLease = await claimTelegramUserUpdateLease(userId, updateId);
-      if (!userLease) throw new Error('Another Telegram update for this user is still processing.');
-    }
     await handleTelegramWebhookUpdate(update);
     await completeTelegramUpdate(updateId);
     return c.json({ ok: true });
@@ -56,8 +47,6 @@ app.post('/telegram/webhook', async (c) => {
     await failTelegramUpdate(updateId, error).catch(() => undefined);
     console.error(`Telegram webhook update failed: ${errorMessage(error)}`);
     return c.json({ ok: false }, 500);
-  } finally {
-    if (userId && userLease) await releaseTelegramUserUpdateLease(userId, updateId).catch(() => undefined);
   }
 });
 

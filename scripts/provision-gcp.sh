@@ -59,7 +59,7 @@ if ! gcloud tasks queues describe "$CLOUD_TASKS_QUEUE" --location="$GCP_REGION" 
   gcloud tasks queues create "$CLOUD_TASKS_QUEUE" --location="$GCP_REGION"
 fi
 gcloud tasks queues update "$CLOUD_TASKS_QUEUE" --location="$GCP_REGION" \
-  --max-dispatches-per-second=3 --max-concurrent-dispatches=3 --max-attempts=10 \
+  --max-dispatches-per-second=1 --max-concurrent-dispatches=1 --max-attempts=10 \
   --min-backoff=5s --max-backoff=300s --max-doublings=5 >/dev/null
 
 for secret in database-url telegram-bot-token telegram-webhook-secret task-execution-secret \

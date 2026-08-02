@@ -35,8 +35,8 @@ function telegramModeEnv(): TelegramMode {
   return value as TelegramMode;
 }
 
-const supportedSearchPlatforms = ['hh', 'hirehi', 'habr', 'getmatch', 'geekjob', 'superjob', 'avito', 'rabota'] as const;
-const defaultSearchPlatforms: SearchPlatformId[] = ['hh','habr','rabota'];
+const supportedSearchPlatforms = ['hh', 'habr', 'rabota'] as const;
+const defaultSearchPlatforms: SearchPlatformId[] = [...supportedSearchPlatforms];
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
 
 function platformEnv(): SearchPlatformId[] {
@@ -73,10 +73,8 @@ export const config = {
   playwrightHeadless: booleanEnv('PLAYWRIGHT_HEADLESS', true),
   searchPlatforms: platformEnv(),
   hhMaxPages: integerEnv('HH_MAX_PAGES', 5, 1, 20),
-  hireHiMaxPages: integerEnv('HIREHI_MAX_PAGES', 5, 1, 20),
   additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 5, 1, 20),
   searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
-  getmatchMaxCandidates: integerEnv('GETMATCH_MAX_CANDIDATES', 100, 1, 5_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
   candidatePrefilterBatchSize: integerEnv('CANDIDATE_PREFILTER_BATCH_SIZE', 1_000, 1, 20_000),
   candidateRefreshBatchSize: integerEnv('CANDIDATE_REFRESH_BATCH_SIZE', 2, 0, 1_000),
@@ -87,9 +85,6 @@ export const config = {
   prefilterAuditPercent: integerEnv('PREFILTER_AUDIT_PERCENT', 5, 0, 100),
   prefilterAuditSlots: integerEnv('PREFILTER_AUDIT_SLOTS', 1, 0, 100),
   prefilterCalibrationMinLabels: integerEnv('PREFILTER_CALIBRATION_MIN_LABELS', 100, 1, 100_000),
-  avitoRegion: process.env.AVITO_REGION ?? 'moskva',
-  superJobApiKey: process.env.SUPERJOB_API_KEY,
-  superJobTownId: integerEnv('SUPERJOB_TOWN_ID', 4, 1, 1_000_000),
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
