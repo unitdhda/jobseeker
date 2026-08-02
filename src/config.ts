@@ -115,4 +115,5 @@ export const config = {
   runInitialCycle: booleanEnv('RUN_INITIAL_CYCLE', true),
   telegramMode: telegramModeEnv(),
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
+  telegramWebhookAsync: booleanEnv('TELEGRAM_WEBHOOK_ASYNC',false),
 } as const;

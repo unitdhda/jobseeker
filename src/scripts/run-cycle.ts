@@ -1,11 +1,11 @@
-import { runScrapeCycle } from '../lib/jobs.ts';
+import { runSingletonScrapeCycle } from '../lib/singleton-cycle.ts';
 import { startScriptRuntime } from './runtime.ts';
 import { persistHhBrowserState, restoreHhBrowserState } from '../lib/browser-state.ts';
 
 await restoreHhBrowserState();
 const flue = await startScriptRuntime();
 try {
-  await runScrapeCycle();
+  await runSingletonScrapeCycle();
 } finally {
   await persistHhBrowserState().catch((error) =>
     console.error(`Could not persist HH browser state: ${error instanceof Error ? error.message : String(error)}`));

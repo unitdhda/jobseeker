@@ -1,10 +1,10 @@
 import { hasPostgresDatabase, postgresQuery, withPostgresTransaction } from './postgres.ts';
+import { claimCoordinationLease,releaseCoordinationLease } from './coordination-leases.ts';
 
 const localReceipts = new Map<number, 'processing' | 'completed'>();
-const localUserLeases = new Map<string, { updateId: number; expiresAt: number }>();
 let lastCleanup = 0;
 
-export async function claimTelegramUpdate(updateId: number): Promise<boolean> {
+export async function claimTelegramUpdate(updateId: number, retryProcessing = false): Promise<boolean> {
   if (!Number.isSafeInteger(updateId) || updateId < 0) throw new Error('Telegram update_id is invalid.');
   if (!hasPostgresDatabase()) {
     if (localReceipts.has(updateId)) return false;
@@ -19,7 +19,8 @@ export async function claimTelegramUpdate(updateId: number): Promise<boolean> {
     if (inserted.rowCount) return true;
     const retried = await client.query(`update telegram_update_receipts set state='processing',attempts=attempts+1,
       lease_expires_at=now()+interval '5 minutes',last_error=null
-      where update_id=$1 and (state='failed' or (state='processing' and lease_expires_at<now())) returning update_id`, [updateId]);
+      where update_id=$1 and (state='failed' or (state='processing' and (lease_expires_at<now() or $2))) returning update_id`,
+    [updateId,retryProcessing]);
     return Boolean(retried.rowCount);
   });
   if (Date.now() - lastCleanup > 3_600_000) {
@@ -50,27 +51,10 @@ export function telegramUpdateUserId(update: unknown): string | null {
   return typeof id === 'number' || typeof id === 'string' ? String(id) : null;
 }
 
-export async function claimTelegramUserUpdateLease(userId: string, updateId: number): Promise<boolean> {
-  const expiresAt = new Date(Date.now() + 5 * 60_000);
-  if (!hasPostgresDatabase()) {
-    const current = localUserLeases.get(userId);
-    if (current && current.expiresAt > Date.now() && current.updateId !== updateId) return false;
-    localUserLeases.set(userId, { updateId, expiresAt: expiresAt.getTime() });
-    return true;
-  }
-  const rows = await postgresQuery(`insert into coordination_leases(resource_key,lease_owner,lease_expires_at,updated_at)
-    values($1,$2,$3,now()) on conflict(resource_key) do update set lease_owner=excluded.lease_owner,
-    lease_expires_at=excluded.lease_expires_at,updated_at=excluded.updated_at
-    where coordination_leases.lease_expires_at<=now() or coordination_leases.lease_owner=excluded.lease_owner
-    returning resource_key`, [`telegram-user:${userId}`, String(updateId), expiresAt]);
-  return Boolean(rows.length);
+export function claimTelegramUserUpdateLease(userId: string, updateId: number): Promise<boolean> {
+  return claimCoordinationLease(`telegram-user:${userId}`,String(updateId),5*60_000);
 }
 
-export async function releaseTelegramUserUpdateLease(userId: string, updateId: number): Promise<void> {
-  if (!hasPostgresDatabase()) {
-    if (localUserLeases.get(userId)?.updateId === updateId) localUserLeases.delete(userId);
-    return;
-  }
-  await postgresQuery('delete from coordination_leases where resource_key=$1 and lease_owner=$2',
-    [`telegram-user:${userId}`, String(updateId)]);
+export function releaseTelegramUserUpdateLease(userId: string, updateId: number): Promise<void> {
+  return releaseCoordinationLease(`telegram-user:${userId}`,String(updateId));
 }
