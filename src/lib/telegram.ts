@@ -123,8 +123,9 @@ export async function sendDailyDigest(userId: string): Promise<number> {
       { type: 'heading', size: 3, text: offset ? 'Ежедневная подборка — продолжение' : 'Ежедневная подборка вакансий' }, table,
       { type: 'paragraph', text: 'Пришлите выделенный префикс или полный ID, чтобы получить адаптированное резюме и сопроводительное письмо.' },
     ] }, { disable_notification: true });
+    // Persist each page so a retried delivery does not resend earlier pages.
+    await markDigested(userId,page.map((vacancy)=>vacancy.id));
   }
-  await markDigested(userId, vacancies.map((vacancy) => vacancy.id));
   return vacancies.length;
 }
 
