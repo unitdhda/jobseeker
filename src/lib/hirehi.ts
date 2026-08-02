@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import { hireHiSearchUrl, type HireHiSearchProfile } from '../platforms/hirehi.ts';
-import { recordVacancyCandidate, type VacancyInput } from './database.ts';
+import { type VacancyInput } from './database.ts';
 import { trace } from './trace.ts';
+import { VacancySearchCollector } from './vacancy-search-collector.ts';
 import { fetchSourceText } from './safe-http.ts';
 import { errorMessage } from './logging.ts';
 
@@ -150,8 +151,8 @@ export async function normalizeHireHiCandidate(summary: HireHiListJob, sourceQue
 
 export async function scrapeHireHi(userId: string, profile: HireHiSearchProfile): Promise<{ seen: number; discovered: number }> {
   // HireHi disallows its search API in robots.txt. These are public SEO landing pages and vacancy pages instead.
-  const vacancies = new Map<string, { summary: HireHiListJob; searchName: string }>();
-  for (const search of profile.searches) {
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  searches: for (const search of profile.searches) {
     for (let page = 1; page <= config.hireHiMaxPages; page++) {
       try {
         const url = hireHiSearchUrl(search, page);
@@ -161,10 +162,17 @@ export async function scrapeHireHi(userId: string, profile: HireHiSearchProfile)
         const jobs = Array.isArray(listing.jobs) ? listing.jobs : [];
         trace('scrape.search.result', { platform: 'hirehi', search: search.name, page, found: jobs.length });
         for (const summary of jobs) {
-          if (Number.isSafeInteger(summary.id) && !vacancies.has(String(summary.id))) {
-            vacancies.set(String(summary.id), { summary, searchName: search.name });
+          if (Number.isSafeInteger(summary.id)) {
+            const sourceId = String(summary.id);
+            collector.record({ source: 'hirehi', sourceId,
+              url: `https://hirehi.ru/${encodeURIComponent(summary.category)}/job-${summary.id}`,
+              searchName: search.name, title: summary.title,
+              summary: `${summary.company} ${summary.format ?? ''} ${summary.salary_display ?? ''}`,
+              publishedAt: summary.created_at, payload: summary });
           }
+          if (collector.complete) break;
         }
+        if (collector.complete) break searches;
         if (!jobs.length || !listing.has_more) break;
         await pause();
       } catch (error) {
@@ -173,14 +181,5 @@ export async function scrapeHireHi(userId: string, profile: HireHiSearchProfile)
       }
     }
   }
-
-  let discovered = 0;
-  for (const [sourceId, vacancy] of vacancies) {
-    const summary = vacancy.summary;
-    if (recordVacancyCandidate(userId, { source: 'hirehi', sourceId,
-      url: `https://hirehi.ru/${encodeURIComponent(summary.category)}/job-${summary.id}`,
-      searchName: vacancy.searchName, title: summary.title, summary: `${summary.company} ${summary.format ?? ''} ${summary.salary_display ?? ''}`,
-      publishedAt: summary.created_at, payload: summary })) discovered++;
-  }
-  return { seen: vacancies.size, discovered };
+  return collector.result();
 }

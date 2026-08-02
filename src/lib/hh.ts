@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { chromium, type BrowserContext, type Page } from 'playwright';
 import { config } from '../config.ts';
-import { recordVacancyCandidate, type VacancyCandidate, type VacancyInput } from './database.ts';
+import { type VacancyCandidate, type VacancyInput } from './database.ts';
 import { hhSearchUrl, type HhSearchProfile } from '../platforms/hh.ts';
 import { trace } from './trace.ts';
+import { VacancySearchCollector } from './vacancy-search-collector.ts';
 import { assertPublicAddress, sourceUrl } from './url-security.ts';
 
 async function pause(min = 350, max = 900): Promise<void> {
@@ -97,9 +98,9 @@ async function openContext(): Promise<BrowserContext> {
 export async function scrapeHh(userId: string, profile: HhSearchProfile): Promise<{ seen: number; discovered: number }> {
   const context = await openContext();
   const page = context.pages()[0] ?? await context.newPage();
-  const links = new Map<string, { searchName: string; title: string }>();
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
   try {
-    for (const search of profile.searches) {
+    searches: for (const search of profile.searches) {
       for (let pageNumber = 0; pageNumber < config.hhMaxPages; pageNumber++) {
         const safeSearchUrl = sourceUrl('hh', hhSearchUrl(search, pageNumber)); await assertPublicAddress(safeSearchUrl);
         const searchUrl = safeSearchUrl.toString();
@@ -112,19 +113,16 @@ export async function scrapeHh(userId: string, profile: HhSearchProfile): Promis
         trace('scrape.search.result', { platform: 'hh', search: search.name, page: pageNumber + 1, found: found.length });
         for (const item of found) {
           const id = new URL(item.href).pathname.match(/\/vacancy\/(\d+)/)?.[1];
-          if (id && !links.has(id)) links.set(id, { searchName: search.name, title: item.title });
+          if (id) collector.record({ source: 'hh', sourceId: id, url: `https://hh.ru/vacancy/${id}`,
+            searchName: search.name, title: item.title, summary: search.name });
+          if (collector.complete) break;
         }
+        if (collector.complete) break searches;
         if (found.length === 0 || !await page.locator('[data-qa="pager-next"]').count()) break;
         await pause();
       }
     }
-
-    let discovered = 0;
-    for (const [hhId, item] of links) {
-      if (recordVacancyCandidate(userId, { source: 'hh', sourceId: hhId, url: `https://hh.ru/vacancy/${hhId}`,
-        searchName: item.searchName, title: item.title, summary: item.searchName })) discovered++;
-    }
-    return { seen: links.size, discovered };
+    return collector.result();
   } finally {
     await context.close();
   }

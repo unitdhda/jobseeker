@@ -2,11 +2,11 @@ import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import type { InputRichBlockTable, RichBlockTableCell, RichText } from 'grammy/types';
 import { config } from '../config.ts';
 import {
-  approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getScoredVacancy,
-  getScoredVacancyByApplyId, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix, listTelegramUsers,
+  approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
+  getScoredVacancy, getScoredVacancyByApplyId, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix, listTelegramUsers,
   markAlerted, markApplicationDelivered, markDigested, requestAccess, searchScoredVacancies, setUserStatus,
   skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries,
-  type ScoredVacancy, type TelegramIdentity, type TelegramUser, type GlobalScheduleName,
+  type AlertVacancy, type ScoredVacancy, type TelegramIdentity, type TelegramUser,
 } from './database.ts';
 import { importCvSource } from './cv-import.ts';
 import { refreshUserInWorker, tailorApplicationInWorker } from './job-worker-client.ts';
@@ -15,7 +15,7 @@ import { maximumCvBytes } from './cv-limits.ts';
 import { readResponseBytes } from './safe-http.ts';
 import { errorMessage } from './logging.ts';
 import {
-  deliveryWindowStatus, scheduleStatus, updateDeliveryWindow, updateSchedule,
+  deliverySettingsStatus, normalizeUtcOffset, parseClockMinutes, updateDeliverySettings,
 } from './schedules.ts';
 
 let bot: Bot | undefined;
@@ -26,6 +26,8 @@ const applicationJobs = new Set<string>();
 const pendingRefreshHashes = new Map<string, string>();
 const refreshingUsers = new Set<string>();
 const latestUserPages = new Map<string, string[]>();
+type WindowSetup = { step: 'start' | 'end' | 'digest' | 'timezone'; start?: string; end?: string; digest?: string };
+const pendingWindowSetup = new Map<string, WindowSetup>();
 const usersPageSize = 8;
 
 function getBot(): Bot {
@@ -62,7 +64,7 @@ function salary(vacancy: ScoredVacancy): string {
   return `${range} ${vacancy.salaryCurrency ?? ''}${vacancy.salaryGross === false ? ' net' : ''}`.trim();
 }
 
-export async function sendHighScoreAlert(userId: string, vacancy: ScoredVacancy): Promise<void> {
+export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy): Promise<void> {
   if (!isApprovedUser(userId)) throw new Error('User access is not approved.');
   const reasons = vacancy.reasons.slice(0, 3).map((item) => `• ${escapeHtml(item)}`).join('\n');
   const gaps = vacancy.gaps.slice(0, 2).map((item) => `• ${escapeHtml(item)}`).join('\n');
@@ -100,19 +102,23 @@ function highlightedApplyId(applyId: string, allApplyIds: string[]): RichText {
 }
 export async function sendDailyDigest(userId: string): Promise<number> {
   if (!isApprovedUser(userId)) throw new Error('User access is not approved.');
-  const vacancies = digestVacancies(userId, config.digestMinScore, config.alertScore);
+  const vacancies = digestVacancies(userId, config.digestMinScore, config.alertScore,
+    getDeliverySettings(userId)?.lastDigestAt ?? null);
   if (!vacancies.length) return 0;
   const applyIds = vacancies.map((vacancy) => vacancy.applyId);
-  const table: InputRichBlockTable = {
-    type: 'table', is_bordered: true, is_striped: true,
-    cells: [[headerCell('Apply ID', 'left'), headerCell('Score', 'right'), headerCell('Vacancy', 'left'), headerCell('Link', 'center')],
-      ...vacancies.map((vacancy) => [cell(highlightedApplyId(vacancy.applyId, applyIds)), cell(String(vacancy.score), 'right'),
-        cell(vacancy.name), cell({ type: 'url', text: 'Open', url: vacancy.url }, 'center')])],
-  };
-  await getBot().api.sendRichMessage(targetChat(userId), { blocks: [
-    { type: 'heading', size: 3, text: 'Daily vacancy digest' }, table,
-    { type: 'paragraph', text: 'Send the bold prefix or full Apply ID to receive the tailored CV and supporting cover letter.' },
-  ] }, { disable_notification: true });
+  for (let offset = 0; offset < vacancies.length; offset += 30) {
+    const page = vacancies.slice(offset, offset + 30);
+    const table: InputRichBlockTable = {
+      type: 'table', is_bordered: true, is_striped: true,
+      cells: [[headerCell('Apply ID', 'left'), headerCell('Score', 'right'), headerCell('Vacancy', 'left'), headerCell('Link', 'center')],
+        ...page.map((vacancy) => [cell(highlightedApplyId(vacancy.applyId, applyIds)), cell(String(vacancy.score), 'right'),
+          cell(vacancy.name), cell({ type: 'url', text: 'Open', url: vacancy.url }, 'center')])],
+    };
+    await getBot().api.sendRichMessage(targetChat(userId), { blocks: [
+      { type: 'heading', size: 3, text: offset ? 'Daily vacancy digest — continued' : 'Daily vacancy digest' }, table,
+      { type: 'paragraph', text: 'Send the bold prefix or full Apply ID to receive the tailored CV and supporting cover letter.' },
+    ] }, { disable_notification: true });
+  }
   markDigested(userId, vacancies.map((vacancy) => vacancy.id));
   return vacancies.length;
 }
@@ -216,11 +222,6 @@ async function generateAndSendApplication(userId: string, vacancyId: number): Pr
   }
 }
 
-function formatSchedule(name: GlobalScheduleName, cron?: string): string {
-  const status = cron ? updateSchedule(name, cron) : scheduleStatus(name);
-  const next = status.nextRun?.toLocaleString('en-GB', { timeZone: config.timezone, dateStyle: 'medium', timeStyle: 'medium' }) ?? 'not scheduled';
-  return `${name}: ${status.cron}\nNext run: ${next} (${config.timezone})`;
-}
 function cvStatus(userId: string): string {
   const cv = getCvSource(userId);
   return cv ? 'CV source: ready' : 'CV source: missing';
@@ -284,10 +285,10 @@ function usersPage(pageInput: number): { text: string; keyboard: InlineKeyboard;
     const ref = user.isOwner ? '—' : userPrefix(user.userId, ids);
     const name = (user.username ? `@${user.username}` : user.displayName).replace(/\s+/g, ' ').slice(0, 16);
     const cv = getCvSource(user.userId) ? 'yes' : 'no';
-    const window = deliveryWindowStatus(user.userId).replace('Europe/', '').slice(0, 22);
-    return `${ref.padEnd(7)} ${user.status.padEnd(11)} ${user.userId.padEnd(13)} ${cv.padEnd(3)} ${window.padEnd(22)} ${name}`;
+    const delivery = deliverySettingsStatus(user.userId).replace('Europe/', '').slice(0, 44);
+    return `${ref.padEnd(7)} ${user.status.padEnd(11)} ${user.userId.padEnd(13)} ${cv.padEnd(3)} ${delivery.padEnd(44)} ${name}`;
   });
-  const text = `<b>Users — page ${page + 1}/${pages}</b>\n<pre>${escapeHtml(['Ref     Status      User ID       CV  Window                 User', ...lines].join('\n'))}</pre>` +
+  const text = `<b>Users — page ${page + 1}/${pages}</b>\n<pre>${escapeHtml(['Ref     Status      User ID       CV  Delivery                                     User', ...lines].join('\n'))}</pre>` +
     `Revoke from this page with <code>/revoke REF</code>.`;
   const keyboard = new InlineKeyboard();
   if (page > 0) keyboard.text('‹ Previous', `users-page:${page - 1}`);
@@ -320,19 +321,20 @@ async function deletePersonalData(ctx: Context, confirmation: string): Promise<v
   }
   pendingCvUpload.delete(userId);
   pendingRefreshHashes.delete(userId);
+  pendingWindowSetup.delete(userId);
   deleteUserData(userId);
   await ctx.reply('Your personal Jobseeker data was deleted. Your approved access remains; use /cv to start again.');
 }
 
 function approvedStartText(user: TelegramUser): string {
   const ownerCommands = user.isOwner
-    ? '\n\nOwner commands:\n/users — review users\n/revoke REF — revoke access\n/scrape, /notify, /digest — show or set global crons'
+    ? '\n\nOwner commands:\n/users — review users\n/revoke REF — revoke access\n/usage — show per-user usage'
     : '';
   return `Jobseeker access: approved.\n\nUpload one authoritative CV in any language with /cv. Shared vacancies are scored privately against it. ` +
     `Before uploading, use /privacy to review storage, model-provider processing, retention, export, and deletion. ` +
     `Use /search to search your scored vacancies, /export_me to export personal data, and /delete_me to erase it. ` +
-    `Use /window HH:MM-HH:MM Area/City to limit proactive alerts and digests; /window off allows anytime delivery. ` +
-    `Send an Apply ID from a digest to generate application documents.\n\n${cvStatus(user.userId)}\nDelivery window: ${deliveryWindowStatus(user.userId)}` + ownerCommands;
+    `Use /window for a four-step notification and digest schedule setup. ` +
+    `Send an Apply ID from a digest to generate application documents.\n\n${cvStatus(user.userId)}\nDelivery: ${deliverySettingsStatus(user.userId)}` + ownerCommands;
 }
 
 export function startTelegramBot(): void {
@@ -405,18 +407,10 @@ export function startTelegramBot(): void {
     if (!user) { await ctx.reply('Reference is missing or ambiguous. Open /users and use a prefix from that page.'); return; }
     if (user.isOwner) { await ctx.reply('The owner cannot be revoked.'); return; }
     setUserStatus(user.userId, 'revoked');
-    pendingCvUpload.delete(user.userId); pendingRefreshHashes.delete(user.userId);
+    pendingCvUpload.delete(user.userId); pendingRefreshHashes.delete(user.userId); pendingWindowSetup.delete(user.userId);
     await ctx.reply(`Revoked access for ${user.userId}.`);
     await getBot().api.sendMessage(user.chatId, 'Your bot access was revoked. You may submit a new /request later.');
   });
-  for (const name of ['scrape', 'notify', 'digest'] as const) {
-    instance.command(name, async (ctx) => {
-      if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Owner only.'); return; }
-      const cron = ctx.match.trim();
-      try { await ctx.reply(formatSchedule(name, cron || undefined)); }
-      catch (error) { await ctx.reply(`Invalid ${name} cron: ${error instanceof Error ? error.message : String(error)}`); }
-    });
-  }
   instance.command('usage', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Owner only.'); return; }
     const rows = userUsageSummaries();
@@ -442,15 +436,41 @@ export function startTelegramBot(): void {
   instance.command('delete_me', async (ctx) => deletePersonalData(ctx, ctx.match));
   instance.hears(/^\/delete-me(?:@\w+)?(?:\s+(.*))?$/i, async (ctx) => deletePersonalData(ctx, ctx.match[1] ?? ''));
   instance.command('window', async (ctx) => {
-    const userId = String(ctx.from!.id); const value = ctx.match.trim();
-    if (!value) { await ctx.reply(`Delivery window: ${deliveryWindowStatus(userId)}`); return; }
+    const userId = String(ctx.from!.id); const action = ctx.match.trim().toLowerCase();
+    if (action === 'status') { await ctx.reply(`Delivery: ${deliverySettingsStatus(userId)}`); return; }
+    if (action === 'cancel') {
+      pendingWindowSetup.delete(userId); await ctx.reply('Notification setup cancelled.'); return;
+    }
+    if (action) { await ctx.reply('Use /window to start, /window status to review, or /window cancel.'); return; }
+    pendingWindowSetup.set(userId, { step: 'start' });
+    await ctx.reply(`Current delivery: ${deliverySettingsStatus(userId)}\n\n1/4 When should notifications start? Send HH:MM, for example 09:00.`);
+  });
+  instance.on('message:text', async (ctx, next) => {
+    const userId = String(ctx.from.id); const setup = pendingWindowSetup.get(userId);
+    if (!setup) { await next(); return; }
+    const value = ctx.message.text.trim();
     try {
-      updateDeliveryWindow(userId, value);
-      await ctx.reply(`Delivery window: ${deliveryWindowStatus(userId)}`);
+      if (setup.step === 'start') {
+        parseClockMinutes(value); pendingWindowSetup.set(userId, { step: 'end', start: value });
+        await ctx.reply('2/4 When should notifications end? Send HH:MM, for example 22:00.');
+      } else if (setup.step === 'end') {
+        parseClockMinutes(value);
+        if (parseClockMinutes(setup.start!) === parseClockMinutes(value)) throw new Error('Notification start and end must differ.');
+        pendingWindowSetup.set(userId, { ...setup, step: 'digest', end: value });
+        await ctx.reply('3/4 When should the daily digest be sent? Send HH:MM, for example 09:30.');
+      } else if (setup.step === 'digest') {
+        parseClockMinutes(value); pendingWindowSetup.set(userId, { ...setup, step: 'timezone', digest: value });
+        await ctx.reply('4/4 What is your UTC offset? Send +3, -5, or +3:30.');
+      } else {
+        const timezone = normalizeUtcOffset(value);
+        updateDeliverySettings(userId, setup.start!, setup.end!, setup.digest!, timezone);
+        pendingWindowSetup.delete(userId);
+        await ctx.reply(`Saved. Delivery: ${deliverySettingsStatus(userId)}`);
+      }
     } catch (error) { await ctx.reply(error instanceof Error ? error.message : String(error)); }
   });
   instance.command('privacy', async (ctx) => {
-    await ctx.reply('Privacy: normalized CV text, canonical blocks, hashes, derived profiles/embeddings, scores, usage, and model conversation state are stored in private SQLite storage. Relevant CV and vacancy content is sent to the configured third-party model provider for profile generation, scoring, and tailoring. Source uploads and generated PDFs are not retained. Data remains while access is active until /delete_me confirm; encrypted backups may retain deleted data only for the documented backup-retention period. Use /export_me before deletion. Uploading with /cv confirms you understand this processing.');
+    await ctx.reply('Privacy: normalized CV text, canonical blocks, source metadata and hashes, derived profiles/embeddings, numeric scores, usage, and delivery/application state are stored in private SQLite storage. High-score alert explanations are retained only until delivery. Completed model conversation history, source uploads, generated PDFs, and cover letters are not retained. Relevant CV and vacancy content is sent to the configured third-party model provider for profile generation, scoring, and tailoring. Data remains while access is active until /delete_me confirm; encrypted backups may retain deleted data only for the documented backup-retention period. Use /export_me before deletion. Uploading with /cv confirms you understand this processing.');
   });
   instance.command('cv', async (ctx) => {
     const userId = String(ctx.from!.id);
@@ -528,16 +548,10 @@ export function startTelegramBot(): void {
       { command: 'request', description: 'Request owner approval' },
       { command: 'cv', description: 'Upload or replace your CV source' },
       { command: 'privacy', description: 'Review CV data processing and retention' },
-      { command: 'window', description: 'Show or set proactive delivery window' },
+      { command: 'window', description: 'Set notification window and digest time' },
       { command: 'search', description: 'Search your scored vacancies' },
       { command: 'export_me', description: 'Export your personal data' },
       { command: 'delete_me', description: 'Delete your personal data' },
-      { command: 'users', description: 'Owner: review users' },
-      { command: 'usage', description: 'Owner: show per-user usage' },
-      { command: 'revoke', description: 'Owner: revoke user access' },
-      { command: 'scrape', description: 'Owner: global scrape cron' },
-      { command: 'notify', description: 'Owner: global alert cron' },
-      { command: 'digest', description: 'Owner: global digest cron' },
     ]);
     console.info('Telegram bot started; multi-user commands registered');
   } });

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import {
   candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, markCandidateClosed, markCandidateFailed, markCandidateNormalized,
-  rankedCandidateQueue, saveCandidatePrefilter, upsertVacancy, type Vacancy, type VacancyCandidate, type VacancyInput,
+  rankedCandidateQueueForUsers, saveCandidatePrefilter, upsertVacancy, type Vacancy, type VacancyCandidate, type VacancyInput,
 } from './database.ts';
 import { prefilterVacancy } from './prefilter.ts';
 import { embeddingCosine, semanticEmbedding } from './semantic-embeddings.ts';
@@ -84,9 +84,12 @@ export interface CandidateQueueResult { evaluated: number; queued: number; selec
 
 export async function processCandidateQueue(userIds: string[], progress?: QueueProgress): Promise<CandidateQueueResult> {
   const prefilter = await prefilterCandidates(userIds, progress);
-  const refresh = candidatesDueForRefresh(Math.min(config.candidateRefreshBatchSize, config.normalizationBatchSize), config.candidateRefreshDays);
-  const selected = [...rankedCandidateQueue(Math.max(0, config.normalizationBatchSize - refresh.length)), ...refresh];
-  trace('candidate.queue.ranked', { batchSize: config.normalizationBatchSize,
+  const capacity = config.normalizationBatchSizePerUser * userIds.length;
+  const ranked = rankedCandidateQueueForUsers(userIds, config.normalizationBatchSizePerUser);
+  const refresh = candidatesDueForRefresh(
+    Math.min(config.candidateRefreshBatchSize, Math.max(0, capacity - ranked.length)), config.candidateRefreshDays);
+  const selected = [...ranked, ...refresh];
+  trace('candidate.queue.ranked', { perUserBatchSize: config.normalizationBatchSizePerUser, capacity,
     selected: selected.map((candidate) => ({ source: candidate.source, sourceId: candidate.sourceId,
       title: candidate.title, score: candidate.combinedScore })) });
   const hh = selected.filter((candidate) => candidate.source === 'hh');

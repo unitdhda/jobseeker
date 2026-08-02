@@ -4,8 +4,8 @@ import { PrepareSearchProfile, ScoreVacancy, TailorApplication } from '../agents
 import { config } from '../config.ts';
 import {
   beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy, getSearchProfile, getVacancy,
-  pendingVacancies, prefilterCalibration, prefilterQueueStats, rankedPendingVacancies, recordUsage, requireApprovedUser,
-  savePrefilterScore, usageInLast24Hours, vacanciesNeedingPrefilter, type Vacancy,
+  pendingVacancies, prefilterCalibration, prefilterQueueStats, purgeSettledAgentSession, rankedPendingVacancies, recordUsage,
+  requireApprovedUser, savePrefilterScore, usageInLast24Hours, vacanciesNeedingPrefilter, type Vacancy,
 } from './database.ts';
 import { getSearchPlatform } from '../platforms/registry.ts';
 import * as v from 'valibot';
@@ -37,20 +37,23 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
           throw new Error(`Daily search-profile limit (${config.userDailySearchProfileLimit}) reached.`);
         }
         trace('search_profile.agent.start', { userId, platform: platformId, force });
-        const agent = init(PrepareSearchProfile, { id: `${userId}-${platformId}-search-v2-${hash.slice(0, 16)}` });
+        const sessionId = `${userId}-${platformId}-search-v2-${hash.slice(0, 16)}`;
+        const agent = init(PrepareSearchProfile, { id: sessionId });
         recordUsage(userId, 'search-profile');
-        const receipt = await agent.dispatch({
-          initialData: { userId, platformId, cvHash: hash },
-          message: {
-            kind: 'signal',
-            type: 'cv.prepare-search',
-            body: `Build the ${platform.name} search profile from this authoritative CV source. ` +
-              `The source may use any language; translate role terminology when the platform requires it.\n\n` +
-              `CV SOURCE:\n${cv.cvText}`,
-          },
-        });
-        await agent.read(receipt);
-        trace('search_profile.agent.completed', { platform: platformId });
+        try {
+          const receipt = await agent.dispatch({
+            initialData: { userId, platformId, cvHash: hash },
+            message: {
+              kind: 'signal',
+              type: 'cv.prepare-search',
+              body: `Build the ${platform.name} search profile from this authoritative CV source. ` +
+                `The source may use any language; translate role terminology when the platform requires it.\n\n` +
+                `CV SOURCE:\n${cv.cvText}`,
+            },
+          });
+          await agent.read(receipt);
+          trace('search_profile.agent.completed', { platform: platformId });
+        } finally { purgeSettledAgentSession(PrepareSearchProfile.agentName, sessionId); }
       }
 
       const result = v.safeParse(platform.schema, getSearchProfile<unknown>(userId, platformId));
@@ -66,28 +69,28 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
 
 export async function scoreOne(userId: string, vacancyId: number): Promise<void> {
   requireApprovedUser(userId);
-  if (userId !== config.telegramUserId && usageInLast24Hours(userId, 'score') >= config.userDailyScoreLimit) {
-    throw new Error(`Daily vacancy-scoring limit (${config.userDailyScoreLimit}) reached.`);
-  }
   const vacancy = getVacancy(vacancyId);
   if (!vacancy) throw new Error(`Vacancy ${vacancyId} was not found.`);
   trace('scoring.agent.start', { vacancyId, source: vacancy.source, sourceId: vacancy.sourceId,
     name: vacancy.name, employer: vacancy.employer, contentHash: vacancy.contentHash });
-  const agent = init(ScoreVacancy, { id: `${userId}-vacancy-${vacancyId}-${vacancy.contentHash.slice(0, 12)}` });
+  const sessionId = `${userId}-vacancy-${vacancyId}-${vacancy.contentHash.slice(0, 12)}`;
+  const agent = init(ScoreVacancy, { id: sessionId });
   recordUsage(userId, 'score');
-  const receipt = await agent.dispatch({
-    initialData: { userId, vacancyId },
-    message: { kind: 'signal', type: 'vacancy.score', body: 'Load and score this vacancy now.' },
-  });
-  await agent.read(receipt);
-  trace('scoring.agent.completed', { vacancyId });
+  try {
+    const receipt = await agent.dispatch({
+      initialData: { userId, vacancyId },
+      message: { kind: 'signal', type: 'vacancy.score', body: 'Load and score this vacancy now.' },
+    });
+    await agent.read(receipt);
+    trace('scoring.agent.completed', { vacancyId });
+  } finally { purgeSettledAgentSession(ScoreVacancy.agentName, sessionId); }
 }
 
 export async function scorePendingVacancies(
   userId: string,
   afterScore?: (vacancyId: number) => Promise<void>,
   progress?: (phase: 'filtering' | 'scoring', current: number, total: number) => void,
-  scoreLimit = config.scoreBatchSize,
+  scoreLimit = config.userScoreLimitPerCycle,
 ): Promise<number> {
   let vacancies: Vacancy[];
   let calibrationContext: string | undefined;
@@ -185,18 +188,20 @@ export async function tailorApplication(userId: string, vacancyId: number): Prom
   clearApplicationArtifacts(userId, vacancyId);
   beginApplication(userId, vacancyId);
   try {
-    const id = `${userId}-application-${vacancyId}-${vacancy.contentHash.slice(0, 12)}-${Date.now()}`;
-    const agent = init(TailorApplication, { id });
+    const sessionId = `${userId}-application-${vacancyId}-${vacancy.contentHash.slice(0, 12)}-${Date.now()}`;
+    const agent = init(TailorApplication, { id: sessionId });
     recordUsage(userId, 'application');
     if (!getCvSource(userId)) throw new Error('The authoritative CV source was not found.');
-    const receipt = await agent.dispatch({
-      initialData: { userId, vacancyId },
-      message: { kind: 'user', body: 'Prepare the application documents now from the stored canonical CV content.' },
-    });
-    await agent.read(receipt);
-    const application = getApplicationArtifacts(userId, vacancyId);
-    if (!application) throw new Error('Application agent did not save the documents.');
-    return application;
+    try {
+      const receipt = await agent.dispatch({
+        initialData: { userId, vacancyId },
+        message: { kind: 'user', body: 'Prepare the application documents now from the stored canonical CV content.' },
+      });
+      await agent.read(receipt);
+      const application = getApplicationArtifacts(userId, vacancyId);
+      if (!application) throw new Error('Application agent did not save the documents.');
+      return application;
+    } finally { purgeSettledAgentSession(TailorApplication.agentName, sessionId); }
   } catch (error) {
     clearApplicationArtifacts(userId, vacancyId);
     failApplication(userId, vacancyId, error instanceof Error ? error.message : String(error));

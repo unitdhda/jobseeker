@@ -1,7 +1,7 @@
 import { runScrapeCycle } from './lib/jobs.ts';
 import { ensureCvAndSearchProfiles, tailorApplication } from './lib/workflows.ts';
 import { config } from './config.ts';
-import { getCvHash, requireApprovedUser, usageInLast24Hours } from './lib/database.ts';
+import { getCvHash, purgeSettledAgentSessions, requireApprovedUser, usageInLast24Hours } from './lib/database.ts';
 import { startScriptRuntime } from './scripts/runtime.ts';
 import type { JobWorkerMessage, JobWorkerRequest, RefreshUserResult, SerializedApplication } from './lib/job-worker-protocol.ts';
 import { errorMessage } from './lib/logging.ts';
@@ -43,6 +43,9 @@ process.on('message', (request: JobWorkerRequest) => {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`Background job ${request.type} failed: ${errorMessage(error)}`);
       send({ kind: 'result', id: request.id, ok: false, error: message });
+    } finally {
+      try { purgeSettledAgentSessions(); }
+      catch (error) { console.error(`Conversation cleanup failed: ${errorMessage(error)}`); }
     }
   });
 });
