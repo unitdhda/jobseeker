@@ -105,7 +105,7 @@ try {
   const saved = await d.upsertVacancy({ source: 'hh', sourceId, name: 'Postgres Integration Engineer', employer: 'Integration Employer',
     area: 'Remote', salaryFrom: null, salaryTo: null, salaryCurrency: null, salaryGross: null, experience: 'senior',
     employment: 'full', schedule: 'full', workFormat: 'remote', description: 'Build distributed TypeScript services backed by PostgreSQL.',
-    keySkills: ['TypeScript', 'PostgreSQL'], url: `https://hh.ru/vacancy/${Date.now()}`, publishedAt: new Date().toISOString(),
+    keySkills: ['TypeScript', 'PostgreSQL'], url: `https://hh.ru/vacancy/${Date.now()}`, publishedAt: '',
     sourceQuery: 'integration', contentHash: `content-${suffix}` });
   vacancyId = saved.id;
   assert.equal(saved.duplicate, false);
@@ -114,9 +114,6 @@ try {
     combinedScore: 90, filtered: false, auditSelected: false, reasons: ['integration'] });
   assert.equal((await d.prefilterQueueStats(userId, `context-${suffix}`)).queued, 1);
   assert.equal((await d.rankedPendingVacancies(userId, `context-${suffix}`, 5))[0]?.id, vacancyId);
-  const vector = new Float32Array([0.25, -0.5, 0.75]);
-  await d.saveCachedEmbedding('integration-model', 'cv', userId, `embedding-${suffix}`, vector);
-  assert.deepEqual(Array.from(await d.getCachedEmbedding('integration-model', 'cv', userId, `embedding-${suffix}`) ?? []), Array.from(vector));
   await d.saveScore(userId, vacancyId, 91, 'Backend', 'Strong integration match', ['TypeScript'], ['None'], false);
   assert.equal((await d.getScoredVacancy(userId, vacancyId))?.score, 91);
   assert.equal((await d.searchScoredVacancies(userId, 'Postgres Integration'))[0]?.id, vacancyId);
@@ -124,7 +121,7 @@ try {
   await d.markAlerted(userId, vacancyId);
 
   assert.equal(await d.recordVacancyCandidate(userId, { source: 'habr', sourceId, url: `https://career.habr.com/vacancies/${sourceId}`,
-    searchName: 'integration', title: 'Integration Candidate' }), true);
+    searchName: 'integration', title: 'Integration Candidate', publishedAt: '' }), true);
   const candidate = (await d.candidatesNeedingPrefilter(userId, 'different-context', 10)).find((item) => item.sourceId === sourceId);
   assert.ok(candidate);
   await d.saveCandidatePrefilter(userId, candidate, 'different-context', { regexScore: 88, embeddingCosine: 0.7, embeddingScore: 85,

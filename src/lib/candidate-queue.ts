@@ -6,7 +6,6 @@ import {
   type Vacancy, type VacancyCandidate, type VacancyInput,
 } from './database.ts';
 import { prefilterVacancy } from './prefilter.ts';
-import { embeddingCosine, semanticEmbedding } from './semantic-embeddings.ts';
 import { normalizeHhCandidates } from './hh.ts';
 import { normalizeHireHiCandidate, type HireHiListJob } from './hirehi.ts';
 import { normalizeAdditionalCandidate } from './additional-sources.ts';
@@ -36,9 +35,8 @@ async function prefilterCandidates(userIds: string[], progress?: QueueProgress):
     );
     if (!careerProfile) return null;
     const profileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
-    const contextHash = createHash('sha256').update(['candidate-prefilter-v5-per-user', cv.cvSha256, profileHash,
-      config.prefilterMinScore, config.semanticPrefilterEnabled, config.semanticEmbeddingModel,
-      config.semanticEmbeddingDtype].join(':')).digest('hex');
+    const contextHash = createHash('sha256').update(['candidate-prefilter-v6-lexical-per-user', cv.cvSha256, profileHash,
+      config.prefilterMinScore].join(':')).digest('hex');
     const candidates = await candidatesNeedingPrefilter(userId, contextHash, config.candidatePrefilterBatchSize);
     return { userId, cvText: cv.cvText, cvHash: cv.cvSha256, careerProfile, contextHash, candidates };
   }))).filter((profile) => profile !== null);
@@ -46,31 +44,12 @@ async function prefilterCandidates(userIds: string[], progress?: QueueProgress):
   if (!total) return { evaluated: 0, queued: 0 };
   let completed = 0; let queued = 0;
   progress?.('filtering', 0, total);
-  const vacancyVectors = new Map<string, Float32Array | null>();
   for (const profile of profiles) {
-    let cvVector: Float32Array | undefined;
-    if (config.semanticPrefilterEnabled && profile.candidates.length) {
-      try { cvVector = await semanticEmbedding('cv', profile.cvHash, profile.cvText, profile.userId); }
-      catch (error) { console.warn(`Candidate semantic ranking unavailable for user ${profile.userId}: ${errorMessage(error)}`); }
-    }
     for (const candidate of profile.candidates) {
       const vacancy = candidateVacancy(candidate);
-      let vacancyVector = vacancyVectors.get(candidate.listingHash);
-      if (cvVector && vacancyVector === undefined) {
-        try {
-          const semanticText = `${candidate.title}\n${candidate.title}\n${candidate.searchName}\n${candidate.summary.slice(0, 500)}`;
-          vacancyVector = await semanticEmbedding('vacancy', `candidate-v5:${candidate.listingHash}`, semanticText);
-        } catch (error) {
-          vacancyVector = null;
-          console.warn(`Candidate embedding failed for ${candidate.source}:${candidate.sourceId}: ${errorMessage(error)}`);
-        }
-        vacancyVectors.set(candidate.listingHash, vacancyVector);
-      }
-      const semanticCosine = cvVector && vacancyVector ? embeddingCosine(cvVector, vacancyVector) : null;
-      const result = prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore, semanticCosine, profile.careerProfile);
+      const result = prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore, null, profile.careerProfile);
       await saveCandidatePrefilter(profile.userId, candidate, profile.contextHash, { ...result,
-        semanticStatus: semanticCosine == null ? (config.semanticPrefilterEnabled ? 'unavailable' : 'disabled') : 'ready',
-        auditSelected: false });
+        semanticStatus: 'disabled', auditSelected: false });
       if (!result.filtered) queued++;
       trace('candidate.prefilter.scored', { userId: profile.userId, source: candidate.source,
         sourceId: candidate.sourceId, title: candidate.title, ...result });

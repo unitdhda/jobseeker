@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { CareerProfile } from '../src/lib/career-profile.ts';
+import { careerProfileSchema, type CareerProfile } from '../src/lib/career-profile.ts';
 import { prefilterVacancy } from '../src/lib/prefilter.ts';
 import type { Vacancy } from '../src/lib/database.ts';
 import * as v from 'valibot';
@@ -35,6 +35,24 @@ await test('CV-derived prefilter has no software-role bonus', () => {
     20, 0.96, designerProfile);
   assert.equal(relevant.filtered, false);
   assert.ok(relevant.regexScore > unrelated.regexScore);
+});
+
+await test('career profile format requires translations as separate title variants', () => {
+  const combined = { version: 1, tracks: [{ name: 'Product design', titleVariants: ['Продуктовый дизайнер / Product Designer'],
+    coreSkills: ['Продуктовый дизайн'], evidence: ['CV'] }] };
+  assert.equal(v.safeParse(careerProfileSchema,combined).success,false);
+  assert.equal(v.safeParse(careerProfileSchema,{ ...combined,tracks: [{ ...combined.tracks[0],
+    titleVariants: ['Продуктовый дизайнер','Product Designer'] }] }).success,true);
+});
+
+await test('legacy bilingual title variants are compared defensively as separate titles', () => {
+  const profile: CareerProfile = { version: 1, tracks: [{ name: 'Product design',
+    titleVariants: ['Продуктовый дизайнер / Product Designer'], coreSkills: ['Продуктовый дизайн'], evidence: ['CV'] }] };
+  const result = prefilterVacancy('Продуктовый дизайнер. Продуктовый дизайн.',
+    vacancy('Продуктовый дизайнер', 'Продуктовый дизайн.'), 20, null, profile);
+  assert.equal(result.filtered, false);
+  assert.equal(result.reasons.includes('title-variant similarity: 1.000'),true);
+  assert.ok(result.regexScore >= 75);
 });
 
 await test('the same generic model supports non-design occupations', () => {

@@ -810,6 +810,7 @@ export function saveCvSource(userId: string, originalFilename: string, cvSha256:
       extracted.mediaType, extracted.parserName, extracted.parserVersion, new Date().toISOString());
   db.prepare('DELETE FROM scores WHERE user_id=?').run(userId);
   db.prepare('DELETE FROM prefilter_scores WHERE user_id=?').run(userId);
+  db.prepare('DELETE FROM search_profiles WHERE user_id=?').run(userId);
 }
 function hasCv(userId: string): boolean {
   return Boolean(db.prepare('SELECT 1 FROM cv_templates WHERE user_id=?').get(userId));

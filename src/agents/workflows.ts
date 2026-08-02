@@ -59,8 +59,10 @@ export function PrepareCareerProfile() {
   });
   return `Derive the candidate's career tracks solely from explicit evidence in the delivered CV. Do not start from a
 fixed occupation, industry, technology, or title taxonomy. For each distinct credible track provide its concise name,
-common vacancy-title variants in the CV language plus faithful Russian/English translations needed for vacancy matching,
-core skills evidenced for that track, and short supporting quotations or faithful excerpts. Translation must not broaden
+common vacancy-title variants in the CV language plus faithful Russian/English translations needed for vacancy matching.
+Each titleVariants item must be exactly one role title in one language; put each translation in a separate item and never
+combine bilingual titles with slash, pipe, or parenthetical alternatives. Provide core skills evidenced for that track,
+and short supporting quotations or faithful excerpts. Translation must not broaden
 the occupation into adjacent roles. Do not treat contact details, employer product technologies,
 or words that merely occur in project names as candidate skills. Do not invent adjacent occupations. Call
 save_career_profile exactly once with the complete validated profile.`;
