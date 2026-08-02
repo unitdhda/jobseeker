@@ -4,6 +4,7 @@ import {
   approvedUsers, getDeliverySettings, markDigestRun, saveDeliverySettings, type DeliverySettings,
 } from './database.ts';
 import { errorMessage } from './logging.ts';
+import { mapConcurrent } from './adaptive-concurrency.ts';
 
 type GlobalHandler = () => Promise<unknown>;
 type UserHandler = (userId: string) => Promise<unknown>;
@@ -129,8 +130,9 @@ export async function runScheduledCycle(): Promise<void> {
     try { await scrapeHandler(); }
     catch (error) { console.error(`Scrape cycle failed: ${errorMessage(error)}`); }
     const now = new Date();
-    for (const user of approvedUsers()) await sendAlerts(user.userId, now);
-    for (const user of approvedUsers()) await sendDigest(user.userId, now);
+    const users = approvedUsers();
+    await mapConcurrent(users, config.deliveryConcurrency, (user) => sendAlerts(user.userId, now));
+    await mapConcurrent(users, config.deliveryConcurrency, (user) => sendDigest(user.userId, now));
   } finally { cycleRunning = false; }
 }
 

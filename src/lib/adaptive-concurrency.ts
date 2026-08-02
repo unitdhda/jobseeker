@@ -49,6 +49,30 @@ export class AdaptiveTaskPool {
   }
 }
 
+export class KeyedTaskScheduler {
+  private readonly pool: AdaptiveTaskPool;
+  private readonly tails = new Map<string, Promise<void>>();
+
+  constructor(readonly concurrency: number) {
+    if (!Number.isInteger(concurrency) || concurrency < 1) throw new Error('Keyed task-scheduler concurrency is invalid.');
+    this.pool = new AdaptiveTaskPool(concurrency, concurrency);
+  }
+
+  get activeCount(): number { return this.pool.activeCount; }
+  get queuedCount(): number { return this.pool.queuedCount; }
+
+  run<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.tails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => { release = resolve; });
+    this.tails.set(key, tail);
+    return previous.then(() => this.pool.run(task)).finally(() => {
+      release();
+      if (this.tails.get(key) === tail) this.tails.delete(key);
+    });
+  }
+}
+
 export async function mapConcurrent<T, R>(items: readonly T[], concurrency: number,
   mapper: (item: T, index: number) => Promise<R>): Promise<R[]> {
   const results = new Array<R>(items.length);

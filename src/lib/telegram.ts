@@ -1,5 +1,5 @@
 import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
-import type { InputRichBlockTable, RichBlockTableCell, RichText } from 'grammy/types';
+import type { InputRichBlockTable, InputRichMessage, RichBlockTableCell, RichText } from 'grammy/types';
 import { config } from '../config.ts';
 import {
   approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
@@ -282,29 +282,36 @@ function userPrefix(userId: string, pageIds: string[]): string {
   while (length < userId.length && pageIds.some((other) => other !== userId && other.startsWith(userId.slice(0, length)))) length++;
   return userId.slice(0, length);
 }
-function usersPage(pageInput: number): { text: string; keyboard: InlineKeyboard; ids: string[]; page: number } {
+function usersPage(pageInput: number): { richMessage: InputRichMessage; keyboard: InlineKeyboard; ids: string[]; page: number } {
   const total = listTelegramUsers(1, 0).total; const pages = Math.max(1, Math.ceil(total / usersPageSize));
   const page = Math.max(0, Math.min(pageInput, pages - 1)); const { users } = listTelegramUsers(usersPageSize, page * usersPageSize);
   const ids = users.map((user) => user.userId);
-  const lines = users.map((user) => {
-    const ref = user.isOwner ? '—' : userPrefix(user.userId, ids);
-    const name = (user.username ? `@${user.username}` : user.displayName).replace(/\s+/g, ' ').slice(0, 16);
-    const cv = getCvSource(user.userId) ? 'да' : 'нет';
-    const delivery = deliverySettingsStatus(user.userId).replace('Europe/', '').slice(0, 44);
-    const status = userStatusText(user.status).slice(0, 18);
-    return `${ref.padEnd(7)} ${status.padEnd(18)} ${user.userId.padEnd(13)} ${cv.padEnd(3)} ${delivery.padEnd(44)} ${name}`;
-  });
-  const text = `<b>Пользователи — страница ${page + 1}/${pages}</b>\n<pre>${escapeHtml(['Ссылка  Статус             ID            CV  Доставка                                     Пользователь', ...lines].join('\n'))}</pre>` +
-    `Чтобы отозвать доступ: <code>/revoke ССЫЛКА</code>.`;
+  const table: InputRichBlockTable = {
+    type: 'table', is_bordered: true, is_striped: true,
+    cells: [[headerCell('Ссылка', 'left'), headerCell('Пользователь', 'left'), headerCell('Статус', 'left'),
+      headerCell('CV', 'center'), headerCell('Доставка', 'left')],
+      ...users.map((user) => {
+        const ref = user.isOwner ? '—' : userPrefix(user.userId, ids);
+        const name = (user.username ? `@${user.username}` : user.displayName).replace(/\s+/g, ' ').slice(0, 24);
+        return [cell(ref), cell(`${name}\n${user.userId}`), cell(userStatusText(user.status)),
+          cell(getCvSource(user.userId) ? 'да' : 'нет', 'center'), cell(deliverySettingsStatus(user.userId))];
+      })],
+  };
+  const richMessage: InputRichMessage = { blocks: [
+    { type: 'heading', size: 3, text: `Пользователи — страница ${page + 1}/${pages}` },
+    table,
+    { type: 'paragraph', text: 'Одобрить: /ok ID или @username. Отозвать: /revoke ССЫЛКА.' },
+  ] };
   const keyboard = new InlineKeyboard();
   if (page > 0) keyboard.text('‹ Назад', `users-page:${page - 1}`);
   if (page + 1 < pages) keyboard.text('Далее ›', `users-page:${page + 1}`);
-  return { text, keyboard, ids, page };
+  return { richMessage, keyboard, ids, page };
 }
 async function showUsers(ctx: Context, page: number, edit = false): Promise<void> {
   const view = usersPage(page); latestUserPages.set(ownerUserId(), view.ids);
-  const options = { parse_mode: 'HTML' as const, reply_markup: view.keyboard };
-  if (edit) await ctx.editMessageText(view.text, options); else await ctx.reply(view.text, options);
+  const options = { reply_markup: view.keyboard };
+  if (edit) await ctx.editMessageText(view.richMessage, options);
+  else await ctx.replyWithRichMessage(view.richMessage, options);
 }
 function resolveUserReference(reference: string): TelegramUser | null {
   const pageIds = latestUserPages.get(ownerUserId()) ?? [];
@@ -312,6 +319,12 @@ function resolveUserReference(reference: string): TelegramUser | null {
   if (pageMatches.length === 1) return getTelegramUser(pageMatches[0]);
   const all = listTelegramUsers(10_000, 0).users.filter((user) => user.userId === reference || user.userId.startsWith(reference));
   return all.length === 1 ? all[0] : null;
+}
+function resolveApprovalReference(reference: string): TelegramUser | null {
+  const value = reference.trim(); const username = value.replace(/^@/, '').toLowerCase();
+  const matches = listTelegramUsers(10_000, 0).users.filter((user) =>
+    user.userId === value || user.username?.toLowerCase() === username);
+  return matches.length === 1 ? matches[0] : null;
 }
 async function deletePersonalData(ctx: Context, confirmation: string): Promise<void> {
   if (!ctx.from) return;
@@ -334,7 +347,7 @@ async function deletePersonalData(ctx: Context, confirmation: string): Promise<v
 
 function approvedStartText(user: TelegramUser): string {
   const ownerCommands = user.isOwner
-    ? '\n\nКоманды владельца:\n/users — пользователи\n/revoke ССЫЛКА — отозвать доступ\n/usage — статистика использования'
+    ? '\n\nКоманды владельца:\n/ok ID или @username — одобрить доступ\n/users — пользователи\n/revoke ССЫЛКА — отозвать доступ\n/usage — статистика использования'
     : '';
   return `Доступ открыт.\n\n1. Загрузите актуальное резюме командой /cv.\n` +
     `2. Настройте время уведомлений и дайджеста командой /window.\n` +
@@ -396,6 +409,21 @@ export function startTelegramBot(): void {
     await getBot().api.sendMessage(user.chatId, action === 'approve'
       ? 'Доступ одобрен. Отправьте /start, чтобы начать настройку.'
       : 'Заявка отклонена. Позже вы сможете снова отправить /request.');
+  });
+  instance.command('ok', async (ctx) => {
+    if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
+    const reference = ctx.match.trim();
+    if (!reference) { await ctx.reply('Укажите ID или username: /ok 123456789 или /ok @username'); return; }
+    const user = resolveApprovalReference(reference);
+    if (!user) { await ctx.reply('Пользователь не найден. Он должен сначала открыть бота или отправить /request.'); return; }
+    if (user.isOwner || user.status === 'approved') { await ctx.reply('У этого пользователя уже есть доступ.'); return; }
+    setUserStatus(user.userId, 'approved');
+    await ctx.reply(`Доступ одобрен: ${user.username ? `@${user.username}` : user.userId}.`);
+    try { await getBot().api.sendMessage(user.chatId, 'Доступ одобрен. Отправьте /start, чтобы начать настройку.'); }
+    catch (error) {
+      console.error(`Could not notify approved user ${user.userId}: ${errorMessage(error)}`);
+      await ctx.reply('Доступ сохранён, но уведомить пользователя не удалось.');
+    }
   });
   instance.command('users', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
