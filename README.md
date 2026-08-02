@@ -91,7 +91,8 @@ TIMEZONE=Europe/Moscow
 | `CLOUD_TASKS_PROJECT/LOCATION/QUEUE` | Очередь Google Cloud Tasks для webhook work | для async webhook |
 | `CLOUD_TASKS_WORKER_URL`, `CLOUD_TASKS_SERVICE_ACCOUNT` | Приватный Cloud Run worker и OIDC service account | для async webhook |
 | `TASK_EXECUTION_SECRET` | Дополнительная проверка Cloud Tasks → worker, 32+ URL-safe символа | для async webhook |
-| `SUPABASE_URL`, `SUPABASE_SECRET_KEY` `SUPABASE_SECRET_KEY` | Доступ backend к приватному encrypted state bucket | для cloud runtime |
+| `BACKGROUND_DELIVERY_ASYNC` | После singleton cycle ставит alerts/digests в ту же durable queue | `false` |
+| `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | Доступ backend к приватному encrypted state bucket | для cloud runtime |
 | `RUNTIME_STATE_ENCRYPTION_KEY` | 32-байтный hex-ключ AES-256-GCM | для cloud runtime |
 
 ### Поиск и расписание

@@ -3,6 +3,9 @@ import { Hono } from 'hono';
 import { BackgroundTaskWorker } from './lib/background-task-worker.ts';
 import { getBackgroundTask } from './lib/background-tasks.ts';
 import { telegramUpdateTaskKind,handleTelegramUpdateTask } from './lib/telegram-background-task.ts';
+import {
+  alertDeliveryTaskKind,digestDeliveryTaskKind,handleAlertDeliveryTask,handleDigestDeliveryTask,
+} from './lib/delivery-background-tasks.ts';
 import { errorMessage } from './lib/logging.ts';
 
 const workerId=process.env.K_REVISION?.trim()||process.env.HOSTNAME?.trim()||`task-worker-${process.pid}`;
@@ -10,8 +13,11 @@ const executionSecret=process.env.TASK_EXECUTION_SECRET?.trim()??'';
 if (!/^[A-Za-z0-9_-]{32,256}$/.test(executionSecret)) {
   throw new Error('TASK_EXECUTION_SECRET must contain 32-256 URL-safe characters.');
 }
-const worker=new BackgroundTaskWorker({ workerId,handlers:{ [telegramUpdateTaskKind]:handleTelegramUpdateTask },
-  leaseMs:Number(process.env.BACKGROUND_TASK_LEASE_MS??300_000) });
+const worker=new BackgroundTaskWorker({ workerId,handlers:{
+  [telegramUpdateTaskKind]:handleTelegramUpdateTask,
+  [alertDeliveryTaskKind]:handleAlertDeliveryTask,
+  [digestDeliveryTaskKind]:handleDigestDeliveryTask,
+},leaseMs:Number(process.env.BACKGROUND_TASK_LEASE_MS??300_000) });
 const app=new Hono();
 
 function authorized(provided: string|undefined): boolean {

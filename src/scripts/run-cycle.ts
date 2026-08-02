@@ -1,11 +1,17 @@
 import { runSingletonScrapeCycle } from '../lib/singleton-cycle.ts';
 import { startScriptRuntime } from './runtime.ts';
 import { persistHhBrowserState, restoreHhBrowserState } from '../lib/browser-state.ts';
+import { enqueueDueDeliveryTasks } from '../lib/delivery-background-tasks.ts';
+import { config } from '../config.ts';
 
 await restoreHhBrowserState();
 const flue = await startScriptRuntime();
 try {
-  await runSingletonScrapeCycle();
+  const result=await runSingletonScrapeCycle();
+  if (result&&config.backgroundDeliveryAsync) {
+    const queued=await enqueueDueDeliveryTasks();
+    console.info(`Queued ${queued} delivery tasks.`);
+  }
 } finally {
   await persistHhBrowserState().catch((error) =>
     console.error(`Could not persist HH browser state: ${error instanceof Error ? error.message : String(error)}`));

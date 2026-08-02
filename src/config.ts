@@ -116,4 +116,5 @@ export const config = {
   telegramMode: telegramModeEnv(),
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
   telegramWebhookAsync: booleanEnv('TELEGRAM_WEBHOOK_ASYNC',false),
+  backgroundDeliveryAsync: booleanEnv('BACKGROUND_DELIVERY_ASYNC',false),
 } as const;
