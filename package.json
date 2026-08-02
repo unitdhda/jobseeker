@@ -8,13 +8,13 @@
   "scripts": {
     "dev": "vite dev",
     "build": "vite build",
-    "start": "node --env-file-if-exists=.env dist/server.mjs",
-    "start:task-worker": "node --env-file-if-exists=.env dist/task-worker.mjs",
+    "start": "bun dist/server.mjs",
+    "start:task-worker": "bun dist/task-worker.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
     "test:postgres": "tsx --env-file=.env.cloud tests/database-postgres.integration.ts",
-    "cv:prepare": "tsx --env-file-if-exists=.env src/scripts/prepare-cv.ts",
-    "run:cycle": "tsx --env-file-if-exists=.env src/scripts/run-cycle.ts"
+    "cv:prepare": "bun src/scripts/prepare-cv.ts",
+    "run:cycle": "bun src/scripts/run-cycle.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.81.1",
