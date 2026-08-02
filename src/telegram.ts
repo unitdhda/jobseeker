@@ -5,18 +5,19 @@ import {
   approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
   getScoredVacancy, getScoredVacancyByApplyId, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix, listTelegramUsers,
   markAlerted, markApplicationDelivered, markDigested, requestAccess, searchScoredVacancies, setUserStatus,
-  skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries,
+  skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries, llmUsageSummary,
   type AlertVacancy, type ScoredVacancy, type TelegramIdentity, type TelegramUser,
 } from './database.ts';
 import { importCvSource } from './cv.ts';
-import { refreshUserInWorker, tailorApplicationInWorker } from './worker-client.ts';
+import { jobWorkerStatus, refreshUserInWorker, tailorApplicationInWorker } from './worker-client.ts';
 import { clearApplicationArtifacts } from './documents.ts';
 import { maximumCvBytes } from './cv.ts';
 import { readResponseBytes } from './vacancies/http.ts';
 import { errorMessage } from './observability.ts';
 import { claimTelegramSession, deleteTelegramSession, getTelegramSession, setTelegramSession } from './telegram-state.ts';
 import {
-  deliverySettingsStatus, normalizeUtcOffset, parseClockMinutes, updateDeliverySettings,
+  deliverySettingsStatus, digestSettingsStatus, normalizeUtcOffset, parseClockMinutes, removeDeliveryWindow,
+  updateDeliveryTimezone, updateDeliveryWindow, updateDigestTime,
 } from './vacancies/jobs.ts';
 
 let bot: Bot | undefined;
@@ -26,7 +27,7 @@ const applicationJobs = new Set<string>();
 const pendingRefreshHashes = new Map<string, string>();
 const refreshingUsers = new Set<string>();
 const latestUserPages = new Map<string, string[]>();
-type WindowSetup = { step: 'start' | 'end' | 'digest' | 'timezone'; start?: string; end?: string; digest?: string };
+type WindowSetup = { step: 'start' | 'end' | 'digest' | 'timezone'; start?: string };
 const usersPageSize = 8;
 const cvUploadSessionTtlMs = 30 * 60_000;
 const windowSetupTtlMs = 30 * 60_000;
@@ -59,6 +60,36 @@ function sourceLabel(source: string): string {
 function userStatusText(status: TelegramUser['status']): string {
   return ({ unregistered: 'не зарегистрирован', pending: 'на рассмотрении', approved: 'одобрен',
     rejected: 'отклонён', revoked: 'отозван' } as const)[status];
+}
+function sparkline(values: number[]): string {
+  const bars='▁▂▃▄▅▆▇█'; const finite=values.map(value=>Number.isFinite(value)?Math.max(0,value):0);
+  const maximum=Math.max(...finite,0); if(!maximum)return '▁'.repeat(finite.length);
+  return finite.map(value=>bars[Math.round(value/maximum*(bars.length-1))]).join('');
+}
+function compactNumber(value:number):string{return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value);}
+function money(value:number):string{return `$${value<0.01?value.toFixed(6):value.toFixed(2)}`;}
+function runtimeUsageText():string{
+  const memory=process.memoryUsage(),cpu=process.cpuUsage(),worker=jobWorkerStatus();
+  const cloud=Boolean(process.env.K_SERVICE); const service=process.env.K_SERVICE??'локальный процесс';
+  const runtimeHours=process.uptime()/3600,isTaskWorker=service.includes('worker');
+  const allocatedCpu=isTaskWorker?2:1,allocatedMemoryGiB=isTaskWorker?2:0.5;
+  const runtime=cloud?`Cloud Run · ${service} · видимый экземпляр: 1`:'Cloud Run не активен · локальных процессов сервиса: 1';
+  const allocation=cloud?`Текущий экземпляр: ${runtimeHours.toFixed(2)} instance-ч · `+
+    `${(runtimeHours*allocatedCpu).toFixed(2)} vCPU-ч · ${(runtimeHours*allocatedMemoryGiB).toFixed(2)} GiB-ч`:
+    'Cloud usage: 0 (локальный владелец исполнения)';
+  const scaling=cloud?'web 0–2 × 20; task workers 0–3 × 1; cycle 0–1':'профиль при cutover: web 0–2 × 20; task workers 0–3 × 1; cycle 0–1';
+  return `${runtime}\n${allocation}\nПамять RSS: ${Math.round(memory.rss/1_048_576)} MiB · heap: ${Math.round(memory.heapUsed/1_048_576)} MiB\n`+
+    `CPU процесса: ${((cpu.user+cpu.system)/1e6).toFixed(1)} c · uptime: ${runtimeHours.toFixed(1)} ч\n`+
+    `Локальный job worker: ${worker.active}/1 · очередь: ${worker.pending}/${worker.capacity}\n`+
+    `AI workers: ${config.scoreAgentConcurrencyMin}–${config.scoreAgentConcurrencyMax} · масштаб: ${scaling}`;
+}
+function windowKeyboard():InlineKeyboard{return new InlineKeyboard()
+  .text('🕒 Время уведомлений','window:time').row()
+  .text('🌍 Часовой пояс','window:timezone').row()
+  .text('📬 Время дайджеста','window:digest').row()
+  .text('🗑 Удалить окно','window:remove');}
+async function showWindowSettings(ctx:Context,userId:string):Promise<void>{
+  await ctx.reply(`Настройки доставки: ${await deliverySettingsStatus(userId)}`,{reply_markup:windowKeyboard()});
 }
 function salary(vacancy: ScoredVacancy): string {
   if (vacancy.salaryFrom == null && vacancy.salaryTo == null) return 'не указана';
@@ -451,10 +482,21 @@ function configureTelegramBot(): Bot | null {
   });
   instance.command('usage', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
-    const rows = await userUsageSummaries();
+    const [rows,llm]=await Promise.all([userUsageSummaries(),llmUsageSummary(14)]);
     const lines = rows.map((row) => `${row.userId.padEnd(14)} ${String(row.scores24h).padStart(4)}/${String(row.scoresTotal).padEnd(5)} ` +
       `${String(row.applications24h).padStart(3)}/${String(row.applicationsTotal).padEnd(4)} ${row.displayName.slice(0, 18)}`);
-    await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n<pre>${escapeHtml(['ID              Оценки      Отклики  Пользователь', ...lines].join('\n'))}</pre>`,
+    const first=llm.timeline[0]?.date??'',last=llm.timeline.at(-1)?.date??'';
+    const charts=[`токены   ${sparkline(llm.timeline.map(day=>day.tokens))}`,
+      `деньги   ${sparkline(llm.timeline.map(day=>day.costUsd))}`,
+      `оценки   ${sparkline(llm.timeline.map(day=>day.scores))}`,
+      `отклики  ${sparkline(llm.timeline.map(day=>day.applications))}`].join('\n');
+    await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n`+
+      `LLM-вызовы: <b>${llm.turns24h} / ${llm.turnsTotal}</b>\n`+
+      `Токены: <b>${compactNumber(llm.tokens24h)} / ${compactNumber(llm.tokensTotal)}</b>\n`+
+      `Стоимость модели: <b>${money(llm.cost24hUsd)} / ${money(llm.costTotalUsd)}</b>\n\n`+
+      `<b>14 дней · ${first}—${last}</b>\n<pre>${charts}</pre>\n`+
+      `<b>Ресурсы и масштабирование</b>\n<pre>${escapeHtml(runtimeUsageText())}</pre>\n`+
+      `<b>Пользователи</b>\n<pre>${escapeHtml(['ID              Оценки      Отклики  Пользователь', ...lines].join('\n'))}</pre>`,
       { parse_mode: 'HTML' });
   });
   instance.command('search', async (ctx) => {
@@ -474,14 +516,29 @@ function configureTelegramBot(): Bot | null {
   instance.command('delete_me', async (ctx) => deletePersonalData(ctx, ctx.match));
   instance.hears(/^\/delete-me(?:@\w+)?(?:\s+(.*))?$/i, async (ctx) => deletePersonalData(ctx, ctx.match[1] ?? ''));
   instance.command('window', async (ctx) => {
-    const userId = String(ctx.from!.id); const action = ctx.match.trim().toLowerCase();
-    if (action === 'status') { await ctx.reply(`Настройки доставки: ${await deliverySettingsStatus(userId)}`); return; }
-    if (action === 'cancel') {
-      await deleteTelegramSession(userId, 'window-setup'); await ctx.reply('Настройка отменена.'); return;
+    const userId=String(ctx.from!.id);await deleteTelegramSession(userId,'window-setup');await showWindowSettings(ctx,userId);
+  });
+  instance.callbackQuery(/^window:(time|timezone|digest|remove)$/,async(ctx)=>{
+    const userId=String(ctx.from.id),action=ctx.match[1];await ctx.answerCallbackQuery();
+    await deleteTelegramSession(userId,'window-setup');
+    if(action==='remove'){
+      await removeDeliveryWindow(userId);await ctx.reply(`Окно уведомлений удалено. ${await deliverySettingsStatus(userId)}`,
+        {reply_markup:windowKeyboard()});return;
     }
-    if (action) { await ctx.reply('Отправьте /window для настройки, /window status для просмотра или /window cancel для отмены.'); return; }
-    await setTelegramSession(userId, 'window-setup', { step: 'start' } satisfies WindowSetup, windowSetupTtlMs);
-    await ctx.reply(`Сейчас: ${await deliverySettingsStatus(userId)}\n\n1/4 Во сколько начинать уведомления? Отправьте время в формате ЧЧ:ММ, например 09:00.`);
+    if(action==='time'){
+      await setTelegramSession(userId,'window-setup',{step:'start'} satisfies WindowSetup,windowSetupTtlMs);
+      await ctx.reply('Во сколько начинать уведомления? Отправьте время ЧЧ:ММ, например 09:00.');return;
+    }
+    if(action==='timezone'){
+      await setTelegramSession(userId,'window-setup',{step:'timezone'} satisfies WindowSetup,windowSetupTtlMs);
+      await ctx.reply('Укажите смещение от UTC: например +3, -5 или +3:30.');return;
+    }
+    await setTelegramSession(userId,'window-setup',{step:'digest'} satisfies WindowSetup,windowSetupTtlMs);
+    await ctx.reply('Во сколько присылать ежедневную подборку? Отправьте время ЧЧ:ММ, например 09:30.');
+  });
+  instance.command('digest',async(ctx)=>{
+    await ctx.reply(`<b>Ежедневный дайджест</b>\n${escapeHtml(await digestSettingsStatus(String(ctx.from!.id)))}\n`+
+      `Диапазон оценки: ${config.digestMinScore}–${config.alertScore-1}`,{parse_mode:'HTML'});
   });
   instance.on('message:text', async (ctx, next) => {
     const userId = String(ctx.from.id); const setup = await getTelegramSession<WindowSetup>(userId, 'window-setup');
@@ -490,20 +547,16 @@ function configureTelegramBot(): Bot | null {
     try {
       if (setup.step === 'start') {
         parseClockMinutes(value); await setTelegramSession(userId, 'window-setup', { step: 'end', start: value } satisfies WindowSetup, windowSetupTtlMs);
-        await ctx.reply('2/4 Во сколько заканчивать уведомления? Формат ЧЧ:ММ, например 22:00.');
+        await ctx.reply('Во сколько заканчивать уведомления? Отправьте время ЧЧ:ММ, например 22:00.');
       } else if (setup.step === 'end') {
-        parseClockMinutes(value);
-        if (parseClockMinutes(setup.start!) === parseClockMinutes(value)) throw new Error('Время начала и окончания должно отличаться.');
-        await setTelegramSession(userId, 'window-setup', { ...setup, step: 'digest', end: value }, windowSetupTtlMs);
-        await ctx.reply('3/4 Во сколько присылать ежедневную подборку? Формат ЧЧ:ММ, например 09:30.');
+        await updateDeliveryWindow(userId,setup.start!,value);await deleteTelegramSession(userId,'window-setup');
+        await ctx.reply(`Время уведомлений сохранено. ${await deliverySettingsStatus(userId)}`,{reply_markup:windowKeyboard()});
       } else if (setup.step === 'digest') {
-        parseClockMinutes(value); await setTelegramSession(userId, 'window-setup', { ...setup, step: 'timezone', digest: value }, windowSetupTtlMs);
-        await ctx.reply('4/4 Укажите смещение от UTC: например +3, -5 или +3:30.');
+        await updateDigestTime(userId,value);await deleteTelegramSession(userId,'window-setup');
+        await ctx.reply(`Время дайджеста сохранено. ${await deliverySettingsStatus(userId)}`,{reply_markup:windowKeyboard()});
       } else {
-        const timezone = normalizeUtcOffset(value);
-        await updateDeliverySettings(userId, setup.start!, setup.end!, setup.digest!, timezone);
-        await deleteTelegramSession(userId, 'window-setup');
-        await ctx.reply(`Готово. ${await deliverySettingsStatus(userId)}`);
+        await updateDeliveryTimezone(userId,normalizeUtcOffset(value));await deleteTelegramSession(userId,'window-setup');
+        await ctx.reply(`Часовой пояс сохранён. ${await deliverySettingsStatus(userId)}`,{reply_markup:windowKeyboard()});
       }
     } catch (error) { await ctx.reply(error instanceof Error ? error.message : String(error)); }
   });
@@ -590,7 +643,8 @@ async function registerTelegramCommands(instance: Bot): Promise<void> {
     { command: 'request', description: 'Запросить доступ' },
     { command: 'cv', description: 'Загрузить или заменить резюме' },
     { command: 'privacy', description: 'Как обрабатываются данные' },
-    { command: 'window', description: 'Настроить уведомления и дайджест' },
+    { command: 'window', description: 'Настроить время уведомлений' },
+    { command: 'digest', description: 'Состояние ежедневного дайджеста' },
     { command: 'search', description: 'Поиск по оценённым вакансиям' },
     { command: 'export_me', description: 'Экспортировать свои данные' },
     { command: 'delete_me', description: 'Удалить свои данные' },

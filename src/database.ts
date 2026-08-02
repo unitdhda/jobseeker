@@ -16,6 +16,13 @@ export interface UserUsageSummary {
   userId: string; displayName: string; scores24h: number; applications24h: number;
   searchProfiles24h: number; scoresTotal: number; applicationsTotal: number;
 }
+export interface UsageDay {
+  date: string; scores: number; applications: number; turns: number; tokens: number; costUsd: number;
+}
+export interface LlmUsageSummary {
+  turns24h: number; turnsTotal: number; tokens24h: number; tokensTotal: number; cost24hUsd: number; costTotalUsd: number;
+  timeline: UsageDay[];
+}
 export interface Vacancy {
   id: number; source: string; sourceId: string; applyId: string; name: string; employer: string; area: string;
   salaryFrom: number | null; salaryTo: number | null; salaryCurrency: string | null; salaryGross: boolean | null;
@@ -163,6 +170,33 @@ export async function userUsageSummaries(): Promise<UserUsageSummary[]> {
   return rows.map((row) => ({ userId: String(row.user_id), displayName: String(row.display_name), scores24h: Number(row.scores_24h),
     applications24h: Number(row.applications_24h), searchProfiles24h: Number(row.profiles_24h), scoresTotal: Number(row.scores_total),
     applicationsTotal: Number(row.applications_total) }));
+}
+
+export async function llmUsageSummary(days = 14): Promise<LlmUsageSummary> {
+  await ready();
+  if (!Number.isSafeInteger(days) || days < 2 || days > 31) throw new Error('Usage timeline range is invalid.');
+  const [totals, timeline] = await Promise.all([
+    one(`select count(*) filter(where kind='llm' and occurred_at>=now()-interval '1 day') turns_24h,
+      count(*) filter(where kind='llm') turns_total,
+      coalesce(sum(total_tokens) filter(where kind='llm' and occurred_at>=now()-interval '1 day'),0) tokens_24h,
+      coalesce(sum(total_tokens) filter(where kind='llm'),0) tokens_total,
+      coalesce(sum(cost_usd) filter(where kind='llm' and occurred_at>=now()-interval '1 day'),0) cost_24h,
+      coalesce(sum(cost_usd) filter(where kind='llm'),0) cost_total from usage_events`),
+    q(`with days as (select generate_series(current_date-($1::int-1),current_date,interval '1 day')::date bucket_date)
+      select to_char(d.bucket_date,'MM-DD') date,
+        count(*) filter(where e.kind='score') scores,count(*) filter(where e.kind='application') applications,
+        count(*) filter(where e.kind='llm') turns,coalesce(sum(e.total_tokens) filter(where e.kind='llm'),0) tokens,
+        coalesce(sum(e.cost_usd) filter(where e.kind='llm'),0) cost
+      from days d left join usage_events e on e.occurred_at>=d.bucket_date and e.occurred_at<d.bucket_date+1
+      group by d.bucket_date order by d.bucket_date`, [days]),
+  ]);
+  return {
+    turns24h:Number(totals?.turns_24h??0),turnsTotal:Number(totals?.turns_total??0),
+    tokens24h:Number(totals?.tokens_24h??0),tokensTotal:Number(totals?.tokens_total??0),
+    cost24hUsd:Number(totals?.cost_24h??0),costTotalUsd:Number(totals?.cost_total??0),
+    timeline:timeline.map(row=>({date:String(row.date),scores:Number(row.scores),applications:Number(row.applications),
+      turns:Number(row.turns),tokens:Number(row.tokens),costUsd:Number(row.cost)})),
+  };
 }
 
 export async function deleteUserData(userId: string): Promise<void> {

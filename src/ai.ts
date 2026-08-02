@@ -17,14 +17,14 @@ function jsonText(text:string):unknown{
 }
 
 export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,v.BaseIssue<unknown>>>(options:{
-  agent:string;model:string;thinking:ModelThinkingLevel;system:string;prompt:string;schema:TSchema;
+  userId:string;agent:string;model:string;thinking:ModelThinkingLevel;system:string;prompt:string;schema:TSchema;
 }):Promise<v.InferOutput<TSchema>>{
   const [provider,id]=modelParts(options.model),models=aiModels(),model=models.getModel(provider,id);
   if(!model)throw new Error(`Configured AI model is unavailable: ${options.model}`);
   const response=await models.completeSimple(model,{systemPrompt:options.system,messages:[{
     role:'user',content:`${options.prompt}\n\nReturn only the requested JSON value without Markdown or commentary.`,timestamp:Date.now(),
   }]},{reasoning:options.thinking==='off'?undefined:options.thinking,maxRetries:2,maxRetryDelayMs:60_000});
-  recordLlmUsage(options.agent,options.model,response.usage);
+  await recordLlmUsage(options.userId,options.agent,options.model,response.usage);
   if(response.stopReason==='error'||response.stopReason==='aborted')throw new Error(response.errorMessage??'AI request failed.');
   const result=v.safeParse(options.schema,jsonText(contentText(response.content)));
   if(!result.success){const issues=result.issues.slice(0,8).map(issue=>`${v.getDotPath(issue)??'(root)'}: ${issue.message}`);
@@ -84,7 +84,7 @@ function add(target: LlmUsageTotals, usage: Usage): void {
   target.cost.total += usage.cost.total;
 }
 
-export function recordLlmUsage(agent: string, model: string, usage: Usage): void {
+export async function recordLlmUsage(userId: string, agent: string, model: string, usage: Usage): Promise<void> {
   add(totals,usage);
   let agentTotals=byAgent.get(agent);
   if(!agentTotals){agentTotals=emptyTotals();byAgent.set(agent,agentTotals);}
@@ -92,6 +92,9 @@ export function recordLlmUsage(agent: string, model: string, usage: Usage): void
   let modelTotals=byModel.get(model);
   if(!modelTotals){modelTotals=emptyTotals();byModel.set(model,modelTotals);}
   add(modelTotals,usage);
+  await postgresQuery(`insert into usage_events(user_id,kind,occurred_at,agent,model,input_tokens,output_tokens,
+    cache_read_tokens,cache_write_tokens,total_tokens,cost_usd) values($1,'llm',now(),$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [userId,agent,model,usage.input,usage.output,usage.cacheRead,usage.cacheWrite,usage.totalTokens,usage.cost.total]);
 }
 
 function copy(source: LlmUsageTotals): LlmUsageTotals {
@@ -145,7 +148,7 @@ import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-code
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { createModels, type Models, type OAuthCredential, type Provider } from '@earendil-works/pi-ai';
 import { getEncryptedRuntimeState, putEncryptedRuntimeState } from './runtime-state.ts';
-import { withPostgresTransaction } from './postgres.ts';
+import { postgresQuery, withPostgresTransaction } from './postgres.ts';
 
 const providerId = 'openai-codex';
 const cloudAuthPath = 'oauth/codex.json';
