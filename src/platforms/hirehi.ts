@@ -21,7 +21,6 @@ export const hireHiSearchProfileSchema = v.strictObject({
   version: v.literal(1),
   searches: v.pipe(
     v.array(searchSchema),
-    v.minLength(2),
     v.maxLength(8),
     v.check((searches) => new Set(searches.map((search) => `${search.facet}:${search.specialization}`)).size === searches.length,
       'HireHi searches must use unique facet and specialization pairs'),
@@ -42,10 +41,10 @@ export const hireHiPlatform: SearchPlatform<typeof hireHiSearchProfileSchema> = 
     jsonShape: {
       version: 1,
       searches: [{
-        name: 'short unique label',
-        rationale: 'why this landing page adds useful coverage',
-        specialization: 'frontend',
-        facet: 'senior',
+        name: 'Supported CV track',
+        rationale: 'direct CV evidence for this specialization',
+        specialization: 'one of capabilities.specializations',
+        facet: 'all',
       }],
     },
     capabilities: {
@@ -65,7 +64,8 @@ export const hireHiPlatform: SearchPlatform<typeof hireHiSearchProfileSchema> = 
       'Use a grade facet only when the CV provides clear seniority evidence; include an all-level search when uncertain.',
       'Prefer complementary role families over many narrow seniority variants of one role.',
       'Do not use broad specializations such as development when a more precise supported specialization covers the CV.',
-      'Recall matters: include adjacent roles only when the CV contains credible evidence for them.',
+      'Do not substitute an adjacent role when no specialization directly represents a CV-derived career track.',
+      'Use an empty searches array when this platform has no compatible specialization.',
     ],
   }),
 };

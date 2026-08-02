@@ -13,6 +13,7 @@ export default defineConfig({
         return { build: { rolldownOptions: { input: {
           worker: resolve('src/worker.ts'),
           'cv-worker': resolve('src/cv-worker.ts'),
+          'run-cycle': resolve('src/scripts/run-cycle.ts'),
         } } } };
       },
     },

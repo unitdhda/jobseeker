@@ -11,7 +11,7 @@ process.env.TELEGRAM_CHAT_ID = '1001';
 process.env.RUN_JOBS = 'false';
 process.env.TELEGRAM_POLLING = 'false';
 
-const d = await import('../src/lib/database.ts');
+const d = await import('../src/lib/database-sqlite.ts');
 const { VacancySearchCollector } = await import('../src/lib/vacancy-search-collector.ts');
 const schedules = await import('../src/lib/schedules.ts');
 const extracted = (label: string) => ({
@@ -88,9 +88,42 @@ await test('multi-user database behavior', async (t) => {
       [['1001', 'systems'], ['2002', 'backend systems']]);
   });
 
-  await t.test('search discovery and normalization enforce per-user limits with shared deduplication', () => {
+  await t.test('candidate prefilter scores are isolated per user', () => {
+    const input = { source: 'geekjob', sourceId: 'per-user-score', url: 'https://geekjob.ru/vacancy/aabbcc',
+      searchName: 'shared listing', title: 'Shared candidate' };
+    d.recordVacancyCandidate('1001', input); d.recordVacancyCandidate('2002', input);
+    const ownerCandidate = d.candidatesNeedingPrefilter('1001', 'owner-context', 100)
+      .find((item) => item.sourceId === input.sourceId)!;
+    const secondCandidate = d.candidatesNeedingPrefilter('2002', 'second-context', 100)
+      .find((item) => item.sourceId === input.sourceId)!;
+    const score = (combinedScore: number, filtered: boolean) => ({ regexScore: combinedScore,
+      embeddingCosine: 0, embeddingScore: 0, semanticCosine: null, semanticScore: null,
+      semanticStatus: 'disabled' as const, combinedScore, filtered, auditSelected: false, reasons: ['test'] });
+    d.saveCandidatePrefilter('1001', ownerCandidate, 'owner-context', score(90, false));
+    d.saveCandidatePrefilter('2002', secondCandidate, 'second-context', score(5, true));
+    assert.equal(d.rankedCandidateQueueForUsers(['1001'], 100).some((item) => item.sourceId === input.sourceId), true);
+    assert.equal(d.rankedCandidateQueueForUsers(['2002'], 100).some((item) => item.sourceId === input.sourceId), false);
+    d.markCandidateClosed(ownerCandidate);
+  });
+
+  await t.test('normalized vacancies remain scoped to discovering users', () => {
+    d.recordVacancyCandidate('1001', { source: 'hh', sourceId: 'attributed-only', url: 'https://hh.ru/vacancy/3',
+      searchName: 'owner role', title: 'Owner-specific vacancy' });
+    const saved = d.upsertVacancy({ source: 'hh', sourceId: 'attributed-only', name: 'Owner-specific vacancy',
+      employer: 'Scoped Employer', area: 'Remote', salaryFrom: null, salaryTo: null, salaryCurrency: null, salaryGross: null,
+      experience: '', employment: '', schedule: '', workFormat: '', description: 'Only discovered for the owner.', keySkills: [],
+      url: 'https://hh.ru/vacancy/3', publishedAt: '2026-01-02', sourceQuery: 'owner role', contentHash: 'attributed-hash' });
+    const candidate = d.candidatesNeedingPrefilter('1001', 'scope-context', 100)
+      .find((item) => item.sourceId === 'attributed-only')!;
+    d.markCandidateNormalized(candidate, saved.id);
+    assert.equal(d.pendingVacancies('1001', 100).some((item) => item.id === saved.id), true);
+    assert.equal(d.pendingVacancies('2002', 100).some((item) => item.id === saved.id), false);
+    assert.equal(d.vacanciesNeedingPrefilter('2002', 'scope-context', 100).some((item) => item.id === saved.id), false);
+  });
+
+  await t.test('search discovery and normalization enforce per-user limits with shared deduplication', async () => {
     const collector = new VacancySearchCollector('1001', 10);
-    for (let index = 0; index < 12; index++) collector.record({
+    for (let index = 0; index < 12; index++) await collector.record({
       source: 'hh', sourceId: String(10_000 + index), url: `https://hh.ru/vacancy/${10_000 + index}`,
       searchName: 'collector test', title: `Collector vacancy ${index}`,
     });
@@ -100,8 +133,11 @@ await test('multi-user database behavior', async (t) => {
       d.recordVacancyCandidate(userId, { source: 'habr', sourceId,
         url: `https://career.habr.com/vacancies/${sourceId}`, searchName: `user ${userId}`,
         title: `Ranked vacancy ${sourceId}` });
-      d.db.prepare("UPDATE vacancy_candidates SET status='queued',combined_score=? WHERE source='habr' AND source_id=?")
-        .run(score, sourceId);
+      const candidate = d.candidatesNeedingPrefilter(userId, `context-${userId}`, 100)
+        .find((item) => item.sourceId === sourceId)!;
+      d.saveCandidatePrefilter(userId, candidate, `context-${userId}`, { regexScore: score,
+        embeddingCosine: score / 100, embeddingScore: score, semanticCosine: null, semanticScore: null,
+        semanticStatus: 'disabled', combinedScore: score, filtered: false, auditSelected: false, reasons: ['test'] });
     };
     addCandidate('1001', '9000', 100); addCandidate('2002', '9000', 100);
     for (let index = 1; index <= 10; index++) {
@@ -137,20 +173,20 @@ await test('multi-user database behavior', async (t) => {
     assert.equal(Number(d.db.prepare('SELECT COUNT(*) count FROM flue_agent_submissions').get()?.count), 1);
   });
 
-  await t.test('usage, export, delivery windows, and personal deletion', () => {
+  await t.test('usage, export, delivery windows, and personal deletion', async () => {
     d.recordUsage('2002', 'score'); d.recordUsage('2002', 'application');
     assert.equal(d.usageInLast24Hours('2002', 'score'), 1);
     assert.equal(schedules.normalizeUtcOffset('+3'), '+03:00');
     assert.equal(schedules.normalizeUtcOffset('-5:30'), '-05:30');
     assert.throws(() => schedules.normalizeUtcOffset('+14:30'), /UTC/);
-    schedules.updateDeliverySettings('2002', '22:00', '08:00', '09:30', '+3:30');
-    assert.equal(schedules.deliverySettingsStatus('2002'), 'уведомления: 22:00–08:00; дайджест: 09:30; UTC+03:30');
-    assert.equal(schedules.isWithinDeliveryWindow('2002', new Date('2026-01-01T20:00:00Z')), true);
-    assert.equal(schedules.isDigestDue('2002', new Date('2026-01-01T05:59:00Z')), false);
-    assert.equal(schedules.isDigestDue('2002', new Date('2026-01-01T06:00:00Z')), true);
+    await schedules.updateDeliverySettings('2002', '22:00', '08:00', '09:30', '+3:30');
+    assert.equal(await schedules.deliverySettingsStatus('2002'), 'уведомления: 22:00–08:00; дайджест: 09:30; UTC+03:30');
+    assert.equal(await schedules.isWithinDeliveryWindow('2002', new Date('2026-01-01T20:00:00Z')), true);
+    assert.equal(await schedules.isDigestDue('2002', new Date('2026-01-01T05:59:00Z')), false);
+    assert.equal(await schedules.isDigestDue('2002', new Date('2026-01-01T06:00:00Z')), true);
     d.markDigestRun('2002', '2026-01-01T06:00:00.000Z');
-    assert.equal(schedules.isDigestDue('2002', new Date('2026-01-01T20:00:00Z')), false);
-    assert.equal(schedules.isDigestDue('2002', new Date('2026-01-02T06:00:00Z')), true);
+    assert.equal(await schedules.isDigestDue('2002', new Date('2026-01-01T20:00:00Z')), false);
+    assert.equal(await schedules.isDigestDue('2002', new Date('2026-01-02T06:00:00Z')), true);
     const digest = d.digestVacancies('2002', 50, 80, null);
     assert.equal(digest.length, 1);
     const scoredAt = String(d.db.prepare("SELECT score_updated_at FROM user_vacancies WHERE user_id='2002'").get()?.score_updated_at);
@@ -158,7 +194,8 @@ await test('multi-user database behavior', async (t) => {
     d.markDigested('2002', digest.map((vacancy) => vacancy.id));
     assert.equal(d.digestVacancies('2002', 50, 80, null).length, 0, 'seen digest entries stay excluded');
     const exported = d.exportUserData('2002');
-    assert.deepEqual(Object.keys(exported).sort(), ['cvSource','normalizedDocument','scores','searchProfiles']);
+    assert.deepEqual(Object.keys(exported).sort(), ['careerProfile','cvSource','normalizedDocument','scores','searchProfiles']);
+    assert.equal(exported.careerProfile, null);
     assert.equal(typeof exported.cvSource, 'string');
     assert.ok((exported.normalizedDocument as { blocks: unknown[] }).blocks.length > 0);
     const exportedScore = (exported.scores as Array<Record<string, unknown>>)[0];
@@ -166,7 +203,7 @@ await test('multi-user database behavior', async (t) => {
     assert.equal(exportedScore.score, 64);
     d.deleteUserData('2002');
     assert.equal(d.getTelegramUser('2002')?.status, 'approved');
-    for (const table of ['cv_templates','scores','search_profiles','user_vacancies','candidate_discoveries','usage_events']) {
+    for (const table of ['cv_templates','scores','search_profiles','user_vacancies','candidate_prefilter_scores','candidate_discoveries','usage_events']) {
       assert.equal(Number(d.db.prepare(`SELECT COUNT(*) count FROM ${table} WHERE user_id='2002'`).get()?.count), 0, table);
     }
     assert.equal(d.db.prepare("SELECT 1 FROM vacancies WHERE source='hh' AND source_id='shared-1'").get() != null, true);

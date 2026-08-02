@@ -1,50 +1,62 @@
+import type { CareerProfile, CareerTrack } from './career-profile.ts';
 import type { Vacancy } from './database.ts';
 
-interface SkillPattern { name: string; pattern: RegExp; weight?: number }
-
-const skills: SkillPattern[] = [
-  { name: 'TypeScript', pattern: /\btypescript\b|\bts\b/i, weight: 9 },
-  { name: 'JavaScript', pattern: /\bjavascript\b|\bjs\b/i, weight: 7 },
-  { name: 'React', pattern: /\breact(?:\.js)?\b/i, weight: 10 },
-  { name: 'Next.js', pattern: /\bnext(?:\.js|js)?\b/i, weight: 9 },
-  { name: 'Node.js', pattern: /\bnode(?:\.js|js)?\b/i, weight: 9 },
-  { name: 'Express', pattern: /\bexpress(?:\.js)?\b/i, weight: 7 },
-  { name: 'PostgreSQL', pattern: /\bpostgres(?:ql)?\b/i, weight: 7 },
-  { name: 'Redis', pattern: /\bredis\b/i, weight: 6 },
-  { name: 'Python', pattern: /\bpython\b/i, weight: 8 },
-  { name: 'Rust', pattern: /\brust\b/i, weight: 7 },
-  { name: 'D3.js', pattern: /\bd3(?:\.js)?\b/i, weight: 6 },
-  { name: 'Three.js', pattern: /\bthree(?:\.js)?\b/i, weight: 6 },
-  { name: 'LLM', pattern: /\bllms?\b|large language model|языков(?:ая|ые) модел/i, weight: 8 },
-  { name: 'RAG', pattern: /\brag\b|retrieval.augmented/i, weight: 7 },
-  { name: 'Whisper', pattern: /\bwhisper\b/i, weight: 5 },
-  { name: 'Git', pattern: /\bgit\b/i, weight: 4 },
-  { name: 'Docker', pattern: /\bdocker\b/i, weight: 5 },
-  { name: 'REST API', pattern: /\brest(?:ful)?\b|\bapi\b/i, weight: 5 },
-  { name: 'Telegram', pattern: /\btelegram\b|\btelegraf\b/i, weight: 4 },
-];
-
-const tracks = {
-  frontend: /front[ -]?end|фронт[ -]?энд|фронтенд|react|next\.?(?:js)?|web[- ]?интерфейс/i,
-  backend: /back[ -]?end|бэк[ -]?энд|бэкенд|backend|node\.?(?:js)?|серверн(?:ая|ый|ое) разработ/i,
-  ai: /\bai\b|\bml\b|machine learning|artificial intelligence|искусственн(?:ый|ого) интеллект|машинн(?:ое|ого) обуч|\bllm\b|\brag\b|нейросет/i,
-};
-
-const softwareTitle = /разработчик|developer|engineer|инженер (?:по )?(?:данным|машинному|программ)|programmer|программист|frontend|backend|fullstack|full-stack|devops|data scientist|аналитик данных|системный аналитик|architect|архитектор|\bai\b|\bml\b/i;
-const aliases: Array<[RegExp, string]> = [
-  [/фронт(?:енд|энд)|фронтенд/giu, ' frontend '], [/бэк(?:енд|энд)|бэкенд/giu, ' backend '],
-  [/фуллст[еэ]к|full-stack/giu, ' fullstack '], [/разработ(?:чик|ка|ки|ку|чиков)/giu, ' developer '],
-  [/программист(?:а|ы|ов)?/giu, ' developer '], [/искусственн\w* интеллект\w*/giu, ' ai '],
-  [/машинн\w* обучен\w*/giu, ' machine learning '], [/удал[её]нн\w*/giu, ' remote '],
-  [/постгрес(?:ql)?/giu, ' postgresql '], [/тайпскрипт/giu, ' typescript '], [/джаваскрипт/giu, ' javascript '],
-];
-const stop = new Set(['and','the','with','for','from','that','this','или','для','как','что','при','это','его','она','они','работа','опыт','года','лет','years','year','experience','work','team','команда','задачи','требования']);
+const stop = new Set([
+  'and','the','with','for','from','that','this','into','или','для','как','что','при','это','его','она','они',
+  'работа','опыт','года','лет','years','year','experience','work','team','команда','задачи','требования',
+]);
+const seniority = new Set([
+  'intern','internship','junior','middle','senior','lead','head','principal','chief','стажер','стажёр','младший',
+  'средний','старший','ведущий','главный','руководитель',
+]);
 
 function normalizedTokens(input: string): string[] {
-  let value = input.toLowerCase();
-  for (const [pattern, replacement] of aliases) value = value.replace(pattern, replacement);
-  return value.match(/[\p{L}\p{N}+#.]{2,}/gu)?.map((token) => token.replace(/^\.+|\.+$/g, ''))
+  return input.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}+#.]{2,}/gu)
+    ?.map((token) => token.replace(/^\.+|\.+$/g, ''))
     .filter((token) => token.length > 1 && !stop.has(token)) ?? [];
+}
+
+function comparableToken(left: string, right: string): boolean {
+  if (left === right) return true;
+  if (left.length < 5 || right.length < 5) return false;
+  let common = 0;
+  while (common < left.length && common < right.length && left[common] === right[common]) common++;
+  return common >= 5 && common / Math.min(left.length, right.length) >= 0.72;
+}
+
+function phrasePresent(phrase: string, textTokens: string[]): boolean {
+  const phraseTokens = normalizedTokens(phrase).filter((token) => !seniority.has(token));
+  return phraseTokens.length > 0 && phraseTokens.every((token) => textTokens.some((candidate) => comparableToken(token, candidate)));
+}
+
+function titleSimilarity(left: string, right: string): number {
+  const a = [...new Set(normalizedTokens(left).filter((token) => !seniority.has(token)))];
+  const b = [...new Set(normalizedTokens(right).filter((token) => !seniority.has(token)))];
+  if (!a.length || !b.length) return 0;
+  const matchedA = a.filter((token) => b.some((candidate) => comparableToken(token, candidate))).length;
+  const matchedB = b.filter((token) => a.some((candidate) => comparableToken(token, candidate))).length;
+  const intersection = Math.min(matchedA, matchedB);
+  return intersection / (a.length + b.length - intersection);
+}
+
+function fallbackCareerProfile(cvText: string): CareerProfile {
+  const titleVariants = cvText.split(/\r?\n/).map((line) => line.trim()).filter((line) => {
+    const count = normalizedTokens(line).length;
+    return line.length >= 3 && line.length <= 100 && count >= 1 && count <= 10;
+  }).slice(0, 24);
+  return { version: 1, tracks: [{
+    name: 'CV-derived role evidence', titleVariants: titleVariants.length ? titleVariants : [cvText.slice(0, 100)],
+    coreSkills: [], evidence: [cvText.slice(0, 300)],
+  }] };
+}
+
+function trackEvidence(track: CareerTrack, vacancy: Vacancy): { role: number; skills: number; similarity: number; matchedSkills: string[] } {
+  const similarity = Math.max(0, ...track.titleVariants.map((variant) => titleSimilarity(variant, vacancy.name)));
+  const role = Math.round(similarity ** 2 * 75);
+  const vacancyTokens = normalizedTokens(`${vacancy.name}\n${vacancy.description}\n${vacancy.keySkills.join('\n')}`);
+  const matchedSkills = track.coreSkills.filter((skill) => phrasePresent(skill, vacancyTokens));
+  const skills = track.coreSkills.length ? Math.round(Math.min(1, matchedSkills.length / Math.min(5, track.coreSkills.length)) * 25) : 0;
+  return { role, skills, similarity, matchedSkills };
 }
 
 function lexicalEmbedding(input: string): Map<string, number> {
@@ -70,6 +82,12 @@ function cosine(left: Map<string, number>, right: Map<string, number>): number {
   return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
 }
 
+function relevanceCvText(input: string): string {
+  return input.split(/\r?\n/).filter((line) => !/\b(?:contacts?|email|e-mail|phone|telegram|whatsapp)\b|контакт|почт|телефон/i.test(line))
+    .join('\n').replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, ' ').replace(/https?:\/\/\S+/gi, ' ')
+    .replace(/(?:\+?\d[\s().-]*){7,}/g, ' ');
+}
+
 export interface PrefilterResult {
   regexScore: number;
   embeddingCosine: number;
@@ -86,34 +104,32 @@ export function vacancySemanticText(vacancy: Vacancy): string {
 }
 
 export function prefilterVacancy(cvText: string, vacancy: Vacancy, minimumScore: number,
-  semanticCosine: number | null = null): PrefilterResult {
-  const vacancyText = vacancySemanticText(vacancy);
-  const cvTracks = Object.entries(tracks).filter(([, pattern]) => pattern.test(cvText)).map(([track]) => track);
-  const vacancyTracks = Object.entries(tracks).filter(([, pattern]) => pattern.test(vacancyText)).map(([track]) => track);
-  const overlap = skills.filter((skill) => skill.pattern.test(cvText) && skill.pattern.test(vacancyText));
-  const reasons: string[] = [];
-  let regexScore = 8;
-  if (softwareTitle.test(vacancy.name)) { regexScore += 24; reasons.push('software-role title'); }
-  const trackOverlap = vacancyTracks.filter((track) => cvTracks.includes(track));
-  if (trackOverlap.length) { regexScore += 16; reasons.push(`track overlap: ${trackOverlap.join(', ')}`); }
-  const skillPoints = Math.min(46, overlap.reduce((sum, skill) => sum + (skill.weight ?? 5), 0));
-  regexScore += skillPoints;
-  if (overlap.length) reasons.push(`skills: ${overlap.map((skill) => skill.name).join(', ')}`);
-  regexScore = Math.min(100, regexScore);
+  semanticCosine: number | null = null, careerProfile?: CareerProfile): PrefilterResult {
+  const profile = careerProfile ?? fallbackCareerProfile(cvText);
+  const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy) }))
+    .sort((left, right) => right.role + right.skills - left.role - left.skills);
+  const best = ranked[0]!;
+  const regexScore = Math.min(100, best.role + best.skills);
+  const reasons: string[] = [`CV-derived track: ${best.track.name}`];
+  if (best.similarity > 0) reasons.push(`title-variant similarity: ${best.similarity.toFixed(3)}`);
+  if (best.matchedSkills.length) reasons.push(`evidenced skills: ${best.matchedSkills.slice(0, 8).join(', ')}`);
 
-  const cvEmbedding = lexicalEmbedding(cvText);
-  const titleWeightedVacancy = `${vacancy.name}\n${vacancy.name}\n${vacancy.name}\n${vacancyText}`;
-  const embeddingCosine = cosine(cvEmbedding, lexicalEmbedding(titleWeightedVacancy));
+  const cleanCv = relevanceCvText(cvText);
+  const embeddingCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(`${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`));
   const embeddingScore = Math.min(100, Math.round(embeddingCosine * 300));
-  // Multilingual E5 cosine values have a high baseline; map roughly 0.82→0 and 0.95→100.
+  // E5 has a high cross-occupation baseline. Only the upper similarity band contributes, and CV-derived evidence gates admission.
   const semanticScore = semanticCosine == null ? null
-    : Math.max(0, Math.min(100, Math.round((semanticCosine - 0.82) / 0.13 * 100)));
-  const combinedScore = semanticScore == null
-    ? Math.round(regexScore * 0.65 + embeddingScore * 0.35)
-    : Math.round(regexScore * 0.45 + embeddingScore * 0.15 + semanticScore * 0.40);
-  if (embeddingCosine > 0) reasons.push(`lexical embedding cosine: ${embeddingCosine.toFixed(3)}`);
-  if (semanticCosine != null) reasons.push(`semantic embedding cosine: ${semanticCosine.toFixed(3)}`);
+    : Math.max(0, Math.min(100, Math.round((semanticCosine - 0.91) / 0.07 * 100)));
+  let combinedScore = semanticScore == null
+    ? Math.round(regexScore * 0.75 + embeddingScore * 0.25)
+    : Math.round(regexScore * 0.55 + embeddingScore * 0.15 + semanticScore * 0.30);
+  if (embeddingCosine > 0) reasons.push(`lexical cosine: ${embeddingCosine.toFixed(3)}`);
+  if (semanticCosine != null) reasons.push(`semantic cosine: ${semanticCosine.toFixed(3)}`);
+  if (regexScore < 15 && combinedScore >= minimumScore) {
+    combinedScore = Math.max(0, minimumScore - 1);
+    reasons.push('semantic similarity lacked CV-derived role or skill evidence');
+  }
   const filtered = combinedScore < minimumScore;
-  if (combinedScore < minimumScore) reasons.push(`combined score below ${minimumScore}`);
+  if (filtered) reasons.push(`combined score below ${minimumScore}`);
   return { regexScore, embeddingCosine, embeddingScore, semanticCosine, semanticScore, combinedScore, filtered, reasons };
 }

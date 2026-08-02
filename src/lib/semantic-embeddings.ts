@@ -73,10 +73,10 @@ export async function semanticEmbedding(kind: 'cv' | 'vacancy', contentHash: str
   userId = ''): Promise<Float32Array> {
   if (kind === 'cv' && !userId) throw new Error('CV embeddings require a user ID.');
   const cacheUserId = kind === 'cv' ? userId : '';
-  const cached = getCachedEmbedding(config.semanticEmbeddingModel, kind, cacheUserId, contentHash);
+  const cached = await getCachedEmbedding(config.semanticEmbeddingModel, kind, cacheUserId, contentHash);
   if (cached) return cached;
   const vector = await calculate(text, kind === 'cv' ? 'query' : 'passage');
-  saveCachedEmbedding(config.semanticEmbeddingModel, kind, cacheUserId, contentHash, vector);
+  await saveCachedEmbedding(config.semanticEmbeddingModel, kind, cacheUserId, contentHash, vector);
   trace('semantic.embedding.cached', { kind, userId: cacheUserId || undefined,
     contentHash: contentHash.slice(0, 12), dimensions: vector.length });
   return vector;

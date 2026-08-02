@@ -36,7 +36,7 @@ function ensureWorker(): { child: ChildProcess; ready: Promise<void> } {
     resolveReady = resolvePromise; rejectReady = rejectPromise;
   });
   const spawned = fork(command.modulePath, command.args, {
-    env: { ...process.env, RUN_JOBS: 'false', RUN_INITIAL_CYCLE: 'false', TELEGRAM_POLLING: 'false' },
+    env: { ...process.env, RUN_JOBS: 'false', RUN_INITIAL_CYCLE: 'false', TELEGRAM_MODE: 'off', TELEGRAM_POLLING: 'false' },
     stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
   });
   child = spawned;

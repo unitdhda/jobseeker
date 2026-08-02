@@ -14,21 +14,22 @@ import { clearApplicationArtifacts } from './application-artifacts.ts';
 import { maximumCvBytes } from './cv-limits.ts';
 import { readResponseBytes } from './safe-http.ts';
 import { errorMessage } from './logging.ts';
+import { claimTelegramSession, deleteTelegramSession, getTelegramSession, setTelegramSession } from './telegram-sessions.ts';
 import {
   deliverySettingsStatus, normalizeUtcOffset, parseClockMinutes, updateDeliverySettings,
 } from './schedules.ts';
 
 let bot: Bot | undefined;
-const pendingCvUpload = new Set<string>();
+let botConfigured = false;
 const activeCvImports = new Set<string>();
-const lastCvSessions = new Map<string, number>();
 const applicationJobs = new Set<string>();
 const pendingRefreshHashes = new Map<string, string>();
 const refreshingUsers = new Set<string>();
 const latestUserPages = new Map<string, string[]>();
 type WindowSetup = { step: 'start' | 'end' | 'digest' | 'timezone'; start?: string; end?: string; digest?: string };
-const pendingWindowSetup = new Map<string, WindowSetup>();
 const usersPageSize = 8;
+const cvUploadSessionTtlMs = 30 * 60_000;
+const windowSetupTtlMs = 30 * 60_000;
 
 function getBot(): Bot {
   const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -39,8 +40,8 @@ function ownerUserId(): string {
   if (!config.telegramUserId) throw new Error('TELEGRAM_USER_ID is required for the bot owner.');
   return config.telegramUserId;
 }
-function targetChat(userId: string): string {
-  const user = getTelegramUser(userId);
+async function targetChat(userId: string): Promise<string> {
+  const user = await getTelegramUser(userId);
   if (!user) throw new Error(`Telegram user ${userId} was not found.`);
   return user.chatId;
 }
@@ -69,7 +70,7 @@ function salary(vacancy: ScoredVacancy): string {
 }
 
 export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy): Promise<void> {
-  if (!isApprovedUser(userId)) throw new Error('User access is not approved.');
+  if (!await isApprovedUser(userId)) throw new Error('User access is not approved.');
   const reasons = vacancy.reasons.slice(0, 3).map((item) => `• ${escapeHtml(item)}`).join('\n');
   const gaps = vacancy.gaps.slice(0, 2).map((item) => `• ${escapeHtml(item)}`).join('\n');
   const text = [
@@ -81,14 +82,14 @@ export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy):
   ].filter(Boolean).join('\n');
   const keyboard = new InlineKeyboard().text('Пропустить', `skip:${vacancy.id}`).text('Откликнуться', `apply:${vacancy.id}`)
     .url(`Открыть ${sourceLabel(vacancy.source)}`, vacancy.url);
-  await getBot().api.sendMessage(targetChat(userId), text, {
+  await getBot().api.sendMessage(await targetChat(userId), text, {
     parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: true },
   });
-  markAlerted(userId, vacancy.id);
+  await markAlerted(userId, vacancy.id);
 }
 export async function sendPendingAlerts(userId: string): Promise<number> {
   let sent = 0;
-  for (const vacancy of unsentHighScoreVacancies(userId, config.alertScore)) {
+  for (const vacancy of await unsentHighScoreVacancies(userId, config.alertScore)) {
     await sendHighScoreAlert(userId, vacancy); sent++;
   }
   return sent;
@@ -105,9 +106,9 @@ function highlightedApplyId(applyId: string, allApplyIds: string[]): RichText {
   return [{ type: 'bold', text: applyId.slice(0, prefixLength) }, applyId.slice(prefixLength)];
 }
 export async function sendDailyDigest(userId: string): Promise<number> {
-  if (!isApprovedUser(userId)) throw new Error('User access is not approved.');
-  const vacancies = digestVacancies(userId, config.digestMinScore, config.alertScore,
-    getDeliverySettings(userId)?.lastDigestAt ?? null);
+  if (!await isApprovedUser(userId)) throw new Error('User access is not approved.');
+  const settings = await getDeliverySettings(userId);
+  const vacancies = await digestVacancies(userId, config.digestMinScore, config.alertScore, settings?.lastDigestAt ?? null);
   if (!vacancies.length) return 0;
   const applyIds = vacancies.map((vacancy) => vacancy.applyId);
   for (let offset = 0; offset < vacancies.length; offset += 30) {
@@ -118,12 +119,12 @@ export async function sendDailyDigest(userId: string): Promise<number> {
         ...page.map((vacancy) => [cell(highlightedApplyId(vacancy.applyId, applyIds)), cell(String(vacancy.score), 'right'),
           cell(vacancy.name), cell({ type: 'url', text: 'Открыть', url: vacancy.url }, 'center')])],
     };
-    await getBot().api.sendRichMessage(targetChat(userId), { blocks: [
+    await getBot().api.sendRichMessage(await targetChat(userId), { blocks: [
       { type: 'heading', size: 3, text: offset ? 'Ежедневная подборка — продолжение' : 'Ежедневная подборка вакансий' }, table,
       { type: 'paragraph', text: 'Пришлите выделенный префикс или полный ID, чтобы получить адаптированное резюме и сопроводительное письмо.' },
     ] }, { disable_notification: true });
   }
-  markDigested(userId, vacancies.map((vacancy) => vacancy.id));
+  await markDigested(userId, vacancies.map((vacancy) => vacancy.id));
   return vacancies.length;
 }
 
@@ -143,7 +144,7 @@ function isUnchangedMessageError(error: unknown): boolean {
   return /message is not modified/i.test(error instanceof Error ? error.message : String(error));
 }
 async function startEditableIndicator(userId: string, initialLabel: string): Promise<EditableIndicator | null> {
-  const api = getBot().api; const chat = targetChat(userId);
+  const api = getBot().api; const chat = await targetChat(userId);
   try {
     let label = initialLabel; let frame = 0; let sentText = `${loaderFrames[frame]} ${label}`;
     let updating: Promise<void> | null = null; let blockedUntil = 0; let stopped = false;
@@ -199,36 +200,36 @@ async function generateAndSendApplication(userId: string, vacancyId: number): Pr
   if (applicationJobs.has(jobKey)) return;
   applicationJobs.add(jobKey); let loader: ApplicationLoader | null = null;
   try {
-    const vacancy = getScoredVacancy(userId, vacancyId);
+    const vacancy = await getScoredVacancy(userId, vacancyId);
     if (!vacancy) throw new Error('Vacancy not found.');
     loader = await startApplicationLoader(userId);
     const documents = await tailorApplicationInWorker(userId, vacancyId);
-    if (!isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
-    const api = getBot().api; const chat = targetChat(userId);
+    if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
+    const api = getBot().api; const chat = await targetChat(userId);
     loader?.setTask('Отправляю резюме');
     await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
       caption: `Адаптированное резюме — ${vacancy.name}`.slice(0, 1024),
     });
-    if (!isApprovedUser(userId)) throw new Error('User access was revoked during application delivery.');
+    if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application delivery.');
     loader?.setTask('Готовлю письмо');
     await api.sendMessage(chat, documents.coverLetter, { link_preview_options: { is_disabled: true } });
-    markApplicationDelivered(userId, vacancyId); await loader?.stop();
+    await markApplicationDelivered(userId, vacancyId); await loader?.stop();
   } catch (error) {
     await loader?.stop(); console.error(`Application generation failed for ${userId}:${vacancyId}`,
       error instanceof Error ? error.message : String(error));
-    if (!isApprovedUser(userId)) return;
-    const vacancy = getScoredVacancy(userId, vacancyId);
+    if (!await isApprovedUser(userId)) return;
+    const vacancy = await getScoredVacancy(userId, vacancyId);
     const keyboard = new InlineKeyboard().text('Попробовать снова', `apply:${vacancyId}`)
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru');
-    await getBot().api.sendMessage(targetChat(userId), `Не удалось подготовить документы для вакансии ${vacancyId}. Попробуйте ещё раз.`,
+    await getBot().api.sendMessage(await targetChat(userId), `Не удалось подготовить документы для вакансии ${vacancyId}. Попробуйте ещё раз.`,
       { reply_markup: keyboard });
   } finally {
     applicationJobs.delete(jobKey); clearApplicationArtifacts(userId, vacancyId);
   }
 }
 
-function cvStatus(userId: string): string {
-  const cv = getCvSource(userId);
+async function cvStatus(userId: string): Promise<string> {
+  const cv = await getCvSource(userId);
   return cv ? 'Резюме загружено' : 'Резюме не загружено';
 }
 async function downloadTelegramFile(fileId: string, declaredSize?: number): Promise<Uint8Array> {
@@ -242,30 +243,30 @@ async function downloadTelegramFile(fileId: string, declaredSize?: number): Prom
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
   return readResponseBytes(response, maximumCvBytes);
 }
-function refreshSearchesAfterCvUpload(userId: string): void {
-  const cvHash = getCvHash(userId);
+async function refreshSearchesAfterCvUpload(userId: string): Promise<void> {
+  const cvHash = await getCvHash(userId);
   if (!cvHash) return;
   pendingRefreshHashes.set(userId, cvHash);
   if (refreshingUsers.has(userId)) return;
   refreshingUsers.add(userId);
   void (async () => {
     try {
-      while (isApprovedUser(userId)) {
+      while (await isApprovedUser(userId)) {
         const requestedHash = pendingRefreshHashes.get(userId);
         if (!requestedHash) break;
         pendingRefreshHashes.delete(userId);
         try {
           const refreshed = await refreshUserInWorker(userId, requestedHash);
-          if (!pendingRefreshHashes.has(userId) && isApprovedUser(userId) && getCvHash(userId) === requestedHash) {
-            await getBot().api.sendMessage(targetChat(userId),
+          if (!pendingRefreshHashes.has(userId) && await isApprovedUser(userId) && await getCvHash(userId) === requestedHash) {
+            await getBot().api.sendMessage(await targetChat(userId),
               `Готово: создано ${refreshed.searchCount} поисковых запросов для ${refreshed.platformCount} платформ. ` +
               'Они будут использованы в следующем цикле поиска.');
           }
         } catch (error) {
-          if (!pendingRefreshHashes.has(userId) && isApprovedUser(userId) && getCvHash(userId)) {
+          if (!pendingRefreshHashes.has(userId) && await isApprovedUser(userId) && await getCvHash(userId)) {
             console.error(`Search-profile refresh failed for user ${userId}`,
               error instanceof Error ? error.message : String(error));
-            await getBot().api.sendMessage(targetChat(userId),
+            await getBot().api.sendMessage(await targetChat(userId),
               'Резюме сохранено, но поисковые настройки пока не удалось обновить. Бот повторит попытку в следующем цикле, когда позволит лимит.');
           }
         }
@@ -282,20 +283,20 @@ function userPrefix(userId: string, pageIds: string[]): string {
   while (length < userId.length && pageIds.some((other) => other !== userId && other.startsWith(userId.slice(0, length)))) length++;
   return userId.slice(0, length);
 }
-function usersPage(pageInput: number): { richMessage: InputRichMessage; keyboard: InlineKeyboard; ids: string[]; page: number } {
-  const total = listTelegramUsers(1, 0).total; const pages = Math.max(1, Math.ceil(total / usersPageSize));
-  const page = Math.max(0, Math.min(pageInput, pages - 1)); const { users } = listTelegramUsers(usersPageSize, page * usersPageSize);
+async function usersPage(pageInput: number): Promise<{ richMessage: InputRichMessage; keyboard: InlineKeyboard; ids: string[]; page: number }> {
+  const total = (await listTelegramUsers(1, 0)).total; const pages = Math.max(1, Math.ceil(total / usersPageSize));
+  const page = Math.max(0, Math.min(pageInput, pages - 1)); const { users } = await listTelegramUsers(usersPageSize, page * usersPageSize);
   const ids = users.map((user) => user.userId);
+  const userRows = await Promise.all(users.map(async (user) => {
+    const ref = user.isOwner ? '—' : userPrefix(user.userId, ids);
+    const name = (user.username ? `@${user.username}` : user.displayName).replace(/\s+/g, ' ').slice(0, 24);
+    return [cell(ref), cell(`${name}\n${user.userId}`), cell(userStatusText(user.status)),
+      cell(await getCvSource(user.userId) ? 'да' : 'нет', 'center'), cell(await deliverySettingsStatus(user.userId))];
+  }));
   const table: InputRichBlockTable = {
     type: 'table', is_bordered: true, is_striped: true,
     cells: [[headerCell('Ссылка', 'left'), headerCell('Пользователь', 'left'), headerCell('Статус', 'left'),
-      headerCell('CV', 'center'), headerCell('Доставка', 'left')],
-      ...users.map((user) => {
-        const ref = user.isOwner ? '—' : userPrefix(user.userId, ids);
-        const name = (user.username ? `@${user.username}` : user.displayName).replace(/\s+/g, ' ').slice(0, 24);
-        return [cell(ref), cell(`${name}\n${user.userId}`), cell(userStatusText(user.status)),
-          cell(getCvSource(user.userId) ? 'да' : 'нет', 'center'), cell(deliverySettingsStatus(user.userId))];
-      })],
+      headerCell('CV', 'center'), headerCell('Доставка', 'left')], ...userRows],
   };
   const richMessage: InputRichMessage = { blocks: [
     { type: 'heading', size: 3, text: `Пользователи — страница ${page + 1}/${pages}` },
@@ -308,23 +309,23 @@ function usersPage(pageInput: number): { richMessage: InputRichMessage; keyboard
   return { richMessage, keyboard, ids, page };
 }
 async function showUsers(ctx: Context, page: number, edit = false): Promise<void> {
-  const view = usersPage(page); latestUserPages.set(ownerUserId(), view.ids);
+  const view = await usersPage(page); latestUserPages.set(ownerUserId(), view.ids);
   const options = { reply_markup: view.keyboard };
   if (edit) await ctx.editMessageText(view.richMessage, options);
   else await ctx.replyWithRichMessage(view.richMessage, options);
 }
-function resolveUserReference(reference: string): TelegramUser | null {
+async function resolveUserReference(reference: string): Promise<TelegramUser | null> {
   const pageIds = latestUserPages.get(ownerUserId()) ?? [];
   const pageMatches = pageIds.filter((id) => id === reference || id.startsWith(reference));
   if (pageMatches.length === 1) return getTelegramUser(pageMatches[0]);
-  const all = listTelegramUsers(10_000, 0).users.filter((user) => user.userId === reference || user.userId.startsWith(reference));
-  return all.length === 1 ? all[0] : null;
+  const all = (await listTelegramUsers(10_000, 0)).users.filter((user) => user.userId === reference || user.userId.startsWith(reference));
+  return all.length === 1 ? all[0]! : null;
 }
-function resolveApprovalReference(reference: string): TelegramUser | null {
+async function resolveApprovalReference(reference: string): Promise<TelegramUser | null> {
   const value = reference.trim(); const username = value.replace(/^@/, '').toLowerCase();
-  const matches = listTelegramUsers(10_000, 0).users.filter((user) =>
+  const matches = (await listTelegramUsers(10_000, 0)).users.filter((user) =>
     user.userId === value || user.username?.toLowerCase() === username);
-  return matches.length === 1 ? matches[0] : null;
+  return matches.length === 1 ? matches[0]! : null;
 }
 async function deletePersonalData(ctx: Context, confirmation: string): Promise<void> {
   if (!ctx.from) return;
@@ -338,14 +339,13 @@ async function deletePersonalData(ctx: Context, confirmation: string): Promise<v
     || refreshingUsers.has(userId)) {
     await ctx.reply('Сейчас выполняется задача с вашим резюме или откликом. Дождитесь её завершения и повторите удаление.'); return;
   }
-  pendingCvUpload.delete(userId);
+  await Promise.all(['cv-upload', 'cv-cooldown', 'window-setup'].map((kind) => deleteTelegramSession(userId, kind)));
   pendingRefreshHashes.delete(userId);
-  pendingWindowSetup.delete(userId);
-  deleteUserData(userId);
+  await deleteUserData(userId);
   await ctx.reply('Ваши персональные данные удалены. Доступ к боту сохранён — загрузить новое резюме можно командой /cv.');
 }
 
-function approvedStartText(user: TelegramUser): string {
+async function approvedStartText(user: TelegramUser): Promise<string> {
   const ownerCommands = user.isOwner
     ? '\n\nКоманды владельца:\n/ok ID или @username — одобрить доступ\n/users — пользователи\n/revoke ССЫЛКА — отозвать доступ\n/usage — статистика использования'
     : '';
@@ -353,34 +353,36 @@ function approvedStartText(user: TelegramUser): string {
     `2. Настройте время уведомлений и дайджеста командой /window.\n` +
     `3. Бот будет искать вакансии и оценивать их по вашему резюме.\n\n` +
     `Поиск по найденным вакансиям: /search запрос\nЭкспорт данных: /export_me\nУдаление данных: /delete_me\n` +
-    `Как обрабатываются данные: /privacy\n\n${cvStatus(user.userId)}\nДоставка: ${deliverySettingsStatus(user.userId)}` + ownerCommands;
+    `Как обрабатываются данные: /privacy\n\n${await cvStatus(user.userId)}\nДоставка: ${await deliverySettingsStatus(user.userId)}` + ownerCommands;
 }
 
-export function startTelegramBot(): void {
-  if (!process.env.TELEGRAM_BOT_TOKEN || !config.telegramPolling) return;
+function configureTelegramBot(): Bot | null {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return null;
+  const instance = getBot();
+  if (botConfigured) return instance;
   const ownerId = ownerUserId();
   if (config.telegramChatId && config.telegramChatId !== ownerId) {
     throw new Error('TELEGRAM_CHAT_ID must be the owner private-chat ID and match TELEGRAM_USER_ID.');
   }
-  const instance = getBot();
   instance.use(async (ctx, next) => {
     const currentIdentity = identity(ctx);
     if (!currentIdentity) return;
-    const user = touchTelegramUser(currentIdentity);
+    const user = await touchTelegramUser(currentIdentity);
     const command = ctx.message?.text?.match(/^\/(\w+)/)?.[1]?.toLowerCase();
     if (user.status === 'approved' || user.isOwner || command === 'start' || command === 'request') await next();
     else await ctx.reply(`Доступ: ${userStatusText(user.status)}. Отправьте /request, чтобы запросить доступ у владельца бота.`);
   });
   instance.command('start', async (ctx) => {
     const currentIdentity = identity(ctx); if (!currentIdentity) return;
-    const user = getTelegramUser(currentIdentity.userId)!;
-    if (user.status === 'approved') await ctx.reply(approvedStartText(user));
+    const user = await getTelegramUser(currentIdentity.userId);
+    if (!user) throw new Error('Telegram user was not persisted.');
+    if (user.status === 'approved') await ctx.reply(await approvedStartText(user));
     else await ctx.reply(`Это приватный бот для поиска вакансий. Доступ подтверждает владелец.\n\n` +
       `Ваш статус: ${userStatusText(user.status)}. Отправьте /request, чтобы подать заявку.`);
   });
   instance.command('request', async (ctx) => {
     const currentIdentity = identity(ctx); if (!currentIdentity) return;
-    const request = requestAccess(currentIdentity); const { user } = request;
+    const request = await requestAccess(currentIdentity); const { user } = request;
     if (user.isOwner || user.status === 'approved') { await ctx.reply('У вас уже есть доступ. Отправьте /start, чтобы продолжить.'); return; }
     if (request.retryAfterSeconds > 0) {
       const minutes = Math.max(1, Math.ceil(request.retryAfterSeconds / 60));
@@ -388,7 +390,7 @@ export function startTelegramBot(): void {
     }
     if (!request.notifyOwner) { await ctx.reply('Заявка уже отправлена и ждёт решения владельца.'); return; }
     const keyboard = new InlineKeyboard().text('Одобрить', `access:approve:${user.userId}`).text('Отклонить', `access:reject:${user.userId}`);
-    await getBot().api.sendMessage(targetChat(ownerUserId()),
+    await getBot().api.sendMessage(await targetChat(ownerUserId()),
       `<b>Новая заявка на доступ</b>\n${escapeHtml(user.displayName)}${user.username ? ` (@${escapeHtml(user.username)})` : ''}\n` +
       `ID пользователя: <code>${user.userId}</code>`, { parse_mode: 'HTML', reply_markup: keyboard });
     await ctx.reply('Заявка отправлена. Бот сообщит, когда владелец примет решение.');
@@ -396,14 +398,15 @@ export function startTelegramBot(): void {
   instance.callbackQuery(/^access:(approve|reject):(\d+)$/, async (ctx) => {
     if (String(ctx.from.id) !== ownerUserId()) { await ctx.answerCallbackQuery({ text: 'Только для владельца' }); return; }
     const action = ctx.match[1]; const userId = ctx.match[2];
-    const current = getTelegramUser(userId);
+    const current = await getTelegramUser(userId);
     if (!current) { await ctx.answerCallbackQuery({ text: 'Пользователь не найден' }); return; }
     if (current.status !== 'pending') {
       await ctx.answerCallbackQuery({ text: `Заявка уже обработана: ${userStatusText(current.status)}` });
       await ctx.editMessageReplyMarkup({ reply_markup: undefined });
       return;
     }
-    const user = setUserStatus(userId, action === 'approve' ? 'approved' : 'rejected')!;
+    const user = await setUserStatus(userId, action === 'approve' ? 'approved' : 'rejected');
+    if (!user) throw new Error('Telegram user disappeared during access update.');
     await ctx.answerCallbackQuery({ text: action === 'approve' ? 'Доступ одобрен' : 'Заявка отклонена' });
     await ctx.editMessageReplyMarkup({ reply_markup: undefined });
     await getBot().api.sendMessage(user.chatId, action === 'approve'
@@ -414,10 +417,10 @@ export function startTelegramBot(): void {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
     const reference = ctx.match.trim();
     if (!reference) { await ctx.reply('Укажите ID или username: /ok 123456789 или /ok @username'); return; }
-    const user = resolveApprovalReference(reference);
+    const user = await resolveApprovalReference(reference);
     if (!user) { await ctx.reply('Пользователь не найден. Он должен сначала открыть бота или отправить /request.'); return; }
     if (user.isOwner || user.status === 'approved') { await ctx.reply('У этого пользователя уже есть доступ.'); return; }
-    setUserStatus(user.userId, 'approved');
+    await setUserStatus(user.userId, 'approved');
     await ctx.reply(`Доступ одобрен: ${user.username ? `@${user.username}` : user.userId}.`);
     try { await getBot().api.sendMessage(user.chatId, 'Доступ одобрен. Отправьте /start, чтобы начать настройку.'); }
     catch (error) {
@@ -437,17 +440,18 @@ export function startTelegramBot(): void {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
     const reference = ctx.match.trim();
     if (!reference) { await ctx.reply('Сначала откройте /users, затем отправьте /revoke ССЫЛКА.'); return; }
-    const user = resolveUserReference(reference);
+    const user = await resolveUserReference(reference);
     if (!user) { await ctx.reply('Ссылка не найдена или неоднозначна. Откройте /users и используйте ссылку из таблицы.'); return; }
     if (user.isOwner) { await ctx.reply('Нельзя отозвать доступ у владельца.'); return; }
-    setUserStatus(user.userId, 'revoked');
-    pendingCvUpload.delete(user.userId); pendingRefreshHashes.delete(user.userId); pendingWindowSetup.delete(user.userId);
+    await setUserStatus(user.userId, 'revoked');
+    await Promise.all(['cv-upload', 'window-setup'].map((kind) => deleteTelegramSession(user.userId, kind)));
+    pendingRefreshHashes.delete(user.userId);
     await ctx.reply(`Доступ пользователя ${user.userId} отозван.`);
     await getBot().api.sendMessage(user.chatId, 'Ваш доступ к боту отозван. Позже можно снова отправить /request.');
   });
   instance.command('usage', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
-    const rows = userUsageSummaries();
+    const rows = await userUsageSummaries();
     const lines = rows.map((row) => `${row.userId.padEnd(14)} ${String(row.scores24h).padStart(4)}/${String(row.scoresTotal).padEnd(5)} ` +
       `${String(row.applications24h).padStart(3)}/${String(row.applicationsTotal).padEnd(4)} ${row.displayName.slice(0, 18)}`);
     await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n<pre>${escapeHtml(['ID              Оценки      Отклики  Пользователь', ...lines].join('\n'))}</pre>`,
@@ -456,7 +460,7 @@ export function startTelegramBot(): void {
   instance.command('search', async (ctx) => {
     const query = ctx.match.trim();
     if (!query) { await ctx.reply('Добавьте запрос после команды: /search должность, компания или навык'); return; }
-    const results = searchScoredVacancies(String(ctx.from!.id), query);
+    const results = await searchScoredVacancies(String(ctx.from!.id), query);
     if (!results.length) { await ctx.reply('В оценённых вакансиях ничего не найдено. Попробуйте другие слова.'); return; }
     const text = results.map((vacancy) => `<b>${vacancy.score}/100 — ${escapeHtml(vacancy.name)}</b>\n` +
       `${escapeHtml(vacancy.employer)} · <code>${vacancy.applyId}</code> · <a href="${escapeHtml(vacancy.url)}">открыть</a>`).join('\n\n');
@@ -464,42 +468,42 @@ export function startTelegramBot(): void {
   });
   instance.command('export_me', async (ctx) => {
     const userId = String(ctx.from!.id);
-    const bytes = Buffer.from(`${JSON.stringify(exportUserData(userId), null, 2)}\n`);
+    const bytes = Buffer.from(`${JSON.stringify(await exportUserData(userId), null, 2)}\n`);
     await ctx.replyWithDocument(new InputFile(bytes, `jobseeker-export-${new Date().toISOString().slice(0, 10)}.json`));
   });
   instance.command('delete_me', async (ctx) => deletePersonalData(ctx, ctx.match));
   instance.hears(/^\/delete-me(?:@\w+)?(?:\s+(.*))?$/i, async (ctx) => deletePersonalData(ctx, ctx.match[1] ?? ''));
   instance.command('window', async (ctx) => {
     const userId = String(ctx.from!.id); const action = ctx.match.trim().toLowerCase();
-    if (action === 'status') { await ctx.reply(`Настройки доставки: ${deliverySettingsStatus(userId)}`); return; }
+    if (action === 'status') { await ctx.reply(`Настройки доставки: ${await deliverySettingsStatus(userId)}`); return; }
     if (action === 'cancel') {
-      pendingWindowSetup.delete(userId); await ctx.reply('Настройка отменена.'); return;
+      await deleteTelegramSession(userId, 'window-setup'); await ctx.reply('Настройка отменена.'); return;
     }
     if (action) { await ctx.reply('Отправьте /window для настройки, /window status для просмотра или /window cancel для отмены.'); return; }
-    pendingWindowSetup.set(userId, { step: 'start' });
-    await ctx.reply(`Сейчас: ${deliverySettingsStatus(userId)}\n\n1/4 Во сколько начинать уведомления? Отправьте время в формате ЧЧ:ММ, например 09:00.`);
+    await setTelegramSession(userId, 'window-setup', { step: 'start' } satisfies WindowSetup, windowSetupTtlMs);
+    await ctx.reply(`Сейчас: ${await deliverySettingsStatus(userId)}\n\n1/4 Во сколько начинать уведомления? Отправьте время в формате ЧЧ:ММ, например 09:00.`);
   });
   instance.on('message:text', async (ctx, next) => {
-    const userId = String(ctx.from.id); const setup = pendingWindowSetup.get(userId);
+    const userId = String(ctx.from.id); const setup = await getTelegramSession<WindowSetup>(userId, 'window-setup');
     if (!setup) { await next(); return; }
     const value = ctx.message.text.trim();
     try {
       if (setup.step === 'start') {
-        parseClockMinutes(value); pendingWindowSetup.set(userId, { step: 'end', start: value });
+        parseClockMinutes(value); await setTelegramSession(userId, 'window-setup', { step: 'end', start: value } satisfies WindowSetup, windowSetupTtlMs);
         await ctx.reply('2/4 Во сколько заканчивать уведомления? Формат ЧЧ:ММ, например 22:00.');
       } else if (setup.step === 'end') {
         parseClockMinutes(value);
         if (parseClockMinutes(setup.start!) === parseClockMinutes(value)) throw new Error('Время начала и окончания должно отличаться.');
-        pendingWindowSetup.set(userId, { ...setup, step: 'digest', end: value });
+        await setTelegramSession(userId, 'window-setup', { ...setup, step: 'digest', end: value }, windowSetupTtlMs);
         await ctx.reply('3/4 Во сколько присылать ежедневную подборку? Формат ЧЧ:ММ, например 09:30.');
       } else if (setup.step === 'digest') {
-        parseClockMinutes(value); pendingWindowSetup.set(userId, { ...setup, step: 'timezone', digest: value });
+        parseClockMinutes(value); await setTelegramSession(userId, 'window-setup', { ...setup, step: 'timezone', digest: value }, windowSetupTtlMs);
         await ctx.reply('4/4 Укажите смещение от UTC: например +3, -5 или +3:30.');
       } else {
         const timezone = normalizeUtcOffset(value);
-        updateDeliverySettings(userId, setup.start!, setup.end!, setup.digest!, timezone);
-        pendingWindowSetup.delete(userId);
-        await ctx.reply(`Готово. ${deliverySettingsStatus(userId)}`);
+        await updateDeliverySettings(userId, setup.start!, setup.end!, setup.digest!, timezone);
+        await deleteTelegramSession(userId, 'window-setup');
+        await ctx.reply(`Готово. ${await deliverySettingsStatus(userId)}`);
       }
     } catch (error) { await ctx.reply(error instanceof Error ? error.message : String(error)); }
   });
@@ -509,22 +513,22 @@ export function startTelegramBot(): void {
   instance.command('cv', async (ctx) => {
     const userId = String(ctx.from!.id);
     if (ctx.match.trim()) { await ctx.reply('Просто отправьте команду /cv без дополнительных параметров.'); return; }
-    if (!pendingCvUpload.has(userId)) {
+    if (!await getTelegramSession(userId, 'cv-upload')) {
       const cooldownMs = config.cvUploadSessionCooldownMinutes * 60_000;
-      const remaining = (lastCvSessions.get(userId) ?? 0) + cooldownMs - Date.now();
-      if (remaining > 0) {
+      const cooldown = await claimTelegramSession(userId, 'cv-cooldown', {}, cooldownMs);
+      if (!cooldown.claimed) {
+        const remaining = cooldown.expiresAt.getTime() - Date.now();
         await ctx.reply(`Новую загрузку можно начать через ${Math.max(1, Math.ceil(remaining / 60_000))} мин.`);
         return;
       }
-      lastCvSessions.set(userId, Date.now());
     }
-    pendingCvUpload.add(userId);
-    await ctx.reply(`${cvStatus(userId)}.\n\nПришлите актуальное резюме одним файлом: PDF, Markdown, TXT или DOCX до 20 МБ. ` +
+    await setTelegramSession(userId, 'cv-upload', {}, cvUploadSessionTtlMs);
+    await ctx.reply(`${await cvStatus(userId)}.\n\nПришлите актуальное резюме одним файлом: PDF, Markdown, TXT или DOCX до 20 МБ. ` +
       'Новое резюме заменит предыдущее. Загружая файл, вы соглашаетесь с условиями /privacy.');
   });
   instance.on('message:document', async (ctx) => {
     const userId = String(ctx.from.id);
-    if (!pendingCvUpload.has(userId)) { await ctx.reply('Сначала отправьте /cv, затем прикрепите файл с резюме.'); return; }
+    if (!await getTelegramSession(userId, 'cv-upload')) { await ctx.reply('Сначала отправьте /cv, затем прикрепите файл с резюме.'); return; }
     if (activeCvImports.has(userId)) { await ctx.reply('Предыдущий файл ещё проверяется. Пожалуйста, подождите.'); return; }
     activeCvImports.add(userId);
     try {
@@ -542,19 +546,20 @@ export function startTelegramBot(): void {
       }
       const bytes = await downloadTelegramFile(document.file_id, document.file_size);
       await importCvSource(userId, filename, document.mime_type, bytes);
-      pendingCvUpload.delete(userId);
-      await ctx.reply(`Резюме сохранено. ${cvStatus(userId)}.\nОбновляю настройки поиска…`);
-      refreshSearchesAfterCvUpload(userId);
+      await deleteTelegramSession(userId, 'cv-upload');
+      await ctx.reply(`Резюме сохранено. ${await cvStatus(userId)}.\nОбновляю настройки поиска…`);
+      await refreshSearchesAfterCvUpload(userId);
     } catch (error) {
       console.error(`CV import failed for user ${userId}: ${errorMessage(error)}`);
-      if (isApprovedUser(userId)) await ctx.reply('Не удалось обработать файл. Проверьте формат и размер, затем попробуйте снова.');
+      if (await isApprovedUser(userId)) await ctx.reply('Не удалось обработать файл. Проверьте формат и размер, затем попробуйте снова.');
     } finally { activeCvImports.delete(userId); }
   });
   instance.hears(/^\s*([a-zA-Z]{1,6})\s*$/, async (ctx) => {
     if (!ctx.from) return;
     const userId = String(ctx.from.id); const reference = ctx.match[1].toLowerCase();
-    const matches = reference.length === 6 ? [getScoredVacancyByApplyId(userId, reference)].filter((vacancy) => vacancy !== null)
-      : latestDigestVacanciesByApplyIdPrefix(userId, reference);
+    const exact = reference.length === 6 ? await getScoredVacancyByApplyId(userId, reference) : null;
+    const matches: ScoredVacancy[] = reference.length === 6 ? (exact ? [exact] : [])
+      : await latestDigestVacanciesByApplyIdPrefix(userId, reference);
     if (!matches.length) { await ctx.reply(`В последней подборке нет вакансии с ID ${reference}.`); return; }
     if (matches.length > 1) { await ctx.reply(`Префикс ${reference} подходит к нескольким вакансиям. Пришлите больше букв.`); return; }
     const vacancy = matches[0]; const key = `${userId}:${vacancy.id}`;
@@ -562,32 +567,58 @@ export function startTelegramBot(): void {
     void generateAndSendApplication(userId, vacancy.id);
   });
   instance.callbackQuery(/^skip:(\d+)$/, async (ctx) => {
-    const userId = String(ctx.from.id); const id = Number(ctx.match[1]); skipVacancy(userId, id);
+    const userId = String(ctx.from.id); const id = Number(ctx.match[1]); await skipVacancy(userId, id);
     await ctx.answerCallbackQuery({ text: 'Вакансия пропущена' }); await ctx.deleteMessage();
   });
   instance.callbackQuery(/^apply:(\d+)$/, async (ctx) => {
     const userId = String(ctx.from.id); const id = Number(ctx.match[1]);
     await ctx.answerCallbackQuery({ text: 'Готовлю резюме и письмо…' });
-    const vacancy = getScoredVacancy(userId, id);
+    const vacancy = await getScoredVacancy(userId, id);
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard()
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru') });
     void generateAndSendApplication(userId, id);
   });
   instance.catch((error) => console.error(`Telegram bot error: ${errorMessage(error.error)}`));
+  botConfigured = true;
+  return instance;
+}
+
+async function registerTelegramCommands(instance: Bot): Promise<void> {
+  await instance.api.deleteMyCommands();
+  await instance.api.setMyCommands([
+    { command: 'start', description: 'Начало работы и статус' },
+    { command: 'request', description: 'Запросить доступ' },
+    { command: 'cv', description: 'Загрузить или заменить резюме' },
+    { command: 'privacy', description: 'Как обрабатываются данные' },
+    { command: 'window', description: 'Настроить уведомления и дайджест' },
+    { command: 'search', description: 'Поиск по оценённым вакансиям' },
+    { command: 'export_me', description: 'Экспортировать свои данные' },
+    { command: 'delete_me', description: 'Удалить свои данные' },
+  ]);
+}
+
+export function startTelegramBot(): void {
+  const instance = configureTelegramBot();
+  if (!instance || config.telegramMode !== 'polling') return;
   void instance.start({ allowed_updates: ['message', 'callback_query'], onStart: async () => {
-    await instance.api.deleteMyCommands();
-    await instance.api.setMyCommands([
-      { command: 'start', description: 'Начало работы и статус' },
-      { command: 'request', description: 'Запросить доступ' },
-      { command: 'cv', description: 'Загрузить или заменить резюме' },
-      { command: 'privacy', description: 'Как обрабатываются данные' },
-      { command: 'window', description: 'Настроить уведомления и дайджест' },
-      { command: 'search', description: 'Поиск по оценённым вакансиям' },
-      { command: 'export_me', description: 'Экспортировать свои данные' },
-      { command: 'delete_me', description: 'Удалить свои данные' },
-    ]);
+    await registerTelegramCommands(instance);
     console.info('Telegram bot started; multi-user commands registered');
   } });
+}
+
+export async function handleTelegramWebhookUpdate(update: unknown): Promise<void> {
+  if (config.telegramMode !== 'webhook') throw new Error('Telegram webhook mode is not enabled.');
+  const instance = configureTelegramBot();
+  if (!instance) throw new Error('TELEGRAM_BOT_TOKEN is required for webhook mode.');
+  await instance.handleUpdate(update as Parameters<Bot['handleUpdate']>[0]);
+}
+
+export async function initializeTelegramWebhookMode(): Promise<void> {
+  if (config.telegramMode !== 'webhook') return;
+  const instance = configureTelegramBot();
+  if (!instance) throw new Error('TELEGRAM_BOT_TOKEN is required for webhook mode.');
+  await registerTelegramCommands(instance);
+  console.info('Telegram webhook handlers initialized; multi-user commands registered');
 }
 
 export async function stopTelegramBot(): Promise<void> {

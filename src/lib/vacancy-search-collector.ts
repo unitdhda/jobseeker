@@ -11,11 +11,11 @@ export class VacancySearchCollector {
 
   get complete(): boolean { return this.#discovered >= this.newVacancyLimit; }
 
-  record(input: VacancyCandidateInput): boolean {
+  async record(input: VacancyCandidateInput): Promise<boolean> {
     const key = `${input.source}:${input.sourceId}`;
     if (this.complete || this.#seen.has(key)) return false;
     this.#seen.add(key);
-    if (recordVacancyCandidate(this.userId, input)) this.#discovered++;
+    if (await recordVacancyCandidate(this.userId, input)) this.#discovered++;
     return true;
   }
 

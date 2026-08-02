@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
   const raw = process.env[name];
@@ -26,6 +26,15 @@ function thinkingLevelEnv(name: string, fallback: ThinkingLevel): ThinkingLevel 
   return value as ThinkingLevel;
 }
 
+const telegramModes = ['polling', 'webhook', 'off'] as const;
+type TelegramMode = typeof telegramModes[number];
+function telegramModeEnv(): TelegramMode {
+  const explicit = process.env.TELEGRAM_MODE;
+  const value = explicit ?? (booleanEnv('TELEGRAM_POLLING', true) ? 'polling' : 'off');
+  if (!telegramModes.includes(value as TelegramMode)) throw new Error(`Invalid TELEGRAM_MODE: ${value}`);
+  return value as TelegramMode;
+}
+
 const supportedSearchPlatforms = ['hh', 'hirehi', 'habr', 'getmatch', 'geekjob', 'superjob', 'avito', 'rabota'] as const;
 const defaultSearchPlatforms = supportedSearchPlatforms.filter((platform) => platform !== 'superjob');
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
@@ -48,8 +57,11 @@ if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
   throw new Error('SCORE_AGENT_CONCURRENCY_MIN must not exceed SCORE_AGENT_CONCURRENCY_MAX.');
 }
 
+const databasePath = resolve(process.env.DATABASE_PATH ?? './data/jobseeker.db');
+
 export const config = {
-  databasePath: resolve(process.env.DATABASE_PATH ?? './data/jobseeker.db'),
+  databasePath,
+  hhBrowserDataPath: resolve(process.env.HH_BROWSER_DATA_PATH ?? join(dirname(databasePath), 'hh-browser')),
   model: process.env.FLUE_MODEL ?? 'openai-codex/gpt-5.6-terra',
   thinkingLevel: thinkingLevelEnv('FLUE_THINKING_LEVEL', 'high'),
   scoringModel: process.env.FLUE_SCORING_MODEL ?? 'openai-codex/gpt-5.6-luna',
@@ -101,5 +113,6 @@ export const config = {
   telegramUserId: process.env.TELEGRAM_USER_ID ?? process.env.TELEGRAM_CHAT_ID,
   runJobs: booleanEnv('RUN_JOBS', true),
   runInitialCycle: booleanEnv('RUN_INITIAL_CYCLE', true),
-  telegramPolling: booleanEnv('TELEGRAM_POLLING', true),
+  telegramMode: telegramModeEnv(),
+  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
 } as const;

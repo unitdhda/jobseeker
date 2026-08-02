@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import {
-  candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, markCandidateClosed, markCandidateFailed, markCandidateNormalized,
-  rankedCandidateQueueForUsers, saveCandidatePrefilter, upsertVacancy, type Vacancy, type VacancyCandidate, type VacancyInput,
+  candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, getSearchProfile, markCandidateClosed, markCandidateFailed,
+  markCandidateNormalized, rankedCandidateQueueForUsers, saveCandidatePrefilter, upsertVacancy,
+  type Vacancy, type VacancyCandidate, type VacancyInput,
 } from './database.ts';
 import { prefilterVacancy } from './prefilter.ts';
 import { embeddingCosine, semanticEmbedding } from './semantic-embeddings.ts';
@@ -11,6 +12,7 @@ import { normalizeHireHiCandidate, type HireHiListJob } from './hirehi.ts';
 import { normalizeAdditionalCandidate } from './additional-sources.ts';
 import { trace } from './trace.ts';
 import { errorMessage } from './logging.ts';
+import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from './career-profile.ts';
 
 function candidateVacancy(candidate: VacancyCandidate): Vacancy {
   return {
@@ -26,53 +28,56 @@ function candidateVacancy(candidate: VacancyCandidate): Vacancy {
 type QueueProgress = (phase: 'filtering' | 'normalization', current: number, total: number) => void;
 
 async function prefilterCandidates(userIds: string[], progress?: QueueProgress): Promise<{ evaluated: number; queued: number }> {
-  const profiles = userIds.map((userId) => {
-    const cv = getCvSource(userId);
+  const profiles = (await Promise.all(userIds.map(async (userId) => {
+    const cv = await getCvSource(userId);
     if (!cv) return null;
-    return { userId, cvText: cv.cvText, cvHash: cv.cvSha256 };
-  }).filter((profile) => profile !== null);
-  if (!profiles.length) return { evaluated: 0, queued: 0 };
-  const profileContext = profiles.map(({ userId, cvHash }) => `${userId}:${cvHash}`).sort().join('|');
-  const contextHash = createHash('sha256').update(['candidate-prefilter-v4-multiuser', profileContext,
-    config.prefilterMinScore, config.semanticPrefilterEnabled, config.semanticEmbeddingModel,
-    config.semanticEmbeddingDtype].join(':')).digest('hex');
-  const candidates = candidatesNeedingPrefilter(contextHash, config.candidatePrefilterBatchSize);
-  const cvVectors = new Map<string, Float32Array>();
-  if (config.semanticPrefilterEnabled && candidates.length) {
-    for (const profile of profiles) {
-      try { cvVectors.set(profile.userId, await semanticEmbedding('cv', profile.cvHash, profile.cvText, profile.userId)); }
+    const careerProfile = parseStoredCareerProfile(
+      await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256,
+    );
+    if (!careerProfile) return null;
+    const profileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
+    const contextHash = createHash('sha256').update(['candidate-prefilter-v5-per-user', cv.cvSha256, profileHash,
+      config.prefilterMinScore, config.semanticPrefilterEnabled, config.semanticEmbeddingModel,
+      config.semanticEmbeddingDtype].join(':')).digest('hex');
+    const candidates = await candidatesNeedingPrefilter(userId, contextHash, config.candidatePrefilterBatchSize);
+    return { userId, cvText: cv.cvText, cvHash: cv.cvSha256, careerProfile, contextHash, candidates };
+  }))).filter((profile) => profile !== null);
+  const total = profiles.reduce((sum, profile) => sum + profile.candidates.length, 0);
+  if (!total) return { evaluated: 0, queued: 0 };
+  let completed = 0; let queued = 0;
+  progress?.('filtering', 0, total);
+  const vacancyVectors = new Map<string, Float32Array | null>();
+  for (const profile of profiles) {
+    let cvVector: Float32Array | undefined;
+    if (config.semanticPrefilterEnabled && profile.candidates.length) {
+      try { cvVector = await semanticEmbedding('cv', profile.cvHash, profile.cvText, profile.userId); }
       catch (error) { console.warn(`Candidate semantic ranking unavailable for user ${profile.userId}: ${errorMessage(error)}`); }
     }
-  }
-  let queued = 0;
-  progress?.('filtering', 0, candidates.length);
-  for (const [index, candidate] of candidates.entries()) {
-    const vacancy = candidateVacancy(candidate);
-    let vacancyVector: Float32Array | undefined;
-    if (cvVectors.size) {
-      try {
-        const semanticText = `${candidate.title}\n${candidate.title}\n${candidate.searchName}\n${candidate.summary.slice(0, 500)}`;
-        vacancyVector = await semanticEmbedding('vacancy', `candidate-v4:${candidate.listingHash}`, semanticText);
-      } catch (error) { console.warn(`Candidate embedding failed for ${candidate.source}:${candidate.sourceId}: ${errorMessage(error)}`); }
-    }
-    const ranked = profiles.map((profile) => {
-      const cvVector = cvVectors.get(profile.userId);
+    for (const candidate of profile.candidates) {
+      const vacancy = candidateVacancy(candidate);
+      let vacancyVector = vacancyVectors.get(candidate.listingHash);
+      if (cvVector && vacancyVector === undefined) {
+        try {
+          const semanticText = `${candidate.title}\n${candidate.title}\n${candidate.searchName}\n${candidate.summary.slice(0, 500)}`;
+          vacancyVector = await semanticEmbedding('vacancy', `candidate-v5:${candidate.listingHash}`, semanticText);
+        } catch (error) {
+          vacancyVector = null;
+          console.warn(`Candidate embedding failed for ${candidate.source}:${candidate.sourceId}: ${errorMessage(error)}`);
+        }
+        vacancyVectors.set(candidate.listingHash, vacancyVector);
+      }
       const semanticCosine = cvVector && vacancyVector ? embeddingCosine(cvVector, vacancyVector) : null;
-      const lexical = prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore);
-      const result = semanticCosine == null ? lexical
-        : prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore, semanticCosine);
-      return { userId: profile.userId, result, semanticCosine };
-    }).sort((left, right) => right.result.combinedScore - left.result.combinedScore);
-    const best = ranked[0];
-    saveCandidatePrefilter(candidate, contextHash, { ...best.result,
-      semanticStatus: best.semanticCosine == null ? (config.semanticPrefilterEnabled ? 'unavailable' : 'disabled') : 'ready',
-      auditSelected: false });
-    if (!best.result.filtered) queued++;
-    trace('candidate.prefilter.scored', { source: candidate.source, sourceId: candidate.sourceId,
-      title: candidate.title, bestUserId: best.userId, ...best.result });
-    progress?.('filtering', index + 1, candidates.length);
+      const result = prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore, semanticCosine, profile.careerProfile);
+      await saveCandidatePrefilter(profile.userId, candidate, profile.contextHash, { ...result,
+        semanticStatus: semanticCosine == null ? (config.semanticPrefilterEnabled ? 'unavailable' : 'disabled') : 'ready',
+        auditSelected: false });
+      if (!result.filtered) queued++;
+      trace('candidate.prefilter.scored', { userId: profile.userId, source: candidate.source,
+        sourceId: candidate.sourceId, title: candidate.title, ...result });
+      progress?.('filtering', ++completed, total);
+    }
   }
-  return { evaluated: candidates.length, queued };
+  return { evaluated: total, queued };
 }
 
 async function normalizeOne(candidate: VacancyCandidate): Promise<VacancyInput | null> {
@@ -85,8 +90,8 @@ export interface CandidateQueueResult { evaluated: number; queued: number; selec
 export async function processCandidateQueue(userIds: string[], progress?: QueueProgress): Promise<CandidateQueueResult> {
   const prefilter = await prefilterCandidates(userIds, progress);
   const capacity = config.normalizationBatchSizePerUser * userIds.length;
-  const ranked = rankedCandidateQueueForUsers(userIds, config.normalizationBatchSizePerUser);
-  const refresh = candidatesDueForRefresh(
+  const ranked = await rankedCandidateQueueForUsers(userIds, config.normalizationBatchSizePerUser);
+  const refresh = await candidatesDueForRefresh(
     Math.min(config.candidateRefreshBatchSize, Math.max(0, capacity - ranked.length)), config.candidateRefreshDays);
   const selected = [...ranked, ...refresh];
   trace('candidate.queue.ranked', { perUserBatchSize: config.normalizationBatchSizePerUser, capacity,
@@ -101,15 +106,15 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
     try {
       const result = candidate.source === 'hh' ? hhResults.get(candidate.sourceId) : await normalizeOne(candidate);
       if (result instanceof Error) throw result;
-      if (!result) { markCandidateClosed(candidate); closed++; continue; }
-      const saved = upsertVacancy(result);
-      markCandidateNormalized(candidate, saved.id, Boolean(saved.duplicate));
+      if (!result) { await markCandidateClosed(candidate); closed++; continue; }
+      const saved = await upsertVacancy(result);
+      await markCandidateNormalized(candidate, saved.id, Boolean(saved.duplicate));
       if (saved.needsScore) { normalized++; bySource[candidate.source] = (bySource[candidate.source] ?? 0) + 1; }
       trace('candidate.normalized', { source: candidate.source, sourceId: candidate.sourceId, saved, vacancy: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/\b(?:404|410)\b|not found|archived|закрыт|в архиве/i.test(message)) { markCandidateClosed(candidate); closed++; }
-      else { failed++; markCandidateFailed(candidate, message); }
+      if (/\b(?:404|410)\b|not found|archived|закрыт|в архиве/i.test(message)) { await markCandidateClosed(candidate); closed++; }
+      else { failed++; await markCandidateFailed(candidate, message); }
       console.error(`Failed to normalize queued candidate ${candidate.source}:${candidate.sourceId}: ${errorMessage(error)}`);
     }
     progress?.('normalization', index + 1, selected.length);
