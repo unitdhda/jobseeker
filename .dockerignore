@@ -7,7 +7,6 @@
 data
 auth
 bootstrap-cv
-fonts
 model-cache
 node_modules
 dist

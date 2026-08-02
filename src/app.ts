@@ -6,6 +6,7 @@ import {
   handleTelegramWebhookUpdate, initializeTelegramWebhookMode, sendDailyDigest, sendPendingAlerts, startTelegramBot,
 } from './lib/telegram.ts';
 import { errorMessage } from './lib/logging.ts';
+import { persistenceReady } from './lib/readiness.ts';
 import { enqueueTelegramUpdateTask } from './lib/telegram-task-dispatch.ts';
 import {
   claimTelegramUpdate, claimTelegramUserUpdateLease, completeTelegramUpdate, failTelegramUpdate,
@@ -14,6 +15,10 @@ import {
 
 const app = new Hono();
 app.get('/health', (c) => c.json({ ok: true }));
+app.get('/ready',async(c)=> {
+  try { return c.json({ ok:true,persistence:await persistenceReady() }); }
+  catch(error) { console.error(`Readiness check failed: ${errorMessage(error)}`); return c.json({ ok:false },503); }
+});
 app.post('/telegram/webhook', async (c) => {
   if (config.telegramMode !== 'webhook') return c.json({ ok: false }, 404);
   const secret = config.telegramWebhookSecret;

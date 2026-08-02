@@ -1,0 +1,21 @@
+.gcloudignore
+.git
+.jj
+.pi/
+supabase/.temp/
+.env
+.env.*
+!.env.example
+data/
+auth/
+bootstrap-cv/
+model-cache/
+node_modules/
+dist/
+npm-debug.log*
+*.db
+*.db-shm
+*.db-wal
+*.log
+*.pdf
+# Cloud builds need the local font assets, but no runtime credentials or databases.
