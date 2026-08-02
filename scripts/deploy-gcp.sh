@@ -85,7 +85,7 @@ fi
 gcloud scheduler jobs update http "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" \
   --schedule="$CYCLE_SCHEDULE" --time-zone="$CYCLE_TIMEZONE" --uri="$RUN_URI" --http-method=POST \
   --oauth-service-account-email="$SCHEDULER_SA" --oauth-token-scope=https://www.googleapis.com/auth/cloud-platform \
-  --headers=Content-Type=application/json --message-body='{}' --attempt-deadline=180s \
+  --update-headers=Content-Type=application/json --message-body='{}' --attempt-deadline=180s \
   --max-retry-attempts=3 --min-backoff=30s --max-backoff=300s --quiet
 gcloud scheduler jobs pause "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" --quiet || true
 # Keep cutover explicit: deploys do not configure Telegram or run the cycle automatically.
