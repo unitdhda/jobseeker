@@ -69,6 +69,15 @@ try {
   await d.saveCandidatePrefilter(userId, candidate, 'different-context', { regexScore: 88, lexicalCosine: 0.7,
     lexicalScore: 85, combinedScore: 87, filtered: false, auditSelected: false, reasons: ['integration'] });
   assert.equal((await d.rankedCandidateQueueForUsers([userId], 5))[0]?.sourceId, sourceId);
+  const normalizedCandidate = await d.upsertVacancy({ source: 'habr', sourceId, name: 'Integration Candidate',
+    employer: 'Habr Integration Employer', area: 'Remote', salaryFrom: null, salaryTo: null, salaryCurrency: null,
+    salaryGross: null, experience: '', employment: '', schedule: '', workFormat: 'remote',
+    description: 'Normalized candidate integration vacancy.', keySkills: ['PostgreSQL'],
+    url: `https://career.habr.com/vacancies/${sourceId}`, publishedAt: '', sourceQuery: 'integration',
+    contentHash: `candidate-content-${suffix}` });
+  assert.equal(normalizedCandidate.duplicate, false);
+  await d.markCandidateNormalized(candidate, normalizedCandidate.id);
+  assert.equal((await d.getVacancy(normalizedCandidate.id))?.sourceId, sourceId);
   await d.recordUsage(userId, 'score');
   assert.equal(await d.usageInLast24Hours(userId, 'score'), 1);
   assert.equal((await d.userUsageSummaries()).some((summary) => summary.userId === userId && summary.scores24h === 1), true);
@@ -78,7 +87,7 @@ try {
   console.info('Postgres business repository integration passed.');
 } finally {
   await postgresQuery('delete from telegram_users where user_id=$1', [userId]).catch(() => undefined);
-  await postgresQuery('delete from vacancy_candidates where source_id=$1', [sourceId]).catch(() => undefined);
+  await postgresQuery('delete from vacancies where source_id=$1', [sourceId]).catch(() => undefined);
   if (vacancyId != null) await postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
   await closePostgresPool();
 }
