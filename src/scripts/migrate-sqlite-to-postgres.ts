@@ -6,11 +6,11 @@ import { closePostgresPool, getPostgresPool } from '../lib/postgres.ts';
 
 const copiedTables = [
   'telegram_users','cv_templates','search_profiles','user_delivery_windows','vacancies','user_vacancies',
-  'score_alert_details','prefilter_scores','embedding_cache','vacancy_candidates','candidate_discoveries',
+  'score_alert_details','prefilter_scores','vacancy_candidates','candidate_discoveries',
   'candidate_prefilter_scores','usage_events',
 ] as const;
 const resetOnlyTables = [
-  'telegram_update_receipts','telegram_sessions','background_tasks','llm_cost_events','coordination_leases',
+  'telegram_update_receipts','telegram_sessions','background_tasks','coordination_leases',
   'flue_submission_chunks','flue_attachments','flue_conversation_stream_batches','flue_conversation_streams',
   'flue_agent_submissions',
 ] as const;

@@ -53,8 +53,6 @@ export const markCandidateFailed = (...args: Parameters<AsyncBackend['markCandid
 export const getVacancy = (...args: Parameters<AsyncBackend['getVacancy']>) => call('getVacancy', ...args);
 export const pendingVacancies = (...args: Parameters<AsyncBackend['pendingVacancies']>) => call('pendingVacancies', ...args);
 export const vacanciesNeedingPrefilter = (...args: Parameters<AsyncBackend['vacanciesNeedingPrefilter']>) => call('vacanciesNeedingPrefilter', ...args);
-export const getCachedEmbedding = (...args: Parameters<AsyncBackend['getCachedEmbedding']>) => call('getCachedEmbedding', ...args);
-export const saveCachedEmbedding = (...args: Parameters<AsyncBackend['saveCachedEmbedding']>) => call('saveCachedEmbedding', ...args);
 export const savePrefilterScore = (...args: Parameters<AsyncBackend['savePrefilterScore']>) => call('savePrefilterScore', ...args);
 export const rankedPendingVacancies = (...args: Parameters<AsyncBackend['rankedPendingVacancies']>) => call('rankedPendingVacancies', ...args);
 export const prefilterQueueStats = (...args: Parameters<AsyncBackend['prefilterQueueStats']>) => call('prefilterQueueStats', ...args);

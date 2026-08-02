@@ -36,7 +36,7 @@ function telegramModeEnv(): TelegramMode {
 }
 
 const supportedSearchPlatforms = ['hh', 'hirehi', 'habr', 'getmatch', 'geekjob', 'superjob', 'avito', 'rabota'] as const;
-const defaultSearchPlatforms = supportedSearchPlatforms.filter((platform) => platform !== 'superjob');
+const defaultSearchPlatforms: SearchPlatformId[] = ['hh','habr','rabota'];
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
 
 function platformEnv(): SearchPlatformId[] {
@@ -87,10 +87,6 @@ export const config = {
   prefilterAuditPercent: integerEnv('PREFILTER_AUDIT_PERCENT', 5, 0, 100),
   prefilterAuditSlots: integerEnv('PREFILTER_AUDIT_SLOTS', 1, 0, 100),
   prefilterCalibrationMinLabels: integerEnv('PREFILTER_CALIBRATION_MIN_LABELS', 100, 1, 100_000),
-  semanticPrefilterEnabled: booleanEnv('SEMANTIC_PREFILTER_ENABLED', true),
-  semanticEmbeddingModel: process.env.SEMANTIC_EMBEDDING_MODEL ?? 'Xenova/multilingual-e5-small',
-  semanticEmbeddingDtype: process.env.SEMANTIC_EMBEDDING_DTYPE ?? 'q8',
-  semanticEmbeddingCacheDirectory: resolve(process.env.SEMANTIC_EMBEDDING_CACHE_DIRECTORY ?? './data/models'),
   avitoRegion: process.env.AVITO_REGION ?? 'moskva',
   superJobApiKey: process.env.SUPERJOB_API_KEY,
   superJobTownId: integerEnv('SUPERJOB_TOWN_ID', 4, 1, 1_000_000),

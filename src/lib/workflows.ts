@@ -11,8 +11,7 @@ import { getSearchPlatform } from '../platforms/registry.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, getApplicationArtifacts, type GeneratedApplication } from './application-artifacts.ts';
 import { trace } from './trace.ts';
-import { prefilterVacancy, vacancySemanticText } from './prefilter.ts';
-import { embeddingCosine, semanticEmbedding } from './semantic-embeddings.ts';
+import { prefilterVacancy } from './prefilter.ts';
 import { errorMessage } from './logging.ts';
 import { adaptiveConcurrency, AdaptiveTaskPool } from './adaptive-concurrency.ts';
 import {
@@ -192,45 +191,22 @@ export async function scorePendingVacancies(
     if (!careerProfile) throw new Error('A current CV-derived career profile is required for prefiltering.');
     const careerProfileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
     const contextHash = createHash('sha256').update([
-      'prefilter-v4-cv-derived', cvContentHash, careerProfileHash, config.prefilterMinScore,
-      config.semanticPrefilterEnabled, config.semanticEmbeddingModel, config.semanticEmbeddingDtype,
+      'prefilter-v5-cv-derived-lexical', cvContentHash, careerProfileHash, config.prefilterMinScore,
       config.prefilterAuditPercent,
     ].join(':')).digest('hex');
     calibrationContext = contextHash;
-    const candidates = await vacanciesNeedingPrefilter(userId, contextHash, config.prefilterBatchSize, config.semanticPrefilterEnabled);
+    const candidates = await vacanciesNeedingPrefilter(userId, contextHash, config.prefilterBatchSize, false);
     trace('prefilter.batch.start', { contextHash: contextHash.slice(0, 12), candidates: candidates.length,
-      minimumScore: config.prefilterMinScore,
-      semanticEnabled: config.semanticPrefilterEnabled, auditPercent: config.prefilterAuditPercent });
-    let cvVector: Float32Array | undefined;
-    if (config.semanticPrefilterEnabled && candidates.length) {
-      try {
-        cvVector = await semanticEmbedding('cv', cvContentHash, cvText, userId);
-      } catch (error) {
-        console.warn(`Semantic prefilter unavailable; falling back to lexical scoring: ${errorMessage(error)}`);
-      }
-    }
+      minimumScore: config.prefilterMinScore, auditPercent: config.prefilterAuditPercent });
     progress?.('filtering', 0, candidates.length);
     for (const [index, vacancy] of candidates.entries()) {
-      const lexical = prefilterVacancy(cvText, vacancy, config.prefilterMinScore, null, careerProfile);
-      let semanticCosine: number | null = null;
-      let semanticStatus: 'ready' | 'skipped' | 'disabled' | 'unavailable' = config.semanticPrefilterEnabled
-        ? 'unavailable' : 'disabled';
-      if (cvVector) {
-        try {
-          const vacancyVector = await semanticEmbedding('vacancy', vacancy.contentHash, vacancySemanticText(vacancy));
-          semanticCosine = embeddingCosine(cvVector, vacancyVector);
-          semanticStatus = 'ready';
-        } catch (error) {
-          console.warn(`Semantic embedding failed for vacancy ${vacancy.id}; using lexical score: ${errorMessage(error)}`);
-        }
-      }
-      const result = semanticCosine == null ? lexical
-        : prefilterVacancy(cvText, vacancy, config.prefilterMinScore, semanticCosine, careerProfile);
+      const result = prefilterVacancy(cvText, vacancy, config.prefilterMinScore, null, careerProfile);
       const auditDigest = createHash('sha256').update(`${contextHash}:${vacancy.id}`).digest().readUInt32BE(0);
       const auditSelected = result.filtered && auditDigest / 0x1_0000_0000 * 100 < config.prefilterAuditPercent;
-      await savePrefilterScore(userId, vacancy.id, contextHash, vacancy.contentHash, { ...result, semanticStatus, auditSelected });
+      await savePrefilterScore(userId, vacancy.id, contextHash, vacancy.contentHash, { ...result,
+        semanticStatus: 'disabled', auditSelected });
       trace('prefilter.vacancy.scored', { vacancyId: vacancy.id, source: vacancy.source, name: vacancy.name,
-        semanticStatus, auditSelected, ...result });
+        semanticStatus: 'disabled', auditSelected, ...result });
       progress?.('filtering', index + 1, candidates.length);
     }
     const stats = await prefilterQueueStats(userId, contextHash);

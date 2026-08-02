@@ -30,6 +30,11 @@ const ready = async (): Promise<void> => initialization;
 function jsonValue<T>(value: unknown): T { return (typeof value === 'string' ? JSON.parse(value) : value) as T; }
 function isoTimestamp(value: unknown): string { return value instanceof Date ? value.toISOString() : String(value); }
 function optionalIsoTimestamp(value: unknown): string | null { return value == null ? null : isoTimestamp(value); }
+function validTimestamp(value: unknown, fallback: string): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  const timestamp = raw ? new Date(raw) : null;
+  return timestamp && !Number.isNaN(timestamp.getTime()) ? timestamp.toISOString() : fallback;
+}
 
 function rowToUser(row: Row): TelegramUser {
   return { userId: String(row.user_id), chatId: String(row.chat_id), username: row.username == null ? null : String(row.username),
@@ -145,9 +150,7 @@ export async function deleteUserData(userId: string): Promise<void> {
       'user_vacancies','search_profiles','cv_templates','usage_events','telegram_sessions','background_tasks'] as const) {
       await client.query(`delete from ${table} where user_id=$1`, [userId]);
     }
-    await client.query("delete from embedding_cache where kind='cv' and user_id=$1", [userId]);
     await client.query("delete from coordination_leases where resource_key=$1", [`telegram-user:${userId}`]);
-    await client.query('update llm_cost_events set user_id=null where user_id=$1', [userId]);
     const sessionPattern = `%"${userId.replaceAll('%', '\\%').replaceAll('_', '\\_')}-%`;
     const submissions = await txq(client, "select submission_id from flue_agent_submissions where session_key like $1 escape '\\'", [sessionPattern]);
     const ids = submissions.map((row) => String(row.submission_id));
@@ -206,6 +209,7 @@ export async function saveCvSource(userId: string, originalFilename: string, cvS
     await client.query('delete from score_alert_details where user_id=$1', [userId]);
     await client.query('update user_vacancies set score=null,score_updated_at=null where user_id=$1', [userId]);
     await client.query('delete from prefilter_scores where user_id=$1', [userId]);
+    await client.query('delete from search_profiles where user_id=$1', [userId]);
   });
 }
 export async function saveSearchProfile(userId: string, platform: string, profile: unknown): Promise<void> {
@@ -247,7 +251,8 @@ function descriptionSimilarity(left: string, right: string): number {
   return count / (a.size + b.size - count);
 }
 export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; needsScore: boolean; duplicate: boolean }> {
-  await ready(); const v = { ...input, url: safeVacancyUrl(input.source, input.url) }; const timestamp = now();
+  await ready(); const timestamp = now(); const v = { ...input, url: safeVacancyUrl(input.source, input.url),
+    publishedAt: validTimestamp(input.publishedAt,timestamp) };
   return withPostgresTransaction(async (client) => {
     await client.query("select pg_advisory_xact_lock(hashtext('vacancy:' || $1 || ':' || $2))", [v.source, v.sourceId]);
     const existing = (await txq(client, 'select id,content_hash from vacancies where source=$1 and source_id=$2 for update', [v.source, v.sourceId]))[0];
@@ -296,7 +301,7 @@ function rowToCandidate(row: Row): VacancyCandidate {
 }
 export async function recordVacancyCandidate(userId: string, raw: VacancyCandidateInput): Promise<boolean> {
   await ready(); const input = { ...raw, url: safeVacancyUrl(raw.source, raw.url) }; const timestamp = now(), summary = input.summary ?? '';
-  const publishedAt = input.publishedAt ?? timestamp, payload = JSON.stringify(input.payload ?? null);
+  const publishedAt = validTimestamp(input.publishedAt,timestamp), payload = JSON.stringify(input.payload ?? null);
   const hash = createHash('sha256').update(JSON.stringify([input.title, summary, input.url, payload])).digest('hex');
   return withPostgresTransaction(async (client) => {
     const vacancy = (await txq(client, 'select id from vacancies where source=$1 and source_id=$2', [input.source,input.sourceId]))[0];
@@ -382,16 +387,6 @@ export async function vacanciesNeedingPrefilter(userId:string,contextHash:string
       where c.vacancy_id=v.id and d.user_id=$1)
     and (p.vacancy_id is null or p.context_hash<>$2 or p.content_hash<>v.content_hash or ($3 and p.semantic_status in ('disabled','unavailable')))
     order by v.published_at desc limit $4`,[userId,contextHash,semanticRequired,limit])).map(rowToVacancy);
-}
-export async function getCachedEmbedding(model:string,kind:'cv'|'vacancy',userId:string,contentHash:string):Promise<Float32Array|null>{
-  await ready(); const row=await one('select dimensions,vector from embedding_cache where model=$1 and kind=$2 and user_id=$3 and content_hash=$4',
-    [model,kind,userId,contentHash]); if(!row)return null; const buffer=Buffer.from(row.vector as Buffer),dimensions=Number(row.dimensions);
-  return buffer.byteLength===dimensions*4?new Float32Array(buffer.buffer.slice(buffer.byteOffset,buffer.byteOffset+buffer.byteLength)):null;
-}
-export async function saveCachedEmbedding(model:string,kind:'cv'|'vacancy',userId:string,contentHash:string,vector:Float32Array):Promise<void>{
-  await ready(); const bytes=Buffer.from(vector.buffer,vector.byteOffset,vector.byteLength); await q(`insert into embedding_cache
-    (model,kind,user_id,content_hash,dimensions,vector,created_at) values($1,$2,$3,$4,$5,$6,$7) on conflict(model,kind,user_id,content_hash)
-    do update set dimensions=excluded.dimensions,vector=excluded.vector,created_at=excluded.created_at`,[model,kind,userId,contentHash,vector.length,bytes,now()]);
 }
 export async function savePrefilterScore(userId:string,vacancyId:number,contextHash:string,contentHash:string,score:PrefilterScoreInput):Promise<void>{
   await ready(); await withPostgresTransaction(async client=>{ if(!await hasCv(userId,client))throw new Error('An authoritative CV source is required.');

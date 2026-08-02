@@ -2,10 +2,12 @@ import * as v from 'valibot';
 
 const evidenceText = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(300));
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
+const title = v.pipe(label,v.check((value) => !/\s[\/|]\s/.test(value),
+  'Each title variant must contain one title in one language; put translations in separate array items.'));
 
 export const careerTrackSchema = v.strictObject({
   name: label,
-  titleVariants: v.pipe(v.array(label), v.minLength(1), v.maxLength(16)),
+  titleVariants: v.pipe(v.array(title), v.minLength(1), v.maxLength(16)),
   coreSkills: v.pipe(v.array(label), v.maxLength(30)),
   evidence: v.pipe(v.array(evidenceText), v.minLength(1), v.maxLength(8)),
 });

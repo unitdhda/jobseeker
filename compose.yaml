@@ -31,7 +31,6 @@ services:
       - jobseeker-data:/app/data
       - ./auth:/app/auth
       - ./fonts:/app/fonts:ro
-      - ./model-cache:/app/data/models
     ports:
       - "127.0.0.1:${APP_PORT:-3000}:3000"
 

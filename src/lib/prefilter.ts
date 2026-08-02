@@ -51,7 +51,8 @@ function fallbackCareerProfile(cvText: string): CareerProfile {
 }
 
 function trackEvidence(track: CareerTrack, vacancy: Vacancy): { role: number; skills: number; similarity: number; matchedSkills: string[] } {
-  const similarity = Math.max(0, ...track.titleVariants.map((variant) => titleSimilarity(variant, vacancy.name)));
+  const titleVariants = track.titleVariants.flatMap((variant) => variant.split(/\s+\/\s+/).map((title) => title.trim()).filter(Boolean));
+  const similarity = Math.max(0, ...titleVariants.map((variant) => titleSimilarity(variant, vacancy.name)));
   const role = Math.round(similarity ** 2 * 75);
   const vacancyTokens = normalizedTokens(`${vacancy.name}\n${vacancy.description}\n${vacancy.keySkills.join('\n')}`);
   const matchedSkills = track.coreSkills.filter((skill) => phrasePresent(skill, vacancyTokens));
