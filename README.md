@@ -54,7 +54,7 @@ npm run dev
 curl http://127.0.0.1:3000/health
 ```
 
-Telegram работает через long polling, поэтому публичный webhook и внешний HTTP-порт не нужны.
+Локально и на VPS Telegram по умолчанию работает через long polling, поэтому публичный порт не нужен. Для Cloud Run поддерживается режим `TELEGRAM_MODE=webhook` с проверкой `TELEGRAM_WEBHOOK_SECRET`; одновременно включают только один способ получения обновлений.
 
 ## Настройка `.env`
 
@@ -84,6 +84,11 @@ TIMEZONE=Europe/Moscow
 | `SCORE_BATCH_SIZE` | Вакансий одного пользователя в одном вызове модели | `3` |
 | `FLUE_SCORING_FALLBACK_MODEL` | Платная API-модель после исчерпания лимита подписки | `openai/gpt-5.4-mini` |
 | `OPENAI_API_KEY` | Включает платный API fallback; без ключа fallback отключён | необязательна |
+| `DATABASE_URL` | Переключает Flue и весь business repository на Supabase/Postgres | локально не нужна |
+| `TELEGRAM_MODE` | `polling`, `webhook` или `off` | `polling` через `.env.example` |
+| `TELEGRAM_WEBHOOK_SECRET` | Секрет заголовка Telegram webhook, минимум 32 URL-safe символа | для webhook |
+| `SUPABASE_URL`, `SUPABASE_SECRET_KEY` | Доступ backend к приватному encrypted state bucket | для cloud runtime |
+| `RUNTIME_STATE_ENCRYPTION_KEY` | 32-байтный hex-ключ AES-256-GCM | для cloud runtime |
 
 ### Поиск и расписание
 
@@ -131,7 +136,7 @@ SQLite хранится в именованном volume `jobseeker-data`. Не 
 
 ## Данные и приватность
 
-- В SQLite хранятся нормализованный текст и структура резюме, поисковые профили, числовые оценки, настройки и служебное состояние.
+- В локальном/VPS режиме данные хранятся в SQLite; при наличии `DATABASE_URL` тот же асинхронный repository использует Postgres.
 - Строка оценки содержит только ID пользователя, ID вакансии и число. Пояснение к высокой оценке удаляется после доставки уведомления.
 - Релевантный текст резюме и вакансии передаётся настроенному провайдеру модели.
 - Исходные файлы, готовые PDF, сопроводительные письма и завершённые диалоги с моделью не сохраняются.

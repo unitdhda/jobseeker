@@ -66,13 +66,13 @@ function localParts(date: Date, timezone: string): { minutes: number; dateKey: s
     dateKey: `${part('year')}-${part('month')}-${part('day')}` };
 }
 
-function effectiveSettings(userId: string): DeliverySettings {
-  return getDeliverySettings(userId) ?? { startMinutes: 0, endMinutes: 0, digestMinutes: defaultDigestMinutes,
+async function effectiveSettings(userId: string): Promise<DeliverySettings> {
+  return await getDeliverySettings(userId) ?? { startMinutes: 0, endMinutes: 0, digestMinutes: defaultDigestMinutes,
     timezone: config.timezone, lastDigestAt: null };
 }
 
-export function isWithinDeliveryWindow(userId: string, date = new Date()): boolean {
-  const settings = effectiveSettings(userId);
+export async function isWithinDeliveryWindow(userId: string, date = new Date()): Promise<boolean> {
+  const settings = await effectiveSettings(userId);
   if (settings.startMinutes === settings.endMinutes) return true;
   const minutes = localParts(date, settings.timezone).minutes;
   return settings.startMinutes < settings.endMinutes
@@ -80,8 +80,8 @@ export function isWithinDeliveryWindow(userId: string, date = new Date()): boole
     : minutes >= settings.startMinutes || minutes < settings.endMinutes;
 }
 
-export function isDigestDue(userId: string, date = new Date()): boolean {
-  const settings = effectiveSettings(userId);
+export async function isDigestDue(userId: string, date = new Date()): Promise<boolean> {
+  const settings = await effectiveSettings(userId);
   const local = localParts(date, settings.timezone);
   if (local.minutes < settings.digestMinutes) return false;
   if (!settings.lastDigestAt) return true;
@@ -92,33 +92,33 @@ function timeText(minutes: number): string {
   return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
-export function deliverySettingsStatus(userId: string): string {
-  const configured = getDeliverySettings(userId);
-  const settings = effectiveSettings(userId);
+export async function deliverySettingsStatus(userId: string): Promise<string> {
+  const configured = await getDeliverySettings(userId);
+  const settings = await effectiveSettings(userId);
   const alerts = settings.startMinutes === settings.endMinutes ? 'в любое время'
     : `${timeText(settings.startMinutes)}–${timeText(settings.endMinutes)}`;
   const timezone = offsetMinutes(settings.timezone) == null ? settings.timezone : `UTC${settings.timezone}`;
   return `уведомления: ${alerts}; дайджест: ${timeText(settings.digestMinutes)}; ${timezone}${configured ? '' : ' (по умолчанию)'}`;
 }
 
-export function updateDeliverySettings(userId: string, start: string, end: string, digest: string, timezone: string): void {
+export async function updateDeliverySettings(userId: string, start: string, end: string, digest: string, timezone: string): Promise<void> {
   const startMinutes = parseClockMinutes(start); const endMinutes = parseClockMinutes(end);
   if (startMinutes === endMinutes) throw new Error('Время начала и окончания уведомлений должно отличаться.');
-  saveDeliverySettings(userId, { startMinutes, endMinutes, digestMinutes: parseClockMinutes(digest),
+  await saveDeliverySettings(userId, { startMinutes, endMinutes, digestMinutes: parseClockMinutes(digest),
     timezone: normalizeUtcOffset(timezone) });
 }
 
 async function sendAlerts(userId: string, now: Date): Promise<void> {
-  if (!notifyHandler || !isWithinDeliveryWindow(userId, now)) return;
+  if (!notifyHandler || !await isWithinDeliveryWindow(userId, now)) return;
   try { await notifyHandler(userId); }
   catch (error) { console.error(`Alert delivery failed for user ${userId}: ${errorMessage(error)}`); }
 }
 
 async function sendDigest(userId: string, now: Date): Promise<void> {
-  if (!digestHandler || !isDigestDue(userId, now)) return;
+  if (!digestHandler || !await isDigestDue(userId, now)) return;
   try {
     await digestHandler(userId);
-    markDigestRun(userId, now.toISOString());
+    await markDigestRun(userId, now.toISOString());
   } catch (error) { console.error(`Digest delivery failed for user ${userId}: ${errorMessage(error)}`); }
 }
 
@@ -130,7 +130,7 @@ export async function runScheduledCycle(): Promise<void> {
     try { await scrapeHandler(); }
     catch (error) { console.error(`Scrape cycle failed: ${errorMessage(error)}`); }
     const now = new Date();
-    const users = approvedUsers();
+    const users = await approvedUsers();
     await mapConcurrent(users, config.deliveryConcurrency, (user) => sendAlerts(user.userId, now));
     await mapConcurrent(users, config.deliveryConcurrency, (user) => sendDigest(user.userId, now));
   } finally { cycleRunning = false; }

@@ -164,7 +164,7 @@ export async function scrapeHireHi(userId: string, profile: HireHiSearchProfile)
         for (const summary of jobs) {
           if (Number.isSafeInteger(summary.id)) {
             const sourceId = String(summary.id);
-            collector.record({ source: 'hirehi', sourceId,
+            await collector.record({ source: 'hirehi', sourceId,
               url: `https://hirehi.ru/${encodeURIComponent(summary.category)}/job-${summary.id}`,
               searchName: search.name, title: summary.title,
               summary: `${summary.company} ${summary.format ?? ''} ${summary.salary_display ?? ''}`,

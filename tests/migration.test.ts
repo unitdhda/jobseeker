@@ -8,7 +8,7 @@ import test from 'node:test';
 
 function migrate(path: string): void {
   execFileSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval',
-    "await import('./src/lib/database.ts')"], { cwd: process.cwd(), env: { ...process.env,
+    "await import('./src/lib/database-sqlite.ts')"], { cwd: process.cwd(), env: { ...process.env,
       DATABASE_PATH: path, TELEGRAM_USER_ID: '1001', TELEGRAM_CHAT_ID: '1001', RUN_JOBS: 'false', TELEGRAM_POLLING: 'false' } });
 }
 

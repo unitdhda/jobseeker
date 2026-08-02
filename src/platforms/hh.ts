@@ -44,7 +44,7 @@ export const hhSearchProfileSchema = v.strictObject({
     })),
     periodDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(30))),
     orderBy: v.optional(v.picklist(['publication_time', 'salary_desc', 'salary_asc', 'relevance'])),
-  })), v.minLength(2), v.maxLength(8)),
+  })), v.minLength(1), v.maxLength(8)),
 });
 
 export type HhSearchProfile = v.InferOutput<typeof hhSearchProfileSchema>;
@@ -61,14 +61,9 @@ export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
     jsonShape: {
       version: 1,
       searches: [{
-        name: 'short unique label', rationale: 'why this search adds useful coverage', text: 'разработчик TypeScript React',
-        excludedText: 'optional comma-separated exclusions', searchFields: ['name', 'description'],
-        areas: [config.hhAreaId], metro: ['optional HH ids'], professionalRoles: ['optional HH ids'],
-        industries: ['optional HH ids'], employerIds: ['optional HH ids'], experience: ['between3And6'],
-        employmentForms: ['FULL'], workSchedules: ['FIVE_ON_TWO_OFF'], workingHours: ['HOURS_8'],
-        workFormats: ['REMOTE', 'HYBRID'], education: ['higher'], driverLicenseTypes: ['B'],
-        labels: ['accredited_it'], salary: { amount: 200000, currency: 'RUR', frequency: 'MONTHLY', mode: 'MONTH' },
-        periodDays: 7, orderBy: 'publication_time',
+        name: 'CV-derived track', rationale: 'CV evidence for this role search',
+        text: 'название профессии из карьерного профиля', searchFields: ['name', 'description'],
+        areas: [config.hhAreaId], periodDays: 7, orderBy: 'publication_time',
       }],
     },
     capabilities: {
@@ -79,12 +74,7 @@ export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
       salaryFrequencies: ['DAILY', 'WEEKLY', 'TWICE_PER_MONTH', 'MONTHLY', 'PER_PROJECT'],
       salaryModes: ['MONTH', 'SHIFT', 'HOUR', 'FLY_IN_FLY_OUT', 'SERVICE'],
       orderBy: ['publication_time', 'salary_desc', 'salary_asc', 'relevance'],
-      knownTechProfessionalRoles: {
-        '96': 'Программист, разработчик', '104': 'Руководитель группы разработки', '124': 'Тестировщик',
-        '160': 'DevOps-инженер', '156': 'BI-аналитик, аналитик данных', '165': 'Дата-сайентист',
-        '148': 'Системный аналитик', '150': 'Бизнес-аналитик', '73': 'Менеджер продукта',
-        '107': 'Руководитель проектов', '125': 'Технический директор (CTO)',
-      },
+      professionalRoles: 'No role-ID catalogue is embedded. Omit this filter unless an operator supplies a verified HH role ID.',
     },
     rules: [
       'Every search text must contain Russian role or function terms; keep only standard technology and product names in English.',
@@ -92,7 +82,7 @@ export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
       'Every search must include areas; use configuredDefaultArea unless the CV explicitly supports another location.',
       'Never infer salary, work format, education, licences, or availability merely from a job title.',
       'Prefer several complementary searches over one over-filtered search.',
-      'Use professionalRoles only when the exact role ID is present in knownTechProfessionalRoles.',
+      'Omit professionalRoles unless an exact verified HH role ID was supplied by operator configuration.',
       'Use strict filters only when they are explicit in the CV or operator input; recall matters.',
     ],
   }),

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { dirname, join } from 'node:path';
+
 import { chromium, type BrowserContext, type Page } from 'playwright';
 import { config } from '../config.ts';
 import { type VacancyCandidate, type VacancyInput } from './database.ts';
@@ -77,7 +77,7 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
 }
 
 async function openContext(): Promise<BrowserContext> {
-  const browserData = join(dirname(config.databasePath), 'hh-browser');
+  const browserData = config.hhBrowserDataPath;
   return chromium.launchPersistentContext(browserData, {
     executablePath: config.playwrightChromiumPath,
     headless: config.playwrightHeadless,
@@ -113,7 +113,7 @@ export async function scrapeHh(userId: string, profile: HhSearchProfile): Promis
         trace('scrape.search.result', { platform: 'hh', search: search.name, page: pageNumber + 1, found: found.length });
         for (const item of found) {
           const id = new URL(item.href).pathname.match(/\/vacancy\/(\d+)/)?.[1];
-          if (id) collector.record({ source: 'hh', sourceId: id, url: `https://hh.ru/vacancy/${id}`,
+          if (id) await collector.record({ source: 'hh', sourceId: id, url: `https://hh.ru/vacancy/${id}`,
             searchName: search.name, title: item.title, summary: search.name });
           if (collector.complete) break;
         }

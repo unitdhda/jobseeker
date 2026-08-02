@@ -34,7 +34,7 @@ async function scrapeStructuredDetailPages(
           const id = url.match(idPattern)?.[1];
           if (id) {
             found++;
-            collector.record({ source, sourceId: id, url, searchName: search.name,
+            await collector.record({ source, sourceId: id, url, searchName: search.name,
               title: htmlText(match[2] ?? '') || search.name, summary: search.name });
           }
           if (collector.complete) break;
@@ -78,7 +78,7 @@ export async function scrapeGeekJob(userId: string, profile: TextSearchProfile):
           .some((term) => title.includes(term)));
         if (search) {
           found++;
-          collector.record({ source: 'geekjob', sourceId: match[2],
+          await collector.record({ source: 'geekjob', sourceId: match[2],
             url: new URL(match[1], 'https://geekjob.ru').toString(), searchName: search.name,
             title: htmlText(match[3]) || search.name, summary: search.name });
         }
@@ -145,7 +145,7 @@ export async function scrapeGetmatch(userId: string, profile: GetmatchSearchProf
   const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
   for (const [sourceId, link] of candidates) {
     const title = new URL(link.url).pathname.split('/').pop()?.replace(/^\d+-/, '').replaceAll('-', ' ') ?? link.searchName;
-    collector.record({ source: 'getmatch', sourceId, url: link.url, searchName: link.searchName,
+    await collector.record({ source: 'getmatch', sourceId, url: link.url, searchName: link.searchName,
       title, summary: link.searchName, publishedAt: link.lastmod });
     if (collector.complete) break;
   }
@@ -167,7 +167,7 @@ export async function scrapeRabota(userId: string, profile: TextSearchProfile): 
           const postingUrl = plainText(posting.url);
           const id = postingUrl.match(/\/vacancy\/(\d+)/)?.[1]
             ?? plainText(asObject(posting.identifier)?.value);
-          if (id) collector.record({ source: 'rabota', sourceId: id,
+          if (id) await collector.record({ source: 'rabota', sourceId: id,
             url: postingUrl || `https://www.rabota.ru/vacancy/${id}/`, searchName: search.name,
             title: plainText(posting.title) || search.name, summary: plainText(posting.description).slice(0, 1_000),
             publishedAt: plainText(posting.datePosted), payload: posting });
@@ -253,7 +253,7 @@ export async function scrapeAvito(userId: string, profile: AvitoSearchProfile): 
           const sourceId = String(item.id);
           const title = plainText(item.title);
           const summary = `${plainText(avitoStep(item, 'DescriptionStep', 'description')?.description)} ${plainText(avitoStep(item, 'ParamsStep', 'params')?.text)}`.slice(0, 1_000);
-          collector.record({ source: 'avito', sourceId,
+          await collector.record({ source: 'avito', sourceId,
             url: new URL(plainText(item.urlPath).split('?')[0], 'https://www.avito.ru').toString(),
             searchName: search.name, title, summary, payload: item });
           if (collector.complete) break;
@@ -289,7 +289,7 @@ export async function scrapeSuperJob(userId: string, profile: TextSearchProfile)
         const object = asObject(vacancy); const sourceId = object ? plainText(object.id) : '';
         if (object && sourceId) {
           const published = Number(object.date_published);
-          collector.record({ source: 'superjob', sourceId, url: plainText(object.link), searchName: search.name,
+          await collector.record({ source: 'superjob', sourceId, url: plainText(object.link), searchName: search.name,
             title: plainText(object.profession), summary: htmlText(plainText(object.candidat)).slice(0, 1_000),
             publishedAt: Number.isFinite(published) ? new Date(published * 1_000).toISOString() : undefined,
             payload: object });

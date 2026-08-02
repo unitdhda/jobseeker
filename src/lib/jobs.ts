@@ -48,7 +48,7 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
   const cycleStatus = await startCycleStatus();
   cycleStatus?.set('scraping');
   try {
-    const users = approvedUsers(true);
+    const users = await approvedUsers(true);
     trace('cycle.start', { users: users.map((user) => user.userId), platforms: config.searchPlatforms,
       scoreLimitPerUser: config.userScoreLimitPerCycle });
     const platforms: Record<string, PlatformScrapeResult> = {};
