@@ -1,13 +1,13 @@
 import { Hono } from 'hono';
 import { config } from './config.ts';
 import { runCycleInWorker, stopJobWorker } from './worker-client.ts';
-import { initializeSchedules, runScheduledCycle } from './vacancies/jobs.ts';
+import { initializeSchedules, runScheduledCycle, stopSchedules } from './vacancies/jobs.ts';
 import {
   handleTelegramWebhookUpdate, initializeTelegramWebhookMode, sendDailyDigest, sendPendingAlerts, startTelegramBot, stopTelegramBot,
 } from './telegram.ts';
 import { errorMessage } from './observability.ts';
 import { persistenceReady } from './postgres.ts';
-import { enqueueTelegramUpdateTask } from './cloud-tasks.ts';
+import { closeCloudTasksClient, enqueueTelegramUpdateTask } from './cloud-tasks.ts';
 import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './telegram-state.ts';
 
 const app = new Hono();
@@ -71,8 +71,8 @@ const port=Number(process.env.PORT??3000);
 if(!Number.isSafeInteger(port)||port<1||port>65_535)throw new Error('PORT must be an integer between 1 and 65535.');
 const server=serve({fetch:app.fetch,port});
 let stopping=false;
-async function stop():Promise<void>{if(stopping)return;stopping=true;
-  await stopTelegramBot();await stopJobWorker();
+async function stop():Promise<void>{if(stopping)return;stopping=true;stopSchedules();
+  await stopTelegramBot();await stopJobWorker();await closeCloudTasksClient();
   await new Promise<void>(resolve=>server.close(()=>resolve()));await closePostgresPool();}
 process.once('SIGTERM',()=>void stop());
 process.once('SIGINT',()=>void stop());

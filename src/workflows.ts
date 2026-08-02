@@ -33,7 +33,7 @@ async function ensureCareerProfile(userId: string, cvText: string, cvHash: strin
     await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cvHash,
   );
   if (!force && existing) return existing;
-  const generated=await generateJson({agent:'prepare-career-profile',model:config.model,thinking:config.thinkingLevel,
+  const generated=await generateJson({userId,agent:'prepare-career-profile',model:config.model,thinking:config.thinkingLevel,
     schema:careerProfileSchema,system:`Derive occupation-neutral career tracks solely from explicit CV evidence. Never use a fixed
 occupation or industry taxonomy. Each titleVariants item is one title in one language; Russian and English translations
 must be separate items. Translation must not broaden the occupation. Contact details, employer technologies and project
@@ -66,7 +66,7 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
         const careerProfile=parseStoredCareerProfile(await getSearchProfile<StoredCareerProfile>(userId,careerProfilePlatformId),hash);
         if(!careerProfile)throw new Error('A current career profile is required.');
         await recordUsage(userId,'search-profile');
-        const generated=await generateJson({agent:'prepare-search-profile',model:config.model,thinking:config.thinkingLevel,
+        const generated=await generateJson({userId,agent:'prepare-search-profile',model:config.model,thinking:config.thinkingLevel,
           schema:platform.schema,system:`Build a validated vacancy-search profile only from CV-derived career tracks and the supplied
 platform capabilities. Never assume a software or technology sector. For a constrained platform, return an empty searches
 array when no supported category credibly matches. Translate evidenced role terminology when required without adding adjacent roles.`,
@@ -127,7 +127,7 @@ async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provid
     source:vacancy.source,name:vacancy.name,employer:vacancy.employer,area:vacancy.area,salaryFrom:vacancy.salaryFrom,
     salaryTo:vacancy.salaryTo,salaryCurrency:vacancy.salaryCurrency,salaryGross:vacancy.salaryGross,experience:vacancy.experience,
     employment:vacancy.employment,schedule:vacancy.schedule,workFormat:vacancy.workFormat,description:vacancy.description,keySkills:vacancy.keySkills}));
-  const result=await generateJson({agent:'score-vacancies',model:provider==='api'?config.scoringFallbackModel:config.scoringModel,
+  const result=await generateJson({userId,agent:'score-vacancies',model:provider==='api'?config.scoringFallbackModel:config.scoringModel,
     thinking:provider==='api'?config.scoringFallbackThinkingLevel:config.scoringThinkingLevel,schema:scoringResultSchema,
     system:`Score each CV-vacancy match independently. Use no fixed occupation taxonomy and never score keyword overlap without
 role compatibility. Rubric: must-have skills 40, seniority/years 20, responsibilities 15, domain 10, location/work format 10,
@@ -264,7 +264,7 @@ export async function tailorApplication(userId: string, vacancyId: number): Prom
   try {
     await recordUsage(userId,'application');
     const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
-    const documents=await generateJson({agent:'tailor-application',model:config.model,thinking:config.thinkingLevel,
+    const documents=await generateJson({userId,agent:'tailor-application',model:config.model,thinking:config.thinkingLevel,
       schema:applicationSchema,system:`Create a tailored plain-text CV and cover letter from authoritative evidence only. Preserve all
 employers, dates, titles, metrics, skills, degrees, languages and contacts without invention or inflation. Translate faithfully
 into the vacancy language when needed. tailoredCvText starts with name, role and contacts, uses uppercase section headings and

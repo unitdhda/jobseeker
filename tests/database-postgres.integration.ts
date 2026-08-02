@@ -81,6 +81,10 @@ try {
   await d.recordUsage(userId, 'score');
   assert.equal(await d.usageInLast24Hours(userId, 'score'), 1);
   assert.equal((await d.userUsageSummaries()).some((summary) => summary.userId === userId && summary.scores24h === 1), true);
+  await postgresQuery(`insert into usage_events(user_id,kind,occurred_at,agent,model,total_tokens,cost_usd)
+    values($1,'llm',now(),'integration','test-model',42,0.001)`,[userId]);
+  const llmUsage=await d.llmUsageSummary(14);
+  assert.equal(llmUsage.timeline.length,14);assert.ok(llmUsage.tokensTotal>=42);assert.ok(llmUsage.costTotalUsd>=0.001);
   assert.equal((await d.exportUserData(userId)).cvSource != null, true);
   await d.deleteUserData(userId);
   assert.equal(await d.getCvHash(userId), null);

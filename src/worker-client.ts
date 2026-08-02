@@ -72,6 +72,10 @@ async function request<T>(payload: JobPayload): Promise<T> {
   });
 }
 
+export function jobWorkerStatus():{active:number;pending:number;capacity:number}{
+  return {active:child?.connected?1:0,pending:pending.size,capacity:config.maxPendingWorkerJobs};
+}
+
 export async function stopJobWorker():Promise<void>{
   const running=child;if(!running)return;
   child=undefined;ready=undefined;

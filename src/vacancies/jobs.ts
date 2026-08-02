@@ -287,11 +287,35 @@ export async function deliverySettingsStatus(userId: string): Promise<string> {
   return `уведомления: ${alerts}; дайджест: ${timeText(settings.digestMinutes)}; ${timezone}${configured ? '' : ' (по умолчанию)'}`;
 }
 
-export async function updateDeliverySettings(userId: string, start: string, end: string, digest: string, timezone: string): Promise<void> {
+async function saveEffectiveSettings(userId: string, patch: Partial<Omit<DeliverySettings, 'lastDigestAt'>>): Promise<void> {
+  const current = await effectiveSettings(userId);
+  await saveDeliverySettings(userId, { startMinutes: patch.startMinutes ?? current.startMinutes,
+    endMinutes: patch.endMinutes ?? current.endMinutes, digestMinutes: patch.digestMinutes ?? current.digestMinutes,
+    timezone: patch.timezone ?? current.timezone });
+}
+
+export async function updateDeliveryWindow(userId: string, start: string, end: string): Promise<void> {
   const startMinutes = parseClockMinutes(start); const endMinutes = parseClockMinutes(end);
   if (startMinutes === endMinutes) throw new Error('Время начала и окончания уведомлений должно отличаться.');
-  await saveDeliverySettings(userId, { startMinutes, endMinutes, digestMinutes: parseClockMinutes(digest),
-    timezone: normalizeUtcOffset(timezone) });
+  await saveEffectiveSettings(userId, { startMinutes, endMinutes });
+}
+export async function updateDeliveryTimezone(userId: string, timezone: string): Promise<void> {
+  await saveEffectiveSettings(userId, { timezone: normalizeUtcOffset(timezone) });
+}
+export async function updateDigestTime(userId: string, digest: string): Promise<void> {
+  await saveEffectiveSettings(userId, { digestMinutes: parseClockMinutes(digest) });
+}
+export async function removeDeliveryWindow(userId: string): Promise<void> {
+  await saveEffectiveSettings(userId, { startMinutes: 0, endMinutes: 0 });
+}
+export async function digestSettingsStatus(userId: string, date = new Date()): Promise<string> {
+  const configured = await getDeliverySettings(userId); const settings = await effectiveSettings(userId);
+  const timezone = offsetMinutes(settings.timezone) == null ? settings.timezone : `UTC${settings.timezone}`;
+  const lastParts = settings.lastDigestAt ? localParts(new Date(settings.lastDigestAt),settings.timezone) : null;
+  const last = lastParts ? `${lastParts.dateKey} ${timeText(lastParts.minutes)}` : 'ещё не отправлялся';
+  const due = await isDigestDue(userId,date);
+  return `Состояние: включён${configured?'':' (по умолчанию)'}\nВремя: ${timeText(settings.digestMinutes)} · ${timezone}\n`+
+    `Последняя отправка: ${last}\nСейчас: ${due?'готов к отправке':'ожидает времени или уже отправлен сегодня'}`;
 }
 
 async function sendAlerts(userId: string, now: Date): Promise<void> {
