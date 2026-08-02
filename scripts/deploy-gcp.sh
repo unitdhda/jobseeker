@@ -50,7 +50,7 @@ WORKER_SECRETS="$COMMON_SECRETS,TELEGRAM_BOT_TOKEN=jobseeker-telegram-bot-token:
 COMMON_ENV="POSTGRES_POOL_MAX=4,POSTGRES_SSL=require,SUPABASE_URL=$SUPABASE_URL_VALUE,SUPABASE_STORAGE_BUCKET=$SUPABASE_BUCKET_VALUE,HH_BROWSER_DATA_PATH=/tmp/hh-browser,TYPST_FONT_PATHS=/app/fonts"
 
 gcloud run deploy "$WORKER_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --image="$WORKER_IMAGE" \
-  --service-account="$WORKER_SA" --command=node --args=dist/task-worker.mjs --port=3000 \
+  --service-account="$WORKER_SA" --command=bun --args=dist/task-worker.mjs --port=3000 \
   --cpu=2 --memory=2Gi --concurrency=1 --min-instances=0 --max-instances=3 --timeout=1800 \
   --execution-environment=gen2 --ingress=internal --no-allow-unauthenticated \
   --set-env-vars="$COMMON_ENV,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=webhook,TELEGRAM_USER_ID=$TELEGRAM_USER_ID_VALUE" \
@@ -67,7 +67,7 @@ gcloud run deploy "$WEB_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGI
   --set-secrets="DATABASE_URL=jobseeker-database-url:latest,TELEGRAM_BOT_TOKEN=jobseeker-telegram-bot-token:latest,TELEGRAM_WEBHOOK_SECRET=jobseeker-telegram-webhook-secret:latest,TASK_EXECUTION_SECRET=jobseeker-task-execution-secret:latest" --quiet
 
 gcloud run jobs deploy "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --image="$WORKER_IMAGE" \
-  --service-account="$CYCLE_SA" --command=node --args=dist/run-cycle.mjs --cpu=1 --memory=2Gi \
+  --service-account="$CYCLE_SA" --command=bun --args=dist/run-cycle.mjs --cpu=1 --memory=2Gi \
   --tasks=1 --parallelism=1 --max-retries=1 --task-timeout=1800s \
   --set-env-vars="$COMMON_ENV,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=off,BACKGROUND_DELIVERY_ASYNC=true,$TASK_ENV" \
   --set-secrets="$COMMON_SECRETS,TASK_EXECUTION_SECRET=jobseeker-task-execution-secret:latest" --quiet
