@@ -18,7 +18,7 @@ ENV NODE_ENV=production \
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && \
-    npx playwright install --with-deps chromium && \
+    npx playwright install --with-deps --only-shell chromium && \
     npm cache clean --force && \
     chmod -R a+rX /ms-playwright
 COPY --from=build /app/dist ./dist

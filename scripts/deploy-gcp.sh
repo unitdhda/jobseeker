@@ -34,9 +34,13 @@ for secret in database-url telegram-bot-token telegram-webhook-secret task-execu
     --format='value(name)' | grep -q . || { echo "jobseeker-$secret has no enabled version." >&2; exit 1; }
 done
 
-TAG="$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"
-IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$ARTIFACT_REPOSITORY/jobseeker:$TAG"
-gcloud builds submit --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --tag="$IMAGE" .
+if [ -n "${GCP_IMAGE:-}" ]; then
+  IMAGE="$GCP_IMAGE"
+else
+  TAG="$(date -u +%Y%m%d-%H%M%S)-$(git rev-parse --short HEAD)"
+  IMAGE="$GCP_REGION-docker.pkg.dev/$GCP_PROJECT_ID/$ARTIFACT_REPOSITORY/jobseeker:$TAG"
+  gcloud builds submit --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --tag="$IMAGE" .
+fi
 
 COMMON_SECRETS="DATABASE_URL=jobseeker-database-url:latest,SUPABASE_SECRET_KEY=jobseeker-supabase-secret-key:latest,RUNTIME_STATE_ENCRYPTION_KEY=jobseeker-runtime-state-encryption-key:latest"
 WORKER_SECRETS="$COMMON_SECRETS,TELEGRAM_BOT_TOKEN=jobseeker-telegram-bot-token:latest,TASK_EXECUTION_SECRET=jobseeker-task-execution-secret:latest"
@@ -56,7 +60,7 @@ TASK_ENV="CLOUD_TASKS_PROJECT=$GCP_PROJECT_ID,CLOUD_TASKS_LOCATION=$GCP_REGION,C
 gcloud run deploy "$WEB_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --image="$IMAGE" \
   --service-account="$WEB_SA" --port=3000 --cpu=1 --memory=512Mi --concurrency=20 \
   --min-instances=0 --max-instances=2 --timeout=30 --execution-environment=gen2 --ingress=all --allow-unauthenticated \
-  --set-env-vars="POSTGRES_POOL_MAX=4,POSTGRES_SSL=require,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=webhook,TELEGRAM_WEBHOOK_ASYNC=true,$TASK_ENV" \
+  --set-env-vars="POSTGRES_POOL_MAX=4,POSTGRES_SSL=require,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=webhook,TELEGRAM_USER_ID=$TELEGRAM_USER_ID_VALUE,TELEGRAM_WEBHOOK_ASYNC=true,$TASK_ENV" \
   --set-secrets="DATABASE_URL=jobseeker-database-url:latest,TELEGRAM_BOT_TOKEN=jobseeker-telegram-bot-token:latest,TELEGRAM_WEBHOOK_SECRET=jobseeker-telegram-webhook-secret:latest,TASK_EXECUTION_SECRET=jobseeker-task-execution-secret:latest" --quiet
 
 gcloud run jobs deploy "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --image="$IMAGE" \
@@ -65,20 +69,25 @@ gcloud run jobs deploy "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --region="$GCP_R
   --set-env-vars="$COMMON_ENV,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=off,BACKGROUND_DELIVERY_ASYNC=true,$TASK_ENV" \
   --set-secrets="$COMMON_SECRETS,TASK_EXECUTION_SECRET=jobseeker-task-execution-secret:latest" --quiet
 gcloud run jobs add-iam-policy-binding "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
-  --member="serviceAccount:$SCHEDULER_SA" --role=roles/run.invoker --condition=None >/dev/null
+  --member="serviceAccount:$SCHEDULER_SA" --role=roles/run.invoker >/dev/null
 
 RUN_URI="https://run.googleapis.com/v2/projects/$GCP_PROJECT_ID/locations/$GCP_REGION/jobs/$CYCLE_JOB:run"
 if gcloud scheduler jobs describe "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" >/dev/null 2>&1; then
-  SCHEDULER_ACTION=update
+  gcloud scheduler jobs pause "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" --quiet || true
 else
-  SCHEDULER_ACTION=create
+  # Create with a dormant annual schedule, then pause before applying the real cron to avoid a boundary-time race.
+  gcloud scheduler jobs create http "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" \
+    --schedule='0 0 1 1 *' --time-zone=Etc/UTC --uri="$RUN_URI" --http-method=POST \
+    --oauth-service-account-email="$SCHEDULER_SA" --oauth-token-scope=https://www.googleapis.com/auth/cloud-platform \
+    --headers=Content-Type=application/json --message-body='{}' --attempt-deadline=180s --quiet
+  gcloud scheduler jobs pause "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" --quiet
 fi
-gcloud scheduler jobs "$SCHEDULER_ACTION" http "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" \
+gcloud scheduler jobs update http "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" \
   --schedule="$CYCLE_SCHEDULE" --time-zone="$CYCLE_TIMEZONE" --uri="$RUN_URI" --http-method=POST \
   --oauth-service-account-email="$SCHEDULER_SA" --oauth-token-scope=https://www.googleapis.com/auth/cloud-platform \
   --headers=Content-Type=application/json --message-body='{}' --attempt-deadline=180s \
   --max-retry-attempts=3 --min-backoff=30s --max-backoff=300s --quiet
-gcloud scheduler jobs pause "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" --quiet
+gcloud scheduler jobs pause "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --location="$GCP_REGION" --quiet || true
 # Keep cutover explicit: deploys do not configure Telegram or run the cycle automatically.
 echo "Image: $IMAGE"
 echo "Webhook service: $(gcloud run services describe "$WEB_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --format='value(status.url)')"

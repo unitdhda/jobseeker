@@ -14,7 +14,7 @@ gcloud billing projects describe "$GCP_PROJECT_ID" --format='value(billingEnable
 gcloud config set project "$GCP_PROJECT_ID" >/dev/null
 
 gcloud services enable \
-  artifactregistry.googleapis.com cloudbuild.googleapis.com cloudtasks.googleapis.com \
+  artifactregistry.googleapis.com billingbudgets.googleapis.com cloudbuild.googleapis.com cloudtasks.googleapis.com \
   cloudscheduler.googleapis.com iamcredentials.googleapis.com run.googleapis.com secretmanager.googleapis.com
 
 service_account() {
@@ -31,6 +31,10 @@ service_account jobseeker-scheduler 'Jobseeker Cloud Scheduler identity'
 WEB_SA="jobseeker-web@$GCP_PROJECT_ID.iam.gserviceaccount.com"
 CYCLE_SA="jobseeker-cycle@$GCP_PROJECT_ID.iam.gserviceaccount.com"
 TASKS_SA="jobseeker-tasks@$GCP_PROJECT_ID.iam.gserviceaccount.com"
+PROJECT_NUMBER="$(gcloud projects describe "$GCP_PROJECT_ID" --format='value(projectNumber)')"
+COMPUTE_SA="$PROJECT_NUMBER-compute@developer.gserviceaccount.com"
+gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" --member="serviceAccount:$COMPUTE_SA" \
+  --role=roles/cloudbuild.builds.builder --condition=None >/dev/null
 for principal in "$WEB_SA" "$CYCLE_SA"; do
   gcloud projects add-iam-policy-binding "$GCP_PROJECT_ID" --member="serviceAccount:$principal" \
     --role=roles/cloudtasks.enqueuer --condition=None >/dev/null
@@ -41,6 +45,16 @@ if ! gcloud artifacts repositories describe "$ARTIFACT_REPOSITORY" --location="$
   gcloud artifacts repositories create "$ARTIFACT_REPOSITORY" --location="$GCP_REGION" \
     --repository-format=docker --description='Jobseeker container images'
 fi
+CLEANUP_POLICY="$(mktemp)"
+cat >"$CLEANUP_POLICY" <<'JSON'
+[
+  {"name":"delete-images-older-than-7-days","action":{"type":"Delete"},"condition":{"tagState":"ANY","olderThan":"604800s"}},
+  {"name":"keep-two-most-recent-images","action":{"type":"Keep"},"mostRecentVersions":{"keepCount":2}}
+]
+JSON
+gcloud artifacts repositories set-cleanup-policies "$ARTIFACT_REPOSITORY" --location="$GCP_REGION" \
+  --policy="$CLEANUP_POLICY" --no-dry-run --quiet >/dev/null
+rm -f "$CLEANUP_POLICY"
 if ! gcloud tasks queues describe "$CLOUD_TASKS_QUEUE" --location="$GCP_REGION" >/dev/null 2>&1; then
   gcloud tasks queues create "$CLOUD_TASKS_QUEUE" --location="$GCP_REGION"
 fi
@@ -67,6 +81,17 @@ done
 for secret in database-url task-execution-secret supabase-secret-key runtime-state-encryption-key; do
   secret_access "$secret" "$CYCLE_SA"
 done
+
+BILLING_ACCOUNT_NAME="$(gcloud billing projects describe "$GCP_PROJECT_ID" --format='value(billingAccountName)')"
+BILLING_ACCOUNT="${BILLING_ACCOUNT_NAME#billingAccounts/}"
+BILLING_CURRENCY="$(gcloud billing accounts describe "$BILLING_ACCOUNT" --format='value(currencyCode)')"
+BUDGET_NAME='Jobseeker monthly guardrail'
+if ! gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" --filter="displayName=$BUDGET_NAME" \
+  --format='value(name)' | grep -q .; then
+  gcloud billing budgets create --billing-account="$BILLING_ACCOUNT" --display-name="$BUDGET_NAME" \
+    --budget-amount="${GCP_MONTHLY_BUDGET_AMOUNT:-5}${BILLING_CURRENCY}" --filter-projects="projects/$GCP_PROJECT_ID" \
+    --threshold-rule=percent=0.5 --threshold-rule=percent=0.9 --threshold-rule=percent=1.0 >/dev/null
+fi
 
 echo "GCP base resources are ready in $GCP_PROJECT_ID/$GCP_REGION."
 echo 'Next: seed secret versions with scripts/seed-gcp-secrets.mjs, then run scripts/deploy-gcp.sh.'
