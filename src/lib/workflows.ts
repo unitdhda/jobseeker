@@ -1,43 +1,45 @@
 import { createHash } from 'node:crypto';
-import { init } from '@flue/runtime';
-import { PrepareCareerProfile, PrepareSearchProfile, ScoreVacancies, TailorApplication } from '../agents/workflows.ts';
+import { generateJson } from './ai-json.ts';
 import { config } from '../config.ts';
 import {
-  beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy, getSearchProfile, getVacancy,
-  pendingVacancies, prefilterCalibration, prefilterQueueStats, purgeSettledAgentSession, rankedPendingVacancies, recordUsage,
-  requireApprovedUser, savePrefilterScore, usageInLast24Hours, vacanciesNeedingPrefilter, type Vacancy,
+  beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy, getSearchProfile, markApplicationReady,
+  pendingVacancies, prefilterCalibration, prefilterQueueStats, rankedPendingVacancies, recordUsage, requireApprovedUser,
+  savePrefilterScore, saveScore, saveSearchProfile, usageInLast24Hours, vacanciesNeedingPrefilter, type Vacancy,
 } from './database.ts';
 import { getSearchPlatform } from '../platforms/registry.ts';
 import * as v from 'valibot';
-import { clearApplicationArtifacts, getApplicationArtifacts, type GeneratedApplication } from './application-artifacts.ts';
+import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './application-artifacts.ts';
 import { trace } from './trace.ts';
 import { prefilterVacancy } from './prefilter.ts';
 import { errorMessage } from './logging.ts';
 import { adaptiveConcurrency, AdaptiveTaskPool } from './adaptive-concurrency.ts';
 import {
-  careerProfilePlatformId, parseStoredCareerProfile, type CareerProfile, type StoredCareerProfile,
+  careerProfilePlatformId, careerProfileSchema, parseStoredCareerProfile, type CareerProfile, type StoredCareerProfile,
 } from './career-profile.ts';
+import { compilePlainTextCv } from './typst.ts';
+import { detectCvLanguage } from './language.ts';
 
 const scoringPool = new AdaptiveTaskPool(config.scoreAgentConcurrencyMin, config.scoreAgentConcurrencyMax);
+const vacancyScoreSchema=v.object({vacancyId:v.pipe(v.number(),v.integer(),v.minValue(1)),score:v.pipe(v.number(),v.integer(),v.minValue(0),v.maxValue(100)),
+  primaryTrack:v.pipe(v.string(),v.minLength(1),v.maxLength(80)),summary:v.pipe(v.string(),v.minLength(5),v.maxLength(300)),
+  reasons:v.pipe(v.array(v.pipe(v.string(),v.minLength(2),v.maxLength(240))),v.maxLength(3)),
+  gaps:v.pipe(v.array(v.pipe(v.string(),v.minLength(2),v.maxLength(240))),v.maxLength(3)),hardRejection:v.boolean()});
+const scoringResultSchema=v.object({scores:v.pipe(v.array(vacancyScoreSchema),v.minLength(1),v.maxLength(20))});
+const applicationSchema=v.object({tailoredCvText:v.pipe(v.string(),v.minLength(500),v.maxLength(30_000)),
+  coverLetter:v.pipe(v.string(),v.minLength(80),v.maxLength(3_500))});
 
 async function ensureCareerProfile(userId: string, cvText: string, cvHash: string, force: boolean): Promise<CareerProfile> {
   const existing = parseStoredCareerProfile(
     await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cvHash,
   );
   if (!force && existing) return existing;
-  const sessionId = `${userId}-career-v1-${cvHash.slice(0, 16)}`;
-  const agent = init(PrepareCareerProfile, { id: sessionId });
-  try {
-    const receipt = await agent.dispatch({
-      initialData: { userId, cvHash },
-      message: { kind: 'signal', type: 'cv.prepare-career', body: `Derive the career profile from this authoritative CV source.\n\nCV SOURCE:\n${cvText}` },
-    });
-    await agent.read(receipt);
-  } finally { await purgeSettledAgentSession(PrepareCareerProfile.agentName, sessionId); }
-  const generated = parseStoredCareerProfile(
-    await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cvHash,
-  );
-  if (!generated) throw new Error('Career-profile agent did not save a valid profile for the current CV.');
+  const generated=await generateJson({agent:'prepare-career-profile',model:config.model,thinking:config.thinkingLevel,
+    schema:careerProfileSchema,system:`Derive occupation-neutral career tracks solely from explicit CV evidence. Never use a fixed
+occupation or industry taxonomy. Each titleVariants item is one title in one language; Russian and English translations
+must be separate items. Translation must not broaden the occupation. Contact details, employer technologies and project
+names are not candidate skills. Do not invent adjacent occupations.`,prompt:`Authoritative CV source:\n\n${cvText}`});
+  if(await getCvHash(userId)!==cvHash)throw new Error('CV changed during career-profile generation.');
+  await saveSearchProfile(userId,careerProfilePlatformId,{cvHash,profile:generated});
   return generated;
 }
 
@@ -61,23 +63,17 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
           throw new Error(`Daily search-profile limit (${config.userDailySearchProfileLimit}) reached.`);
         }
         trace('search_profile.agent.start', { userId, platform: platformId, force });
-        const sessionId = `${userId}-${platformId}-search-v2-${hash.slice(0, 16)}`;
-        const agent = init(PrepareSearchProfile, { id: sessionId });
-        await recordUsage(userId, 'search-profile');
-        try {
-          const receipt = await agent.dispatch({
-            initialData: { userId, platformId, cvHash: hash },
-            message: {
-              kind: 'signal',
-              type: 'cv.prepare-search',
-              body: `Build the ${platform.name} search profile from this authoritative CV source. ` +
-                `The source may use any language; translate role terminology when the platform requires it.\n\n` +
-                `CV SOURCE:\n${cv.cvText}`,
-            },
-          });
-          await agent.read(receipt);
-          trace('search_profile.agent.completed', { platform: platformId });
-        } finally { await purgeSettledAgentSession(PrepareSearchProfile.agentName, sessionId); }
+        const careerProfile=parseStoredCareerProfile(await getSearchProfile<StoredCareerProfile>(userId,careerProfilePlatformId),hash);
+        if(!careerProfile)throw new Error('A current career profile is required.');
+        await recordUsage(userId,'search-profile');
+        const generated=await generateJson({agent:'prepare-search-profile',model:config.model,thinking:config.thinkingLevel,
+          schema:platform.schema,system:`Build a validated vacancy-search profile only from CV-derived career tracks and the supplied
+platform capabilities. Never assume a software or technology sector. For a constrained platform, return an empty searches
+array when no supported category credibly matches. Translate evidenced role terminology when required without adding adjacent roles.`,
+          prompt:`PLATFORM CAPABILITIES:\n${JSON.stringify(platform.template())}\n\nCAREER PROFILE:\n${JSON.stringify(careerProfile)}\n\nCV SOURCE:\n${cv.cvText}`});
+        if(await getCvHash(userId)!==hash)throw new Error('CV changed during profile generation.');
+        await saveSearchProfile(userId,platformId,generated);
+        trace('search_profile.agent.completed',{platform:platformId});
       }
 
       const result = v.safeParse(platform.schema, await getSearchProfile<unknown>(userId, platformId));
@@ -126,18 +122,23 @@ function scoringApiFallbackConfigured(): boolean {
 }
 
 async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provider: 'subscription' | 'api'): Promise<void> {
-  const fingerprint = createHash('sha256').update(vacancies.map((vacancy) =>
-    `${vacancy.id}:${vacancy.contentHash}`).join('|')).digest('hex').slice(0, 16);
-  const sessionId = `${userId}-vacancies-${fingerprint}-${provider}`;
-  const agent = init(ScoreVacancies, { id: sessionId });
-  try {
-    const receipt = await agent.dispatch({
-      initialData: { userId, vacancyIds: vacancies.map((vacancy) => vacancy.id), provider },
-      message: { kind: 'signal', type: 'vacancies.score',
-        body: 'Load the shared CV and score every vacancy in this batch independently now.' },
-    });
-    await agent.read(receipt);
-  } finally { await purgeSettledAgentSession(ScoreVacancies.agentName, sessionId); }
+  const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
+  const contexts=vacancies.map(vacancy=>({vacancyId:vacancy.id,language:detectCvLanguage(`${vacancy.name}\n${vacancy.description}`),
+    source:vacancy.source,name:vacancy.name,employer:vacancy.employer,area:vacancy.area,salaryFrom:vacancy.salaryFrom,
+    salaryTo:vacancy.salaryTo,salaryCurrency:vacancy.salaryCurrency,salaryGross:vacancy.salaryGross,experience:vacancy.experience,
+    employment:vacancy.employment,schedule:vacancy.schedule,workFormat:vacancy.workFormat,description:vacancy.description,keySkills:vacancy.keySkills}));
+  const result=await generateJson({agent:'score-vacancies',model:provider==='api'?config.scoringFallbackModel:config.scoringModel,
+    thinking:provider==='api'?config.scoringFallbackThinkingLevel:config.scoringThinkingLevel,schema:scoringResultSchema,
+    system:`Score each CV-vacancy match independently. Use no fixed occupation taxonomy and never score keyword overlap without
+role compatibility. Rubric: must-have skills 40, seniority/years 20, responsibilities 15, domain 10, location/work format 10,
+compensation 5; missing salary is neutral. Penalize underqualification and substantial overqualification. An explicit hard
+blocker sets hardRejection=true and caps score at 49. Return exactly one result for each vacancyId.`,
+    prompt:`AUTHORITATIVE CV:\n${cv.cvText}\n\nVACANCIES:\n${JSON.stringify(contexts)}`});
+  const expected=new Set(vacancies.map(vacancy=>vacancy.id)),received=new Set(result.scores.map(score=>score.vacancyId));
+  if(result.scores.length!==expected.size||received.size!==expected.size||[...expected].some(id=>!received.has(id)))
+    throw new Error('AI did not return exactly one score per vacancy.');
+  for(const score of result.scores){if(score.hardRejection&&score.score>49)throw new Error(`Hard-rejected vacancy ${score.vacancyId} scored above 49.`);
+    await saveScore(userId,score.vacancyId,score.score,score.primaryTrack,score.summary,score.reasons,score.gaps,score.hardRejection);}
 }
 
 async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
@@ -261,20 +262,16 @@ export async function tailorApplication(userId: string, vacancyId: number): Prom
   clearApplicationArtifacts(userId, vacancyId);
   await beginApplication(userId, vacancyId);
   try {
-    const sessionId = `${userId}-application-${vacancyId}-${vacancy.contentHash.slice(0, 12)}-${Date.now()}`;
-    const agent = init(TailorApplication, { id: sessionId });
-    await recordUsage(userId, 'application');
-    if (!await getCvSource(userId)) throw new Error('The authoritative CV source was not found.');
-    try {
-      const receipt = await agent.dispatch({
-        initialData: { userId, vacancyId },
-        message: { kind: 'user', body: 'Prepare the application documents now from the stored canonical CV content.' },
-      });
-      await agent.read(receipt);
-      const application = getApplicationArtifacts(userId, vacancyId);
-      if (!application) throw new Error('Application agent did not save the documents.');
-      return application;
-    } finally { await purgeSettledAgentSession(TailorApplication.agentName, sessionId); }
+    await recordUsage(userId,'application');
+    const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
+    const documents=await generateJson({agent:'tailor-application',model:config.model,thinking:config.thinkingLevel,
+      schema:applicationSchema,system:`Create a tailored plain-text CV and cover letter from authoritative evidence only. Preserve all
+employers, dates, titles, metrics, skills, degrees, languages and contacts without invention or inflation. Translate faithfully
+into the vacancy language when needed. tailoredCvText starts with name, role and contacts, uses uppercase section headings and
+one bullet per line beginning with •; no Markdown, HTML, Typst or code. The cover letter is concise and mentions concrete overlap.`,
+      prompt:`CV DOCUMENT:\n${JSON.stringify(cv.document)}\n\nCV TEXT:\n${cv.cvText}\n\nVACANCY:\n${JSON.stringify(vacancy)}\n\nVACANCY LANGUAGE: ${detectCvLanguage(`${vacancy.name}\n${vacancy.description}`)}`});
+    const application={tailoredCvPdf:compilePlainTextCv(documents.tailoredCvText),coverLetter:documents.coverLetter};
+    stageApplicationArtifacts(userId,vacancyId,application);await markApplicationReady(userId,vacancyId);return application;
   } catch (error) {
     clearApplicationArtifacts(userId, vacancyId);
     await failApplication(userId, vacancyId, error instanceof Error ? error.message : String(error));

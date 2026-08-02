@@ -84,7 +84,7 @@ TIMEZONE=Europe/Moscow
 | `SCORE_BATCH_SIZE` | Вакансий одного пользователя в одном вызове модели | `3` |
 | `FLUE_SCORING_FALLBACK_MODEL` | Платная API-модель после исчерпания лимита подписки | `openai/gpt-5.4-mini` |
 | `OPENAI_API_KEY` | Включает платный API fallback; без ключа fallback отключён | необязательна |
-| `DATABASE_URL` | Переключает Flue и весь business repository на Supabase/Postgres | локально не нужна |
+| `DATABASE_URL` | PostgreSQL connection string for the business repository | required |
 | `TELEGRAM_MODE` | `polling`, `webhook` или `off` | `polling` через `.env.example` |
 | `TELEGRAM_WEBHOOK_SECRET` | Секрет заголовка Telegram webhook, минимум 32 URL-safe символа | для webhook |
 | `TELEGRAM_WEBHOOK_ASYNC` | Сохраняет webhook как durable task и отправляет его приватному worker | `false` |

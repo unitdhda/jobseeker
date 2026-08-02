@@ -2,8 +2,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
-import type { OAuthCredential, Provider } from '@earendil-works/pi-ai';
-import { setProvider } from '@flue/runtime';
+import { createModels, type Models, type OAuthCredential, type Provider } from '@earendil-works/pi-ai';
 import { getEncryptedRuntimeState, putEncryptedRuntimeState } from './encrypted-state-store.ts';
 import { hasPostgresDatabase, withPostgresTransaction } from './postgres.ts';
 
@@ -82,21 +81,18 @@ async function validCredential(source: Provider): Promise<OAuthCredential> {
   return refreshInFlight;
 }
 
-export function registerOpenAIProviders(): void {
-  setProvider(openaiProvider());
-  const source = openaiCodexProvider();
-  const oauth = source.auth.oauth;
-  if (!oauth) throw new Error('OpenAI Codex provider has no OAuth implementation.');
-  setProvider({
-    ...source,
-    auth: {
-      apiKey: {
-        name: 'OpenAI Codex OAuth',
-        async resolve() {
-          const credential = await validCredential(source);
-          return { auth: await oauth.toAuth(credential), source: 'OpenAI Codex OAuth' };
-        },
-      },
-    },
-  });
+let configuredModels: Models | undefined;
+
+export function aiModels(): Models {
+  if (configuredModels) return configuredModels;
+  const models=createModels();
+  models.setProvider(openaiProvider());
+  const source=openaiCodexProvider(),oauth=source.auth.oauth;
+  if(!oauth)throw new Error('OpenAI Codex provider has no OAuth implementation.');
+  models.setProvider({...source,auth:{apiKey:{name:'OpenAI Codex OAuth',async resolve(){
+    const credential=await validCredential(source);
+    return {auth:await oauth.toAuth(credential),source:'OpenAI Codex OAuth'};
+  }}}});
+  configuredModels=models;
+  return models;
 }
