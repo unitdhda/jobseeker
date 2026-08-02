@@ -25,17 +25,17 @@ function validateCron(pattern: string): void {
 
 export function parseClockMinutes(value: string): number {
   const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
-  if (!match) throw new Error('Use HH:MM, for example 09:30.');
+  if (!match) throw new Error('Введите время в формате ЧЧ:ММ, например 09:30.');
   const hour = Number(match[1]); const minute = Number(match[2]);
-  if (hour > 23 || minute > 59) throw new Error('Time must be between 00:00 and 23:59.');
+  if (hour > 23 || minute > 59) throw new Error('Время должно быть в диапазоне от 00:00 до 23:59.');
   return hour * 60 + minute;
 }
 
 export function normalizeUtcOffset(value: string): string {
   const match = /^([+-])(\d{1,2})(?::(00|30))?$/.exec(value.trim());
-  if (!match) throw new Error('Use a UTC offset such as +3, -5, or +3:30.');
+  if (!match) throw new Error('Укажите смещение от UTC, например +3, -5 или +3:30.');
   const hour = Number(match[2]); const minute = Number(match[3] ?? '00');
-  if (hour > 14 || (hour === 14 && minute !== 0)) throw new Error('UTC offset must be between -14:00 and +14:00.');
+  if (hour > 14 || (hour === 14 && minute !== 0)) throw new Error('Смещение UTC должно быть от -14:00 до +14:00.');
   if (hour === 0 && minute === 0) return '+00:00';
   return `${match[1]}${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
@@ -94,15 +94,15 @@ function timeText(minutes: number): string {
 export function deliverySettingsStatus(userId: string): string {
   const configured = getDeliverySettings(userId);
   const settings = effectiveSettings(userId);
-  const alerts = settings.startMinutes === settings.endMinutes ? 'anytime'
+  const alerts = settings.startMinutes === settings.endMinutes ? 'в любое время'
     : `${timeText(settings.startMinutes)}–${timeText(settings.endMinutes)}`;
   const timezone = offsetMinutes(settings.timezone) == null ? settings.timezone : `UTC${settings.timezone}`;
-  return `alerts ${alerts}; digest ${timeText(settings.digestMinutes)}; ${timezone}${configured ? '' : ' (default)'}`;
+  return `уведомления: ${alerts}; дайджест: ${timeText(settings.digestMinutes)}; ${timezone}${configured ? '' : ' (по умолчанию)'}`;
 }
 
 export function updateDeliverySettings(userId: string, start: string, end: string, digest: string, timezone: string): void {
   const startMinutes = parseClockMinutes(start); const endMinutes = parseClockMinutes(end);
-  if (startMinutes === endMinutes) throw new Error('Notification start and end must differ.');
+  if (startMinutes === endMinutes) throw new Error('Время начала и окончания уведомлений должно отличаться.');
   saveDeliverySettings(userId, { startMinutes, endMinutes, digestMinutes: parseClockMinutes(digest),
     timezone: normalizeUtcOffset(timezone) });
 }

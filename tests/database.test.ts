@@ -142,9 +142,9 @@ await test('multi-user database behavior', async (t) => {
     assert.equal(d.usageInLast24Hours('2002', 'score'), 1);
     assert.equal(schedules.normalizeUtcOffset('+3'), '+03:00');
     assert.equal(schedules.normalizeUtcOffset('-5:30'), '-05:30');
-    assert.throws(() => schedules.normalizeUtcOffset('+14:30'), /between/);
+    assert.throws(() => schedules.normalizeUtcOffset('+14:30'), /UTC/);
     schedules.updateDeliverySettings('2002', '22:00', '08:00', '09:30', '+3:30');
-    assert.equal(schedules.deliverySettingsStatus('2002'), 'alerts 22:00–08:00; digest 09:30; UTC+03:30');
+    assert.equal(schedules.deliverySettingsStatus('2002'), 'уведомления: 22:00–08:00; дайджест: 09:30; UTC+03:30');
     assert.equal(schedules.isWithinDeliveryWindow('2002', new Date('2026-01-01T20:00:00Z')), true);
     assert.equal(schedules.isDigestDue('2002', new Date('2026-01-01T05:59:00Z')), false);
     assert.equal(schedules.isDigestDue('2002', new Date('2026-01-01T06:00:00Z')), true);
