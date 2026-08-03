@@ -80,13 +80,14 @@ function placeLabel(target:string[],center:number,label:string):void{
   const start=Math.max(0,Math.min(target.length-label.length,center-Math.floor(label.length/2)));
   for(let index=0;index<label.length;index++)target[start+index]=label[index]!;
 }
-function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'●'|'○',foreground=false):void{
+const boldUsageStroke:Record<string,string>={'─':'━','│':'┃','╭':'┏','╮':'┓','╯':'┛','╰':'┗'};
+function drawUsageSeries(values:number[],maximum:number,marker:'●'|'○'):string[][]{
+  const grid=Array.from({length:usagePlotHeight},()=>Array<string>(usagePlotWidth).fill(' '));
   const rows=values.map(value=>maximum<=0?usagePlotHeight-1:
     Math.round((1-Math.max(0,Math.min(value/maximum,1)))*(usagePlotHeight-1)));
   const put=(row:number,column:number,symbol:string,force=false):void=>{
     const current=grid[row]![column]!;
-    if(foreground){grid[row]![column]=symbol;return;}
-    if(force){if(current!=='●'||marker==='●')grid[row]![column]=symbol;return;}
+    if(force){grid[row]![column]=symbol;return;}
     if(current===' '||('╭╮╯╰'.includes(symbol)&&current!=='●'&&current!=='○'))grid[row]![column]=symbol;
   };
   for(let hour=0;hour<usagePlotHours;hour++){
@@ -97,24 +98,40 @@ function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'
       for(let vertical=nextRow+1;vertical<row;vertical++)put(vertical,column+1,'│');
       put(nextRow,column+1,'╭');put(nextRow,nextColumn,'─');continue;
     }
-    put(row,column,'─');put(row,column+1,'╮');
-    for(let vertical=row+1;vertical<nextRow;vertical++)put(vertical,column+1,'│');
-    put(nextRow,column+1,'╰');put(nextRow,nextColumn,'─');
+    // A fall holds its row across the connector and turns down over the landing point, so the point
+    // itself closes the drop; a rise instead turns up in the connector right after the point.
+    put(row,column,'─');put(row,column+1,'─');put(row,nextColumn,'╮');
+    for(let vertical=row+1;vertical<nextRow;vertical++)put(vertical,nextColumn,'│');
+    put(nextRow,nextColumn,'╰');
   }
   for(let hour=0;hour<=usagePlotHours;hour+=4)put(rows[hour]!,hour*2,marker,true);
+  return grid;
+}
+// Both series share one grid, so cells claimed by both are drawn with the heavy stroke instead of
+// letting the money series silently erase the token line underneath it. The shape that carries more
+// information wins the cell, otherwise a corner flattened into a straight run would break the line.
+const usageShapeRank=(cell:string):number=>'●○'.includes(cell)?3:'╭╮╯╰'.includes(cell)?2:cell==='│'?1:0;
+function mergeUsageSeries(tokens:string[][],money:string[][]):string[][]{
+  return tokens.map((row,rowIndex)=>row.map((tokenCell,column)=>{
+    const moneyCell=money[rowIndex]![column]!;
+    if(moneyCell===' ')return tokenCell;
+    if(tokenCell===' ')return moneyCell;
+    if(tokenCell==='●'&&moneyCell==='○')return '◐';
+    const shape=usageShapeRank(tokenCell)>usageShapeRank(moneyCell)?tokenCell:moneyCell;
+    return boldUsageStroke[shape]??shape;
+  }));
 }
 export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
   if(hours.length!==usagePlotHours+1)throw new Error('Usage timeline must contain 25 hourly points.');
   const tokenStep=niceUsageStep(Math.max(...hours.map(hour=>hour.tokens),0));
   const moneyStep=niceUsageStep(Math.max(...hours.map(hour=>hour.costUsd),0));
   const tokenMaximum=tokenStep*usagePlotHeight,moneyMaximum=moneyStep*usagePlotHeight;
-  const grid=Array.from({length:usagePlotHeight},()=>Array<string>(usagePlotWidth).fill(' '));
-  drawUsageSeries(grid,hours.map(hour=>hour.tokens),tokenMaximum,'●');
-  drawUsageSeries(grid,hours.map(hour=>hour.costUsd),moneyMaximum,'○',true);
+  const grid=mergeUsageSeries(drawUsageSeries(hours.map(hour=>hour.tokens),tokenMaximum,'●'),
+    drawUsageSeries(hours.map(hour=>hour.costUsd),moneyMaximum,'○'));
   const leftLabels=Array.from({length:usagePlotHeight},(_,row)=>axisInteger(tokenStep*(usagePlotHeight-row)));
   const leftWidth=Math.max(1,...leftLabels.map(label=>label.length));
   const lines=[`● Токены — левая ось             ○ Деньги — правая ось`,
-    '2 символа на час · точки каждые 4 часа',`${' '.repeat(leftWidth+1)}┌${'─'.repeat(usagePlotWidth)}┐`];
+    '2 символа на час · точки каждые 4 часа · ━ и ◐ — серии совпадают',`${' '.repeat(leftWidth+1)}┌${'─'.repeat(usagePlotWidth)}┐`];
   for(let row=0;row<usagePlotHeight;row++)lines.push(`${leftLabels[row]!.padStart(leftWidth)} │${grid[row]!.join('')}│ `+
     axisMoney(moneyStep*(usagePlotHeight-row),moneyMaximum));
   lines.push(`${'0'.padStart(leftWidth)} └${'─'.repeat(usagePlotWidth)}┘ ${axisMoney(0,moneyMaximum)}`);
