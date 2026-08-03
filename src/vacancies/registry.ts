@@ -32,14 +32,16 @@ import { normalizeAdditionalCandidate, scrapeHabr, scrapeRabota } from './additi
 import { normalizeHhCandidates, scrapeHh } from './hh.ts';
 import { hhPlatform } from './hh.ts';
 import { habrPlatform, rabotaPlatform } from './additional.ts';
+import { hireHiPlatform, normalizeHireHiCandidate, scrapeHireHi } from './hirehi.ts';
 
 export type AnyVacancyPlatform = VacancyPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>;
 const hhPool = new AdaptiveTaskPool(1, 1);
 
-async function normalizeIndividually(candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | null | Error>> {
+async function normalizeIndividually(candidates: VacancyCandidate[],
+  normalize:(candidate:VacancyCandidate)=>Promise<VacancyInput|null>): Promise<Map<string, VacancyInput | null | Error>> {
   const results = new Map<string, VacancyInput | null | Error>();
   for (const candidate of candidates) {
-    try { results.set(candidate.sourceId, await normalizeAdditionalCandidate(candidate)); }
+    try { results.set(candidate.sourceId, await normalize(candidate)); }
     catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
   }
   return results;
@@ -59,7 +61,7 @@ const habrAdapter: VacancyPlatform<typeof habrPlatform.schema> = {
     const result = await scrapeHabr(userId, profile);
     return { searches: profile.searches.length, ...result };
   },
-  normalize: normalizeIndividually,
+  normalize: candidates=>normalizeIndividually(candidates,normalizeAdditionalCandidate),
 };
 const rabotaAdapter: VacancyPlatform<typeof rabotaPlatform.schema> = {
   ...rabotaPlatform,
@@ -67,9 +69,14 @@ const rabotaAdapter: VacancyPlatform<typeof rabotaPlatform.schema> = {
     const result = await scrapeRabota(userId, profile);
     return { searches: profile.searches.length, ...result };
   },
-  normalize: normalizeIndividually,
+  normalize: candidates=>normalizeIndividually(candidates,normalizeAdditionalCandidate),
 };
-const registeredPlatforms: AnyVacancyPlatform[] = [hhAdapter,habrAdapter,rabotaAdapter] as AnyVacancyPlatform[];
+const hireHiAdapter:VacancyPlatform<typeof hireHiPlatform.schema>={
+  ...hireHiPlatform,
+  async discover(userId,profile){const result=await scrapeHireHi(userId,profile);return{searches:profile.searches.length,...result};},
+  normalize:candidates=>normalizeIndividually(candidates,normalizeHireHiCandidate),
+};
+const registeredPlatforms: AnyVacancyPlatform[] = [hhAdapter,habrAdapter,rabotaAdapter,hireHiAdapter] as AnyVacancyPlatform[];
 
 const platforms = new Map(registeredPlatforms.map((platform) => [platform.id, platform]));
 export const searchPlatformIds = registeredPlatforms.map((platform) => platform.id);

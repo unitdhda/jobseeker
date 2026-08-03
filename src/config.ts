@@ -35,7 +35,7 @@ function telegramModeEnv(): TelegramMode {
   return value as TelegramMode;
 }
 
-const supportedSearchPlatforms = ['hh', 'habr', 'rabota'] as const;
+const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi'] as const;
 const defaultSearchPlatforms: SearchPlatformId[] = [...supportedSearchPlatforms];
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
 
@@ -71,6 +71,7 @@ export const config = {
   searchPlatforms: platformEnv(),
   hhMaxPages: integerEnv('HH_MAX_PAGES', 5, 1, 20),
   additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 5, 1, 20),
+  hireHiMaxPages: integerEnv('HIREHI_MAX_PAGES', 5, 1, 20),
   searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),
   searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),

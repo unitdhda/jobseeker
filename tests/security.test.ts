@@ -6,9 +6,11 @@ import { errorMessage } from '../src/observability.ts';
 
 test('source URLs are restricted to HTTPS source allowlists', () => {
   assert.equal(safeVacancyUrl('hh', 'https://hh.ru/vacancy/123'), 'https://hh.ru/vacancy/123');
+  assert.equal(safeVacancyUrl('hirehi', 'https://hirehi.ru/frontend/job-123'), 'https://hirehi.ru/frontend/job-123');
   assert.throws(() => sourceUrl('hh', 'http://hh.ru/vacancy/123'), /Unsafe/);
   assert.throws(() => sourceUrl('hh', 'https://example.com/vacancy/123'), /Unexpected/);
   assert.throws(() => sourceUrl('hh', 'https://user:password@hh.ru/vacancy/123'), /Unsafe/);
+  assert.throws(() => sourceUrl('hirehi', 'https://example.com/frontend/job-123'), /Unexpected/);
 });
 
 test('response reader enforces declared and streamed byte limits', async () => {
