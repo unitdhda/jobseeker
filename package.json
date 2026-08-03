@@ -2,8 +2,9 @@
   "name": "hh-jobseeker",
   "private": true,
   "type": "module",
+  "packageManager": "bun@1.3.14",
   "engines": {
-    "node": ">=22.19.0"
+    "bun": ">=1.3.14"
   },
   "scripts": {
     "dev": "vite dev",
@@ -11,8 +12,8 @@
     "start": "bun dist/server.mjs",
     "start:task-worker": "bun dist/task-worker.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test --test-concurrency=1 tests/*.test.ts",
-    "test:postgres": "tsx --env-file=.env.cloud tests/database-postgres.integration.ts",
+    "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts",
+    "test:postgres": "bun --env-file=.env.cloud tests/database-postgres.integration.ts",
     "cv:prepare": "bun src/scripts/prepare-cv.ts",
     "run:cycle": "bun src/cycle.ts"
   },
@@ -36,7 +37,6 @@
     "@types/node": "26.1.2",
     "@types/pg": "^8.20.3",
     "adm-zip": "0.6.0",
-    "tsx": "4.20.6",
     "typescript": "7.0.2",
     "vite": "8.1.5"
   },

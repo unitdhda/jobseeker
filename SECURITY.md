@@ -39,10 +39,11 @@ After suspected exposure, rotate the Telegram bot token, revoke/replace OpenAI C
 Run:
 
 ```bash
-npm run typecheck
-npm test
-npm run build
-npm audit --omit=dev
+bun run typecheck
+bun run test
+bun run build
+bun run test:postgres
+bun audit
 ```
 
-On a Docker-capable host, also validate Compose, scan the built image, verify listener/firewall state, inspect only file modes (not secret contents), and test an encrypted-backup restore.
+On a Docker-capable host, also build and scan both image targets. Verify Cloud Run ingress and IAM, inspect only file modes (not secret contents), and test encrypted-state recovery without printing stored data.

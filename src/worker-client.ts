@@ -21,7 +21,7 @@ function workerCommand(): { modulePath: string; args: string[] } {
   const tsx = resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs');
   const source = resolve(process.cwd(), 'src/worker.ts');
   if (existsSync(tsx) && existsSync(source)) return { modulePath: tsx, args: [source] };
-  throw new Error('Background worker entry was not found. Run npm run build.');
+  throw new Error('Background worker entry was not found. Run bun run build.');
 }
 
 function ensureWorker(): { child: ChildProcess; ready: Promise<void> } {

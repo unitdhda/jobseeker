@@ -60,16 +60,15 @@ Cloud Tasks concurrency and the scrape advisory lock provide bounded execution. 
 Requirements:
 
 - Bun 1.3.14+
-- Node.js 22.19+ for the test/build toolchain
 - PostgreSQL via `DATABASE_URL`
 - Chromium for HH browser search
 
 ```bash
-npm ci
-npm run typecheck
-npm test
-npm run build
-npm run test:postgres
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
+bun run build
+bun run test:postgres
 ```
 
 Start the built service:

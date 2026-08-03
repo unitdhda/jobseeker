@@ -91,7 +91,7 @@ curl -fsS --max-time 30 "$WEB_URL/ready"
 Use the local token only to print redacted status fields:
 
 ```bash
-node --env-file=.env - <<'NODE'
+bun --env-file=.env - <<'BUN'
 const response = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/getWebhookInfo`);
 const body = await response.json();
 if (!body.ok) throw new Error('Telegram webhook inspection failed.');
@@ -102,7 +102,7 @@ console.log(JSON.stringify({
   lastError: Boolean(body.result.last_error_message),
   maxConnections: body.result.max_connections,
 }));
-NODE
+BUN
 ```
 
 Do not print the webhook URL because it may contain routing information. Healthy production has a configured HTTPS webhook, zero or draining pending updates, and no current error.
@@ -113,13 +113,13 @@ The VPS is not a production owner. Its connection details are intentionally not 
 
 ## Validation baseline
 
-Use the package scripts. Do not use raw `bun test`: Bun automatically loads `.env`, while the package script runs the intended isolated Node test runner.
+Use the package scripts so tests run with the repository's explicit environment isolation.
 
 ```bash
-npm run typecheck
-npm test
-npm run build
-npm run test:postgres
+bun run typecheck
+bun run test
+bun run build
+bun run test:postgres
 jj status
 ```
 
@@ -131,7 +131,7 @@ All four validation commands must pass before deployment. The PostgreSQL integra
 2. Never edit a migration already applied remotely.
 3. Review destructive statements and constraints before applying.
 4. Apply the forward migration using the linked Supabase project and verify it before deploying dependent code.
-5. Run `npm run test:postgres` after application.
+5. Run `bun run test:postgres` after application.
 
 Use the project's existing Supabase linkage and local secret files. Do not place database passwords on command lines or in logs.
 
@@ -151,10 +151,10 @@ Use the project's existing Supabase linkage and local secret files. Do not place
 ### 2. Validate and publish the commit
 
 ```bash
-npm run typecheck
-npm test
-npm run build
-npm run test:postgres
+bun run typecheck
+bun run test
+bun run build
+bun run test:postgres
 jj status
 jj bookmark set cloud -r @
 jj git push --bookmark cloud

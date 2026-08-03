@@ -40,7 +40,7 @@ The seeder reads values without printing them. It keeps existing enabled version
 
 ```bash
 GCP_PROJECT_ID="$GCP_PROJECT_ID" \
-  node --env-file=.env --env-file=.env.cloud scripts/seed-gcp-secrets.mjs
+  bun --env-file=.env --env-file=.env.cloud scripts/seed-gcp-secrets.mjs
 ```
 
 Do not rotate the task execution secret while tasks are in flight. New Cloud Run revisions must be deployed after any rotation.
