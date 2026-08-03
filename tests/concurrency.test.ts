@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { adaptiveConcurrency, AdaptiveTaskPool, KeyedTaskScheduler, mapConcurrent } from '../src/concurrency.ts';
+import { adaptiveConcurrency, AdaptiveTaskPool, aggregateOrderedProgress, KeyedTaskScheduler, mapConcurrent } from '../src/concurrency.ts';
 
 test('LLM scoring concurrency scales from five to ten with queued load', () => {
   assert.equal(adaptiveConcurrency(0, 5, 10), 0);
@@ -58,6 +58,27 @@ test('a failed keyed task does not block later work for that user', async () => 
   const next = scheduler.run('user', async () => 42);
   await assert.rejects(failed, /expected/);
   assert.equal(await next, 42);
+});
+
+test('ordered progress aggregates concurrent users without regressing phases or counters', () => {
+  const updates: Array<{ phase: 'filtering' | 'scoring'; current: number; total: number }> = [];
+  const progress = aggregateOrderedProgress(['a','b'],['filtering','scoring'] as const,
+    (phase,current,total)=>updates.push({phase,current,total}));
+  progress.report('a','filtering',2,4);
+  assert.deepEqual(updates,[]);
+  progress.report('b','filtering',1,2);
+  progress.report('a','scoring',0,3);
+  progress.report('a','filtering',0,4); // stale concurrent update is ignored
+  progress.report('b','scoring',0,2);
+  progress.report('a','scoring',2,3);
+  progress.report('b','scoring',1,2);
+  progress.done('a');progress.done('b');
+  assert.deepEqual(updates,[
+    {phase:'filtering',current:3,total:6},{phase:'filtering',current:5,total:6},
+    {phase:'scoring',current:0,total:5},{phase:'scoring',current:2,total:5},
+    {phase:'scoring',current:3,total:5},{phase:'scoring',current:4,total:5},
+    {phase:'scoring',current:5,total:5},
+  ]);
 });
 
 test('concurrent mapping preserves result order and its bound', async () => {
