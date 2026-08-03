@@ -69,8 +69,8 @@ gcloud run deploy "$WEB_SERVICE" --project="$GCP_PROJECT_ID" --region="$GCP_REGI
 gcloud run jobs deploy "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --image="$WORKER_IMAGE" \
   --service-account="$CYCLE_SA" --command=bun --args=dist/run-cycle.mjs --cpu=1 --memory=2Gi \
   --tasks=1 --parallelism=1 --max-retries=1 --task-timeout=1800s \
-  --set-env-vars="$COMMON_ENV,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=off,BACKGROUND_DELIVERY_ASYNC=true,$TASK_ENV" \
-  --set-secrets="$COMMON_SECRETS,TASK_EXECUTION_SECRET=jobseeker-task-execution-secret:latest" --quiet
+  --set-env-vars="$COMMON_ENV,RUN_JOBS=false,RUN_INITIAL_CYCLE=false,TELEGRAM_MODE=off,TELEGRAM_USER_ID=$TELEGRAM_USER_ID_VALUE,BACKGROUND_DELIVERY_ASYNC=true,$TASK_ENV" \
+  --set-secrets="$COMMON_SECRETS,TELEGRAM_BOT_TOKEN=jobseeker-telegram-bot-token:latest,TASK_EXECUTION_SECRET=jobseeker-task-execution-secret:latest" --quiet
 gcloud run jobs add-iam-policy-binding "$CYCLE_JOB" --project="$GCP_PROJECT_ID" --region="$GCP_REGION" \
   --member="serviceAccount:$SCHEDULER_SA" --role=roles/run.invoker >/dev/null
 

@@ -78,7 +78,7 @@ done
 for secret in database-url telegram-bot-token task-execution-secret supabase-secret-key runtime-state-encryption-key; do
   secret_access "$secret" "jobseeker-worker@$GCP_PROJECT_ID.iam.gserviceaccount.com"
 done
-for secret in database-url task-execution-secret supabase-secret-key runtime-state-encryption-key; do
+for secret in database-url telegram-bot-token task-execution-secret supabase-secret-key runtime-state-encryption-key; do
   secret_access "$secret" "$CYCLE_SA"
 done
 
