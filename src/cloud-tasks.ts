@@ -3,8 +3,6 @@ import { CloudTasksClient, protos } from '@google-cloud/tasks';
 import { config } from './config.ts';
 import { approvedUsers, markDigestRun } from './database.ts';
 import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './telegram-state.ts';
-import { handleTelegramWebhookUpdate, sendDailyDigest, sendPendingAlerts } from './telegram.ts';
-import { isDigestDue, isWithinDeliveryWindow } from './vacancies/jobs.ts';
 import { mapConcurrent } from './concurrency.ts';
 
 export type CloudTaskRequest =
@@ -73,6 +71,7 @@ export async function enqueueTelegramUpdateTask(update: unknown, id: number): Pr
 }
 
 export async function enqueueDueDeliveryTasks(now = new Date()): Promise<number> {
+  const {isDigestDue,isWithinDeliveryWindow}=await import('./vacancies/jobs.ts');
   const bucket = Math.floor(now.getTime() / dispatchBucketMs);
   const requests: CloudTaskRequest[] = [];
   for (const user of await approvedUsers()) {
@@ -88,6 +87,8 @@ export async function enqueueDueDeliveryTasks(now = new Date()): Promise<number>
 }
 
 export async function handleCloudTask(request: CloudTaskRequest): Promise<void> {
+  const {handleTelegramWebhookUpdate,sendDailyDigest,sendPendingAlerts}=await import('./telegram.ts');
+  const {isDigestDue,isWithinDeliveryWindow}=await import('./vacancies/jobs.ts');
   if (!request || typeof request.key !== 'string' || request.key.length < 1 || request.key.length > 240) {
     throw new Error('Cloud Task key is invalid.');
   }
