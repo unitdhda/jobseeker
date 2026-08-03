@@ -1,15 +1,19 @@
 # Cloud Run staging and cutover
 
-The cloud deployment uses separate web and worker images in four bounded roles:
+The cloud deployment uses separate web and worker images in five bounded roles:
 
 | Role | Runtime | Bounds |
 |---|---|---|
 | Public Telegram webhook | Cloud Run service | 1 CPU, 512 MiB, concurrency 20, maximum 2 instances |
 | Private task worker | Cloud Run service | 2 CPU, 2 GiB, concurrency 1, maximum 3 instances |
-| Scrape/score cycle | Cloud Run Job | one task, 1 CPU, 2 GiB, 30-minute timeout |
-| Schedule | Cloud Scheduler | one paused schedule invoking the cycle job |
+| Scrape/score cycle | Cloud Run Job | one task, 2 CPU, 2 GiB, 30-minute timeout |
+| Profile repair | Cloud Run Job | one task, 2 CPU, 2 GiB, 30-minute timeout; manually invoked |
+| Schedule | Cloud Scheduler | one paused schedule invoking only the cycle job |
 
-Cloud Tasks is limited to one concurrent and one dispatched request per second. The scrape cycle uses a PostgreSQL advisory lock; Cloud Tasks provides delivery retries. These are hard workload bounds; a Google Cloud budget is only an alert and is not a hard billing cutoff.
+Cloud Tasks is limited to one concurrent and one dispatched request per second. The scrape cycle uses a PostgreSQL advisory lock
+and bounded user/platform concurrency; HH browser work remains serialized. The profile-repair job only fills missing or invalid
+profiles and has no schedule. Cloud Tasks provides delivery retries. These are hard workload bounds; a Google Cloud budget is only
+an alert and is not a hard billing cutoff.
 
 ## Prerequisites
 
@@ -51,7 +55,9 @@ Do not rotate the task execution secret while tasks are in flight. New Cloud Run
 GCP_PROJECT_ID="$GCP_PROJECT_ID" GCP_REGION="$GCP_REGION" ./scripts/deploy-gcp.sh
 ```
 
-The script builds remotely, deploys bounded services and the cycle job, grants only the task OIDC identity access to the worker, and creates the Cloud Scheduler job in a **paused** state. It does not configure Telegram and does not execute the cycle.
+The script builds remotely, deploys bounded services plus the cycle and profile-repair jobs, grants only the task OIDC identity
+access to the worker, and creates the Cloud Scheduler job in a **paused** state. It does not configure Telegram and does not execute
+either job.
 
 Check the public service and PostgreSQL connectivity:
 
@@ -85,7 +91,8 @@ Do not point Telegram at Cloud Run or run the cloud cycle while the local poller
 4. Persist current OAuth and HH browser state.
 5. Configure Telegram to use the public `/telegram/webhook` URL with `drop_pending_updates=false`.
 6. Test `/start`, one inexpensive command, and one controlled task.
-7. Execute one cycle job manually and inspect logs, advisory locking, memory, and deliveries.
-8. Unpause Scheduler only after the manual cycle succeeds.
+7. Execute the profile-repair job when users with CVs have missing profiles, and verify its summary reports zero failures.
+8. Execute one cycle job manually and inspect logs, advisory locking, memory, and deliveries.
+9. Unpause Scheduler only after the manual cycle succeeds.
 
 Rollback after cloud writes should use local polling against PostgreSQL. Do not resume from the stale SQLite snapshot.

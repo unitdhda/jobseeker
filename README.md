@@ -10,6 +10,7 @@ The same codebase supports local and cloud execution:
 - `src/worker.ts` — local child-process worker for long-running jobs.
 - `src/task-worker.ts` — authenticated Cloud Tasks worker.
 - `src/cycle.ts` — finite scheduled scrape cycle.
+- `src/profile-refresh.ts` — finite repair job for missing or invalid search profiles.
 - `src/vacancies/` — HH, Habr Career, Работа.ру, and HireHi adapters.
 - `src/database.ts` — repository for the seven-table PostgreSQL domain schema.
 - `src/ai.ts` / `src/workflows.ts` — direct typed Pi AI calls using Codex OAuth.
@@ -93,6 +94,7 @@ Readiness endpoints:
 | `SEARCH_PLATFORMS` | `hh,habr,rabota,hirehi` |
 | `AI_MODEL` | Profile and application model |
 | `AI_SCORING_MODEL` | Batched vacancy-scoring model |
+| `SCRAPE_CONCURRENCY` | Bounded concurrent user/platform scrape operations; HH remains serialized |
 | `OPENAI_CODEX_AUTH_FILE` | Local encrypted OAuth source document |
 | `RUNTIME_STATE_ENCRYPTION_KEY` | AES-256-GCM key for cloud OAuth/browser state |
 | `HH_BROWSER_DATA_PATH` | HH browser profile directory |

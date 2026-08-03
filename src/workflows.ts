@@ -95,6 +95,18 @@ array when no supported category credibly matches. Translate evidenced role term
   return profiles;
 }
 
+export async function missingSearchProfiles(userId:string):Promise<string[]>{
+  const cv=await getCvSource(userId);if(!cv)return[careerProfilePlatformId,...config.searchPlatforms];
+  const missing:string[]=[];
+  const career=parseStoredCareerProfile(await getSearchProfile<StoredCareerProfile>(userId,careerProfilePlatformId),cv.cvSha256);
+  if(!career)missing.push(careerProfilePlatformId);
+  for(const platformId of config.searchPlatforms){
+    const platform=getSearchPlatform(platformId),profile=await getSearchProfile<unknown>(userId,platformId);
+    if(!v.safeParse(platform.schema,profile).success)missing.push(platformId);
+  }
+  return missing;
+}
+
 let scoringSubscriptionUnavailableUntil = 0;
 
 function subscriptionLimitText(error: unknown): string {

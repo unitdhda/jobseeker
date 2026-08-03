@@ -152,26 +152,27 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
     const platforms: Record<string, PlatformScrapeResult> = {};
     const scrapeTotal=users.length*config.searchPlatforms.length;let scrapeCompleted=0;
     cycleStatus?.set('scraping',0,scrapeTotal);
-    await mapConcurrent(users, config.userWorkflowConcurrency, async (user) => {
-      try {
-        await runUserTask(user.userId, async () => {
-          const profiles = await ensureCvAndSearchProfiles(user.userId);
-          for (const platformId of config.searchPlatforms) {
-            try {
-              trace('scrape.platform.start', { userId: user.userId, platform: platformId, profile: profiles[platformId] });
-              const profile = profiles[platformId];
-              if (!profile) throw new Error(`${platformId} search profile is unavailable`);
-              addPlatformResult(platforms, platformId, await discoverPlatformVacancies(platformId,user.userId,profile));
-            } catch (error) {
-              console.error(`Failed to scrape ${platformId} for user ${user.userId}: ${errorMessage(error)}`);
-            } finally {
-              scrapeCompleted++;cycleStatus?.set('scraping',scrapeCompleted,scrapeTotal);
-              console.info(`Scrape progress ${scrapeCompleted}/${scrapeTotal} (${platformId})`);
-            }
-          }
-        });
-      } catch (error) {
+    const prepared=await mapConcurrent(users,config.userWorkflowConcurrency,async user=>{
+      try{return{user,profiles:await runUserTask(user.userId,()=>ensureCvAndSearchProfiles(user.userId))};}
+      catch(error){
         console.error(`Scrape allocation failed for user ${user.userId}: ${errorMessage(error)}`);
+        scrapeCompleted+=config.searchPlatforms.length;cycleStatus?.set('scraping',scrapeCompleted,scrapeTotal);
+        return null;
+      }
+    });
+    const scrapeJobs=prepared.filter(result=>result!==null).flatMap(({user,profiles})=>
+      config.searchPlatforms.map(platformId=>({user,profiles,platformId})));
+    await mapConcurrent(scrapeJobs,config.scrapeConcurrency,async({user,profiles,platformId})=>{
+      try {
+        trace('scrape.platform.start', { userId: user.userId, platform: platformId, profile: profiles[platformId] });
+        const profile = profiles[platformId];
+        if (!profile) throw new Error(`${platformId} search profile is unavailable`);
+        addPlatformResult(platforms, platformId, await discoverPlatformVacancies(platformId,user.userId,profile));
+      } catch (error) {
+        console.error(`Failed to scrape ${platformId} for user ${user.userId}: ${errorMessage(error)}`);
+      } finally {
+        scrapeCompleted++;cycleStatus?.set('scraping',scrapeCompleted,scrapeTotal);
+        console.info(`Scrape progress ${scrapeCompleted}/${scrapeTotal} (${platformId})`);
       }
     });
     const queue = await processCandidateQueue(users.map((user) => user.userId),

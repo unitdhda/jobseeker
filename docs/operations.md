@@ -23,11 +23,15 @@ Default region: `europe-west1`.
 | Cloud Run service | `jobseeker-web` | Public Telegram webhook and health endpoints |
 | Cloud Run service | `jobseeker-worker` | Private Cloud Tasks worker |
 | Cloud Run Job | `jobseeker-cycle` | Finite discovery/filtering/scoring cycle |
+| Cloud Run Job | `jobseeker-profile-refresh` | Manual repair of missing or invalid CV-derived profiles |
 | Cloud Scheduler job | `jobseeker-cycle` | Sole production scrape schedule |
 | Cloud Tasks queue | `jobseeker` | Telegram updates and bounded delivery work |
 | Artifact Registry | `jobseeker` | Web and worker images |
 
-The web service scales from zero to two instances at concurrency 20. The private worker scales from zero to three instances at concurrency 1. The cycle job has one task and parallelism one. The worker's external URL can return 404 because ingress is internal; validate it through Cloud Tasks and logs rather than public curl.
+The web service scales from zero to two instances at concurrency 20. The private worker scales from zero to three instances at
+concurrency 1. Both jobs have one task and parallelism one. The cycle uses two CPUs and bounded cross-platform concurrency while
+keeping HH browser work serialized. The profile-repair job is manual and must never be scheduled. The worker's external URL can
+return 404 because ingress is internal; validate it through Cloud Tasks and logs rather than public curl.
 
 The retired VPS Jobseeker service and local production/test pollers should normally remain stopped.
 
@@ -137,7 +141,8 @@ Use the project's existing Supabase linkage and local secret files. Do not place
 
 ## Release workflow
 
-`scripts/deploy-gcp.sh` builds two images, deploys the worker, web service, and cycle job, then deliberately pauses Cloud Scheduler. It does not alter the Telegram webhook and does not execute a cycle.
+`scripts/deploy-gcp.sh` builds two images, deploys the worker, web service, cycle job, and manual profile-repair job, then
+deliberately pauses Cloud Scheduler. It does not alter the Telegram webhook and does not execute either job.
 
 ### 1. Preflight ownership
 
@@ -193,7 +198,20 @@ gcloud logging read \
 
 Redact any unexpected personal data before sharing output.
 
-### 5. Run one controlled cycle
+### 5. Repair missing profiles when needed
+
+The repair job checks approved users with CVs and generates only missing or invalid career/platform profiles. It does not scrape,
+normalize, score, deliver, or own a schedule:
+
+```bash
+gcloud run jobs execute jobseeker-profile-refresh \
+  --project="$GCP_PROJECT_ID" --region="$GCP_REGION" --wait
+```
+
+Its final summary must report zero failures. Running it may consume profile-generation quota and AI usage, so do not invoke it as a
+routine health check.
+
+### 6. Run one controlled cycle
 
 Keep Scheduler paused and ensure no local producer exists:
 
@@ -217,7 +235,7 @@ gcloud tasks list --queue=jobseeker \
   --project="$GCP_PROJECT_ID" --location="$GCP_REGION"
 ```
 
-### 6. Restore scheduled ownership
+### 7. Restore scheduled ownership
 
 Only after the controlled cycle succeeds:
 

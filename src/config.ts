@@ -92,6 +92,7 @@ export const config = {
   userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 7, 1, 100),
   maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),
   userWorkflowConcurrency: integerEnv('USER_WORKFLOW_CONCURRENCY', 3, 1, 20),
+  scrapeConcurrency: integerEnv('SCRAPE_CONCURRENCY', 8, 1, 40),
   deliveryConcurrency: integerEnv('DELIVERY_CONCURRENCY', 5, 1, 20),
   accessRequestCooldownMinutes: integerEnv('ACCESS_REQUEST_COOLDOWN_MINUTES', 60, 1, 43_200),
   cvUploadSessionCooldownMinutes: integerEnv('CV_UPLOAD_SESSION_COOLDOWN_MINUTES', 15, 1, 1_440),
