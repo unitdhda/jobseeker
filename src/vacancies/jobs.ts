@@ -101,7 +101,7 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
 import { startCycleStatus } from '../telegram.ts';
 import { ensureCvAndSearchProfiles, scorePendingVacancies } from '../workflows.ts';
 import { discoverPlatformVacancies } from './registry.ts';
-import { mapConcurrent } from '../concurrency.ts';
+import { aggregateOrderedProgress, mapConcurrent } from '../concurrency.ts';
 import { llmUsageSince, llmUsageSnapshot, type LlmUsageReport } from '../ai.ts';
 
 let cycleRunning = false;
@@ -178,15 +178,17 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
     for (const [source, count] of Object.entries(queue.bySource)) {
       if (platforms[source]) platforms[source].newVacancies = count;
     }
+    const scoringProgress=aggregateOrderedProgress(users.map(user=>user.userId),['filtering','scoring'] as const,
+      (phase,current,total)=>cycleStatus?.set(phase,current,total));
     const scoreCounts = await mapConcurrent(users, config.userWorkflowConcurrency, async (user) => {
       try {
         return await retryTransientPostgres('Scoring allocation',()=>runUserTask(user.userId,
           () => scorePendingVacancies(user.userId, undefined,
-            (phase, current, total) => cycleStatus?.set(phase, current, total), config.userScoreLimitPerCycle)));
+            (phase,current,total)=>scoringProgress.report(user.userId,phase,current,total), config.userScoreLimitPerCycle)));
       } catch (error) {
         console.error(`Scoring allocation failed for user ${user.userId}: ${errorMessage(error)}`);
         return 0;
-      }
+      } finally { scoringProgress.done(user.userId); }
     });
     const attempted = scoreCounts.reduce((sum, count) => sum + count, 0);
     const totals = Object.values(platforms).reduce((sum, platform) => ({

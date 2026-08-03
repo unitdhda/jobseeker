@@ -174,29 +174,38 @@ function retryAfterMilliseconds(error: unknown): number {
 function isUnchangedMessageError(error: unknown): boolean {
   return /message is not modified/i.test(error instanceof Error ? error.message : String(error));
 }
+function isMissingTelegramMessageError(error:unknown):boolean{
+  return /message to edit not found|message to delete not found|message can't be edited|message_id_invalid/i
+    .test(error instanceof Error?error.message:String(error));
+}
 async function startEditableIndicator(userId: string, initialLabel: string): Promise<EditableIndicator | null> {
   const api = getBot().api; const chat = await targetChat(userId);
   try {
     let label = initialLabel; let frame = 0; let sentText = `${loaderFrames[frame]} ${label}`;
-    let updating: Promise<void> | null = null; let blockedUntil = 0; let stopped = false;
+    let updating: Promise<void> | null = null; let blockedUntil = 0; let stopped = false;let messageMissing=false;
+    let timer:ReturnType<typeof setInterval>|undefined;
     const message = await api.sendMessage(chat, `<code>${sentText}</code>`, { parse_mode: 'HTML' });
     const update = (): void => {
       const next = `${loaderFrames[frame]} ${label}`;
       if (stopped || updating || next === sentText || Date.now() < blockedUntil) return;
       updating = api.editMessageText(chat, message.message_id, `<code>${next}</code>`, { parse_mode: 'HTML' })
         .then(() => { sentText = next; }).catch((error) => {
+          if(isMissingTelegramMessageError(error)){
+            messageMissing=true;stopped=true;if(timer)clearInterval(timer);return;
+          }
           const delay = retryAfterMilliseconds(error);
           if (delay) blockedUntil = Date.now() + delay;
           else if (!isUnchangedMessageError(error)) console.warn(`Could not edit task indicator: ${errorMessage(error)}`);
         }).finally(() => { updating = null; });
     };
-    const timer = setInterval(() => { frame = (frame + 1) % loaderFrames.length; update(); }, loaderEditIntervalMs);
+    timer = setInterval(() => { frame = (frame + 1) % loaderFrames.length; update(); }, loaderEditIntervalMs);
     return {
       setLabel(nextLabel) { label = nextLabel; frame = 0; update(); },
       async stop() {
-        stopped = true; clearInterval(timer); await updating;
+        stopped = true;if(timer)clearInterval(timer); await updating;if(messageMissing)return;
         try { await api.deleteMessage(chat, message.message_id); }
         catch (error) {
+          if(isMissingTelegramMessageError(error))return;
           const delay = retryAfterMilliseconds(error);
           if (!delay) { console.warn(`Could not remove task indicator: ${errorMessage(error)}`); return; }
           await new Promise((resolve) => setTimeout(resolve, delay));
