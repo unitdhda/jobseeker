@@ -10,6 +10,6 @@ export default defineConfig({
   plugins:[{
     name:'bundle-pdfjs-worker',
     generateBundle(){this.emitFile({type:'asset',fileName:'pdf.worker.mjs',
-      source:readFileSync(new URL(import.meta.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs')))});},
+      source:readFileSync(resolve('node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'))});},
   }],
 });
