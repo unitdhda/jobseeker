@@ -40,7 +40,8 @@ let stopRuntime=async():Promise<void>=>{};
 async function initializeRuntime():Promise<void>{
   if(!config.runJobs&&config.telegramMode!=='polling'&&!(config.telegramMode==='webhook'&&!config.telegramWebhookAsync))return;
   const [telegram,worker,jobs]=await Promise.all([import('./telegram.ts'),import('./worker-client.ts'),import('./vacancies/jobs.ts')]);
-  jobs.initializeSchedules(worker.runCycleInWorker,telegram.sendPendingAlerts,telegram.sendDailyDigest);
+  jobs.initializeSchedules(worker.runCycleInWorker,telegram.sendPendingAlerts,
+    userId=>telegram.sendDailyDigest(userId,{scheduled:true}).then(()=>undefined));
   telegram.startTelegramBot();
   if(config.telegramMode==='webhook')await telegram.initializeTelegramWebhookMode();
   if(config.runJobs&&config.runInitialCycle)setTimeout(()=>void jobs.runScheduledCycle().catch(error=>

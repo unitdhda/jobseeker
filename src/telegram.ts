@@ -2,9 +2,9 @@ import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import type { InputRichBlockTable, InputRichMessage, RichBlockTableCell, RichText } from 'grammy/types';
 import { config } from './config.ts';
 import {
-  approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
+  approvedUsers, currentDigestVacancies, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
   getScoredVacancy, getScoredVacancyByApplyId, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix, listTelegramUsers,
-  markAlerted, markApplicationDelivered, markDigested, requestAccess, searchScoredVacancies, setUserStatus,
+  markAlerted, markApplicationDelivered, replaceDigestSnapshot, requestAccess, searchScoredVacancies, setUserStatus,
   skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries, llmUsageSummary,
   type AlertVacancy, type ScoredVacancy, type TelegramIdentity, type TelegramUser,
 } from './database.ts';
@@ -151,36 +151,40 @@ function highlightedApplyId(applyId: string, allApplyIds: string[]): RichText {
     other !== applyId && other.startsWith(applyId.slice(0, prefixLength)))) prefixLength++;
   return [{ type: 'bold', text: applyId.slice(0, prefixLength) }, applyId.slice(prefixLength)];
 }
-export async function sendDailyDigest(userId: string, sendEmptyTable=false): Promise<number> {
-  if (!await isApprovedUser(userId)) throw new Error('User access is not approved.');
-  const settings = await getDeliverySettings(userId);
-  const vacancies = await digestVacancies(userId, config.digestMinScore, config.alertScore, settings?.lastDigestAt ?? null);
-  if (!vacancies.length) {
-    if(sendEmptyTable){
+export interface DigestDeliveryOptions { scheduled?: boolean; sendEmptyTable?: boolean }
+export async function sendDailyDigest(userId:string,options:DigestDeliveryOptions={}):Promise<number>{
+  if(!await isApprovedUser(userId))throw new Error('User access is not approved.');
+  const scheduled=options.scheduled??false,snapshotAt=new Date().toISOString();
+  const settings=scheduled?await getDeliverySettings(userId):null;
+  const vacancies=scheduled
+    ?await digestVacancies(userId,config.digestMinScore,config.alertScore,settings?.lastDigestAt??null,snapshotAt)
+    :await currentDigestVacancies(userId);
+  if(!vacancies.length){
+    if(options.sendEmptyTable){
       const table:InputRichBlockTable={type:'table',is_bordered:true,is_striped:true,cells:[
         [headerCell('ID','left'),headerCell('Балл','right'),headerCell('Вакансия','left'),headerCell('Ссылка','center')],
         [cell('—'),cell('—','right'),cell('Нет новых вакансий для дайджеста'),cell('—','center')],
       ]};
       await getBot().api.sendRichMessage(await targetChat(userId),{blocks:[table]},{disable_notification:true});
     }
+    if(scheduled)await replaceDigestSnapshot(userId,[],snapshotAt);
     return 0;
   }
-  const applyIds = vacancies.map((vacancy) => vacancy.applyId);
-  for (let offset = 0; offset < vacancies.length; offset += 30) {
-    const page = vacancies.slice(offset, offset + 30);
-    const table: InputRichBlockTable = {
-      type: 'table', is_bordered: true, is_striped: true,
-      cells: [[headerCell('ID', 'left'), headerCell('Балл', 'right'), headerCell('Вакансия', 'left'), headerCell('Ссылка', 'center')],
-        ...page.map((vacancy) => [cell(highlightedApplyId(vacancy.applyId, applyIds)), cell(String(vacancy.score), 'right'),
-          cell(vacancy.name), cell({ type: 'url', text: 'Открыть', url: vacancy.url }, 'center')])],
+  const applyIds=vacancies.map(vacancy=>vacancy.applyId);
+  for(let offset=0;offset<vacancies.length;offset+=30){
+    const page=vacancies.slice(offset,offset+30);
+    const table:InputRichBlockTable={
+      type:'table',is_bordered:true,is_striped:true,
+      cells:[[headerCell('ID','left'),headerCell('Балл','right'),headerCell('Вакансия','left'),headerCell('Ссылка','center')],
+        ...page.map(vacancy=>[cell(highlightedApplyId(vacancy.applyId,applyIds)),cell(String(vacancy.score),'right'),
+          cell(vacancy.name),cell({type:'url',text:'Открыть',url:vacancy.url},'center')])],
     };
-    await getBot().api.sendRichMessage(await targetChat(userId), { blocks: [
-      { type: 'heading', size: 3, text: offset ? 'Ежедневная подборка — продолжение' : 'Ежедневная подборка вакансий' }, table,
-      { type: 'paragraph', text: 'Пришлите выделенный префикс или полный ID, чтобы получить адаптированное резюме и сопроводительное письмо.' },
-    ] }, { disable_notification: true });
-    // Persist each page so a retried delivery does not resend earlier pages.
-    await markDigested(userId,page.map((vacancy)=>vacancy.id));
+    await getBot().api.sendRichMessage(await targetChat(userId),{blocks:[
+      {type:'heading',size:3,text:offset?'Ежедневная подборка — продолжение':'Ежедневная подборка вакансий'},table,
+      {type:'paragraph',text:'Пришлите выделенный префикс или полный ID, чтобы получить адаптированное резюме и сопроводительное письмо.'},
+    ]},{disable_notification:true});
   }
+  if(scheduled)await replaceDigestSnapshot(userId,vacancies.map(vacancy=>vacancy.id),snapshotAt);
   return vacancies.length;
 }
 
@@ -570,7 +574,7 @@ function configureTelegramBot(): Bot | null {
     await ctx.reply('Во сколько присылать ежедневную подборку? Отправьте время ЧЧ:ММ, например 09:30.');
   });
   instance.command('digest',async(ctx)=>{
-    await sendDailyDigest(String(ctx.from!.id),true);
+    await sendDailyDigest(String(ctx.from!.id),{sendEmptyTable:true});
   });
   instance.on('message:text', async (ctx, next) => {
     const userId = String(ctx.from.id); const setup = await getTelegramSession<WindowSetup>(userId, 'window-setup');

@@ -280,13 +280,6 @@ export async function saveDeliverySettings(userId: string, settings: Omit<Delive
     delivery_timezone=$5,updated_at=$6 where user_id=$1`,
     [userId, settings.startMinutes, settings.endMinutes, settings.digestMinutes, settings.timezone, now()]);
 }
-export async function markDigestRun(userId: string, deliveredAt: string): Promise<void> {
-  await ready(); await q(`update users set delivery_start_minutes=coalesce(delivery_start_minutes,0),
-    delivery_end_minutes=coalesce(delivery_end_minutes,0),digest_minutes=coalesce(digest_minutes,540),
-    delivery_timezone=coalesce(delivery_timezone,$2),last_digest_at=$3,updated_at=$3 where user_id=$1`,
-    [userId, config.timezone, deliveredAt]);
-}
-
 function newApplyId(): string { return Array.from({ length: 6 }, () => String.fromCharCode(97 + randomInt(26))).join(''); }
 function canonicalFingerprint(name: string, employer: string): string {
   const normalize = (value: string) => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
@@ -515,12 +508,30 @@ export async function searchScoredVacancies(userId:string,input:string,limit=10)
   const query=tokens.join(' ');return(await q(`${scoredSelect} where uv.user_id=$1 and v.search_vector@@websearch_to_tsquery('simple',$2)
     order by ts_rank(v.search_vector,websearch_to_tsquery('simple',$2)) desc,uv.score desc limit $3`,[userId,query,Math.max(1,Math.min(limit,30))])).map(rowToScoredVacancy);
 }
+const currentDigest=`uv.decision='digested' and uv.updated_at=(select max(latest.updated_at) from user_vacancies latest
+  where latest.user_id=uv.user_id and latest.decision='digested')`;
 export async function latestDigestVacanciesByApplyIdPrefix(userId:string,prefix:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
-  where uv.user_id=$1 and uv.decision='digested' and uv.updated_at=(select max(updated_at) from user_vacancies where user_id=$1 and decision='digested')
-  and v.apply_id like $2 order by uv.score desc,v.published_at desc limit 2`,[userId,`${prefix}%`])).map(rowToScoredVacancy);}
-export async function digestVacancies(userId:string,min:number,high:number,since:string|null):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
+  where uv.user_id=$1 and ${currentDigest} and v.apply_id like $2
+  order by uv.score desc,v.published_at desc limit 2`,[userId,`${prefix}%`])).map(rowToScoredVacancy);}
+export async function currentDigestVacancies(userId:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
+  where uv.user_id=$1 and ${currentDigest} order by uv.score desc,v.published_at desc`,[userId])).map(rowToScoredVacancy);}
+export async function digestVacancies(userId:string,min:number,high:number,since:string|null,until:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
   where uv.user_id=$1 and uv.score>=$2 and uv.score<$3 and uv.decision='new' and uv.score_updated_at is not null
-  and ($4::timestamptz is null or uv.score_updated_at>$4::timestamptz) order by uv.score desc,v.published_at desc`,[userId,min,high,since])).map(rowToScoredVacancy);}
+  and ($4::timestamptz is null or uv.score_updated_at>$4::timestamptz) and uv.score_updated_at<=$5::timestamptz
+  order by uv.score desc,v.published_at desc`,[userId,min,high,since,until])).map(rowToScoredVacancy);}
+export async function replaceDigestSnapshot(userId:string,ids:number[],deliveredAt:string):Promise<void>{
+  await ready();const timestamp=new Date(deliveredAt);if(Number.isNaN(timestamp.getTime()))throw new Error('Digest delivery timestamp is invalid.');
+  const vacancyIds=[...new Set(ids.filter(Number.isSafeInteger))];await withPostgresTransaction(async client=>{
+    await client.query(`update user_vacancies set decision='new',updated_at=$1 where user_id=$2 and decision='digested'`,
+      [timestamp.toISOString(),userId]);
+    if(vacancyIds.length)await client.query(`update user_vacancies set decision='digested',updated_at=$1
+      where user_id=$2 and vacancy_id=any($3::bigint[]) and decision='new'`,[timestamp.toISOString(),userId,vacancyIds]);
+    await client.query(`update users set delivery_start_minutes=coalesce(delivery_start_minutes,0),
+      delivery_end_minutes=coalesce(delivery_end_minutes,0),digest_minutes=coalesce(digest_minutes,540),
+      delivery_timezone=coalesce(delivery_timezone,$1),last_digest_at=$2,updated_at=$2 where user_id=$3`,
+      [config.timezone,timestamp.toISOString(),userId]);
+  });
+}
 export async function unsentHighScoreVacancies(userId:string,minScore:number,limit=30):Promise<AlertVacancy[]>{await ready();return(await q(`select v.*,
   uv.decision user_decision,uv.user_id score_user_id,uv.score,uv.alert_primary_track primary_track,uv.alert_summary summary,
   uv.alert_reasons reasons_json,uv.alert_gaps gaps_json from vacancies v join user_vacancies uv on uv.vacancy_id=v.id and uv.score is not null
@@ -529,8 +540,6 @@ export async function unsentHighScoreVacancies(userId:string,minScore:number,lim
 export async function markAlerted(userId:string,id:number):Promise<void>{await ready();await q(`update user_vacancies
   set decision='alerted',updated_at=$1,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null
   where user_id=$2 and vacancy_id=$3 and decision='new'`,[now(),userId,id]);}
-export async function markDigested(userId:string,ids:number[]):Promise<void>{await ready();if(!ids.length)return;await q(`update user_vacancies set decision='digested',updated_at=$1
-  where user_id=$2 and vacancy_id=any($3::bigint[]) and decision='new'`,[now(),userId,ids]);}
 export async function skipVacancy(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{await ensureUserVacancy(userId,id,client);
   await client.query("update user_vacancies set decision='skipped',updated_at=$1 where user_id=$2 and vacancy_id=$3",[now(),userId,id]);});}
 export async function beginApplication(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{await ensureUserVacancy(userId,id,client);const timestamp=now();

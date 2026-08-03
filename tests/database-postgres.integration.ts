@@ -77,7 +77,15 @@ try {
     contentHash: `candidate-content-${suffix}` });
   assert.equal(normalizedCandidate.duplicate, false);
   await d.markCandidateNormalized(candidate, normalizedCandidate.id);
-  assert.equal((await d.getVacancy(normalizedCandidate.id))?.sourceId, sourceId);
+  const digestVacancy=await d.getVacancy(normalizedCandidate.id);assert.equal(digestVacancy?.sourceId,sourceId);
+  await d.saveScore(userId,normalizedCandidate.id,61,'Backend','Digest integration match',['PostgreSQL'],[],false);
+  const snapshotAt=new Date().toISOString();
+  assert.deepEqual((await d.digestVacancies(userId,50,80,null,snapshotAt)).map(vacancy=>vacancy.id),[normalizedCandidate.id]);
+  await d.replaceDigestSnapshot(userId,[normalizedCandidate.id],snapshotAt);
+  assert.deepEqual((await d.currentDigestVacancies(userId)).map(vacancy=>vacancy.id),[normalizedCandidate.id]);
+  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,digestVacancy!.applyId.slice(0,2))).length,1);
+  await d.replaceDigestSnapshot(userId,[],new Date(Date.parse(snapshotAt)+1_000).toISOString());
+  assert.deepEqual(await d.currentDigestVacancies(userId),[]);
   await d.recordUsage(userId, 'score');
   assert.equal(await d.usageInLast24Hours(userId, 'score'), 1);
   assert.equal((await d.userUsageSummaries()).some((summary) => summary.userId === userId && summary.scores24h === 1), true);

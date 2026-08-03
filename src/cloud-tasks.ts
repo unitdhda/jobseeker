@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { CloudTasksClient, protos } from '@google-cloud/tasks';
 import { config } from './config.ts';
-import { approvedUsers, markDigestRun } from './database.ts';
+import { approvedUsers } from './database.ts';
 import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './telegram-state.ts';
 import { mapConcurrent } from './concurrency.ts';
 
@@ -115,8 +115,7 @@ export async function handleCloudTask(request: CloudTaskRequest): Promise<void> 
   }
   if (request.kind === 'digest') {
     if (!await isDigestDue(request.userId, now)) return;
-    await sendDailyDigest(request.userId);
-    await markDigestRun(request.userId, now.toISOString());
+    await sendDailyDigest(request.userId,{scheduled:true});
     return;
   }
   throw new Error('Cloud Task kind is invalid.');
