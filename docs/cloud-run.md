@@ -80,7 +80,7 @@ Do not point Telegram at Cloud Run or run the cloud cycle while the local poller
 ## Cutover order
 
 1. Keep Scheduler paused.
-2. Stop the local poller and verify port 3000 has no listener.
+2. Stop the local poller and verify that its process has exited.
 3. Confirm the seven-table PostgreSQL schema and row-count parity.
 4. Persist current OAuth and HH browser state.
 5. Configure Telegram to use the public `/telegram/webhook` URL with `drop_pending_updates=false`.
