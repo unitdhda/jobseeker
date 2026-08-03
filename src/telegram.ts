@@ -165,6 +165,7 @@ export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy):
   const gaps = vacancy.gaps.slice(0, 2).map((item) => `• ${escapeHtml(item)}`).join('\n');
   const text = [
     `<b>${vacancy.score}/100 — ${escapeHtml(vacancy.name)}</b>`,
+    `ID: <code>${escapeHtml(vacancy.applyId)}</code>`,
     `${escapeHtml(vacancy.employer)} · ${escapeHtml(vacancy.area)} · ${sourceLabel(vacancy.source)}`,
     `Направление: ${escapeHtml(vacancy.primaryTrack)} · Зарплата: ${escapeHtml(salary(vacancy))}`,
     `\n<b>Комментарий к оценке</b>\n${escapeHtml(vacancy.summary)}`,
@@ -303,8 +304,8 @@ export async function startCycleStatus(): Promise<CycleStatus | null> {
     stop: () => indicator.stop(),
   };
 }
-async function startApplicationLoader(userId: string): Promise<ApplicationLoader | null> {
-  const indicator = await startEditableIndicator(userId, 'Адаптирую резюме');
+async function startApplicationLoader(userId: string, applyId: string): Promise<ApplicationLoader | null> {
+  const indicator = await startEditableIndicator(userId, `Адаптирую резюме · ${applyId}`);
   return indicator ? { setTask: (task) => indicator.setLabel(task), stop: () => indicator.stop() } : null;
 }
 
@@ -315,7 +316,7 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
   try {
     vacancy = await getScoredVacancy(userId, vacancyId);
     if (!vacancy) throw new Error('Vacancy not found.');
-    loader = await startApplicationLoader(userId);
+    loader = await startApplicationLoader(userId,vacancy.applyId);
     const documents = await tailorApplicationInWorker(userId, vacancyId);
     if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
     const api = getBot().api;
@@ -332,7 +333,8 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
     console.error(`Application generation failed: ${errorMessage(error)}`);
     const keyboard = new InlineKeyboard().text('Попробовать снова', `apply:${vacancyId}`)
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru');
-    await getBot().api.sendMessage(chat, `Не удалось подготовить документы для вакансии ${vacancyId}. Попробуйте ещё раз.`,
+    const retryId=vacancy?.applyId??String(vacancyId);
+    await getBot().api.sendMessage(chat, `Не удалось подготовить документы для вакансии ${retryId}. Пришлите ID ещё раз или нажмите кнопку.`,
       { reply_markup: keyboard }).catch((notificationError)=>
       console.error(`Could not send application failure notice: ${errorMessage(notificationError)}`));
   } finally {
