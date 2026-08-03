@@ -30,7 +30,9 @@ Default region: `europe-west1`.
 
 The web service scales from zero to two instances at concurrency 20. The private worker scales from zero to three instances at
 concurrency 1. Both jobs have one task and parallelism one. The cycle uses two CPUs and bounded cross-platform concurrency while
-keeping HH browser work serialized with a per-search hard deadline. The profile-repair job is manual and must never be scheduled. The worker's external URL can
+keeping HH browser work serialized with a per-search hard deadline. Scoring admits five concurrent user batches by default; each
+batch has a three-minute deadline and up to three attempts, so one stalled request cannot block the other workers indefinitely.
+The profile-repair job is manual and must never be scheduled. The worker's external URL can
 return 404 because ingress is internal; validate it through Cloud Tasks and logs rather than public curl.
 
 The retired VPS Jobseeker service and local production/test pollers should normally remain stopped.

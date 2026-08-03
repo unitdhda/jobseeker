@@ -94,6 +94,8 @@ Readiness endpoints:
 | `SEARCH_PLATFORMS` | `hh,habr,rabota,hirehi` |
 | `AI_MODEL` | Profile and application model |
 | `AI_SCORING_MODEL` | Batched vacancy-scoring model |
+| `SCORING_BATCH_TIMEOUT_SECONDS` | Abort deadline for each scoring worker attempt |
+| `SCORING_BATCH_MAX_ATTEMPTS` | Bounded scoring attempts after timeout or failure |
 | `SCRAPE_CONCURRENCY` | Bounded concurrent user/platform scrape operations; HH remains serialized |
 | `HH_OPERATION_TIMEOUT_SECONDS` | Hard deadline for each serialized HH browser search |
 | `OPENAI_CODEX_AUTH_FILE` | Local encrypted OAuth source document |

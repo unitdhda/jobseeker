@@ -141,7 +141,8 @@ function scoringApiFallbackConfigured(): boolean {
   return Boolean(process.env.OPENAI_API_KEY);
 }
 
-async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provider: 'subscription' | 'api'): Promise<void> {
+async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provider: 'subscription' | 'api',
+  signal:AbortSignal): Promise<void> {
   const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
   const contexts=vacancies.map(vacancy=>({vacancyId:vacancy.id,language:detectCvLanguage(`${vacancy.name}\n${vacancy.description}`),
     source:vacancy.source,name:vacancy.name,employer:vacancy.employer,area:vacancy.area,salaryFrom:vacancy.salaryFrom,
@@ -156,7 +157,7 @@ blocker sets hardRejection=true and caps score at 49. Return exactly one result 
 at most three gaps. The JSON must be either
 {"scores":[{"vacancyId":1,"score":0,"primaryTrack":"...","summary":"...","reasons":[],"gaps":[],"hardRejection":false}]}
 or the same scores array directly. Use these exact field names and no additional wrapper.`, 
-    prompt:`AUTHORITATIVE CV:\n${cv.cvText}\n\nVACANCIES:\n${JSON.stringify(contexts)}`});
+    prompt:`AUTHORITATIVE CV:\n${cv.cvText}\n\nVACANCIES:\n${JSON.stringify(contexts)}`,signal});
   const scores=Array.isArray(result)?result:result.scores;
   const expected=new Set(vacancies.map(vacancy=>vacancy.id)),received=new Set(scores.map(score=>score.vacancyId));
   if(scores.length!==expected.size||received.size!==expected.size||[...expected].some(id=>!received.has(id)))
@@ -166,19 +167,14 @@ or the same scores array directly. Use these exact field names and no additional
       score.reasons.slice(0,3).map(reason=>reason.slice(0,240)),score.gaps.slice(0,3).map(gap=>gap.slice(0,240)),score.hardRejection);}
 }
 
-async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
-  await requireApprovedUser(userId);
-  if (!vacancies.length) return;
-  trace('scoring.agent.start', { vacancyIds: vacancies.map((vacancy) => vacancy.id),
-    sources: vacancies.map((vacancy) => vacancy.source), provider: config.scoringModel });
-  for (const vacancy of vacancies) await recordUsage(userId, 'score');
+async function scoreBatchAttempt(userId:string,vacancies:Vacancy[],signal:AbortSignal):Promise<void>{
   if (Date.now() < scoringSubscriptionUnavailableUntil && scoringApiFallbackConfigured()) {
-    await dispatchScoringBatch(userId, vacancies, 'api');
+    await dispatchScoringBatch(userId, vacancies, 'api',signal);
     trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id), provider: 'api-fallback' });
     return;
   }
   try {
-    await dispatchScoringBatch(userId, vacancies, 'subscription');
+    await dispatchScoringBatch(userId, vacancies, 'subscription',signal);
     trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id), provider: 'subscription' });
   } catch (error) {
     if ((await Promise.all(vacancies.map((vacancy) => getScoredVacancy(userId, vacancy.id)))).every(Boolean)) {
@@ -193,9 +189,38 @@ async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
         { cause: error });
     }
     console.warn(`ChatGPT scoring limit reached; using metered OpenAI API fallback for ${vacancies.length} vacancies.`);
-    await dispatchScoringBatch(userId, vacancies, 'api');
+    await dispatchScoringBatch(userId, vacancies, 'api',signal);
     trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id), provider: 'api-fallback' });
   }
+}
+
+async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
+  await requireApprovedUser(userId);
+  if (!vacancies.length) return;
+  const vacancyIds=vacancies.map(vacancy=>vacancy.id),batch=`[${vacancyIds.join(',')}]`;
+  trace('scoring.agent.start', { vacancyIds, sources: vacancies.map((vacancy) => vacancy.source), provider: config.scoringModel });
+  for (const vacancy of vacancies) await recordUsage(userId, 'score');
+  let lastError:unknown;
+  for(let attempt=1;attempt<=config.scoringBatchMaxAttempts;attempt++){
+    const started=Date.now(),controller=new AbortController();let timedOut=false;
+    const deadline=setTimeout(()=>{timedOut=true;controller.abort(new Error(
+      `Scoring batch exceeded ${config.scoringBatchTimeoutSeconds} seconds.`));},config.scoringBatchTimeoutSeconds*1_000);
+    console.info(`Scoring batch start: user=${userId}, vacancies=${batch}, attempt=${attempt}/${config.scoringBatchMaxAttempts}.`);
+    try{
+      await scoreBatchAttempt(userId,vacancies,controller.signal);
+      console.info(`Scoring batch finish: user=${userId}, vacancies=${batch}, attempt=${attempt}, durationMs=${Date.now()-started}.`);
+      return;
+    }catch(error){
+      lastError=error;
+      const detail=errorMessage(error);
+      if(timedOut)console.warn(`Scoring batch timeout: user=${userId}, vacancies=${batch}, attempt=${attempt}, durationMs=${Date.now()-started}.`);
+      else console.warn(`Scoring batch failure: user=${userId}, vacancies=${batch}, attempt=${attempt}: ${detail}`);
+      if(attempt===config.scoringBatchMaxAttempts||/subscription usage limit reached/i.test(detail))throw error;
+      console.info(`Scoring batch retry: user=${userId}, vacancies=${batch}, nextAttempt=${attempt+1}.`);
+      await new Promise(resolve=>setTimeout(resolve,1_000*attempt));
+    }finally{clearTimeout(deadline);}
+  }
+  throw lastError;
 }
 
 export interface ScorePendingResult{attempted:number;completed:number}

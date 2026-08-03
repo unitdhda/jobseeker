@@ -27,6 +27,7 @@ function invalidJsonError(agent:string,parsed:unknown,validationIssues:readonly 
 
 export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,v.BaseIssue<unknown>>>(options:{
   userId:string;agent:string;model:string;thinking:ModelThinkingLevel;system:string;prompt:string;schema:TSchema;
+  signal?:AbortSignal;
 }):Promise<v.InferOutput<TSchema>>{
   const [provider,id]=modelParts(options.model),models=aiModels(),model=models.getModel(provider,id);
   if(!model)throw new Error(`Configured AI model is unavailable: ${options.model}`);
@@ -35,7 +36,8 @@ export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,
     const response=await models.completeSimple(model,{systemPrompt:options.system,messages:[{
       role:'user',content:`${options.prompt}\n\nReturn only the requested JSON value without Markdown or commentary.${correction}`,
       timestamp:Date.now(),
-    }]},{reasoning:options.thinking==='off'?undefined:options.thinking,maxRetries:2,maxRetryDelayMs:60_000});
+    }]},{reasoning:options.thinking==='off'?undefined:options.thinking,signal:options.signal,
+      maxRetries:2,maxRetryDelayMs:60_000});
     await recordLlmUsage(options.userId,options.agent,options.model,response.usage);
     if(response.stopReason==='error'||response.stopReason==='aborted')throw new Error(response.errorMessage??'AI request failed.');
     try{
