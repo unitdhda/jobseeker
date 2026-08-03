@@ -6,7 +6,7 @@ import {
   getScoredVacancy, getScoredVacancyByApplyId, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix, listTelegramUsers,
   markAlerted, markApplicationDelivered, replaceDigestSnapshot, requestAccess, searchScoredVacancies, setUserStatus,
   skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries, llmUsageSummary,
-  type AlertVacancy, type ScoredVacancy, type TelegramIdentity, type TelegramUser,
+  type AlertVacancy, type ScoredVacancy, type TelegramIdentity, type TelegramUser, type UsageHour,
 } from './database.ts';
 import { importCvSource } from './cv.ts';
 import { jobWorkerStatus, refreshUserInWorker, tailorApplicationInWorker } from './worker-client.ts';
@@ -61,26 +61,63 @@ function userStatusText(status: TelegramUser['status']): string {
   return ({ unregistered: 'не зарегистрирован', pending: 'на рассмотрении', approved: 'одобрен',
     rejected: 'отклонён', revoked: 'отозван' } as const)[status];
 }
-function brailleLine(values:number[]):string[]{
-  const finite=values.map(value=>Number.isFinite(value)?Math.max(0,value):0),maximum=Math.max(...finite,0)||1;
-  const height=8,width=Math.max(2,finite.length*2),pixels=new Set<string>();
-  const points=finite.map((value,index)=>({x:index*2,y:Math.round((height-1)*(1-value/maximum))}));
-  const mark=(x:number,y:number)=>pixels.add(`${x}:${y}`);
-  for(let index=0;index<points.length-1;index++){
-    let {x:x0,y:y0}=points[index]!,{x:x1,y:y1}=points[index+1]!;
-    const dx=Math.abs(x1-x0),sx=x0<x1?1:-1,dy=-Math.abs(y1-y0),sy=y0<y1?1:-1;let error=dx+dy;
-    while(true){mark(x0,y0);if(x0===x1&&y0===y1)break;const twice=2*error;
-      if(twice>=dy){error+=dy;x0+=sx;}if(twice<=dx){error+=dx;y0+=sy;}}
+const usagePlotHours=24,usagePlotWidth=usagePlotHours*2+1,usagePlotHeight=12;
+function niceUsageStep(maximum:number):number{
+  if(maximum<=0)return 0;const raw=maximum/usagePlotHeight,power=10**Math.floor(Math.log10(raw)),scaled=raw/power;
+  return (scaled<=1?1:scaled<=2?2:scaled<=5?5:10)*power;
+}
+function localHourLabel(timestamp:string,timezone:string):string{
+  const date=new Date(timestamp),offset=/^([+-])(\d{2}):?(\d{2})$/.exec(timezone);
+  if(offset){const minutes=(Number(offset[2])*60+Number(offset[3]))*(offset[1]==='-'?-1:1);
+    return `${String(new Date(date.getTime()+minutes*60_000).getUTCHours()).padStart(2,'0')}`;}
+  return new Intl.DateTimeFormat('en-GB',{timeZone:timezone,hour:'2-digit',hourCycle:'h23'}).format(date);
+}
+function axisInteger(value:number):string{return Math.round(value).toLocaleString('ru-RU').replace(/[\u00a0\u202f]/g,' ');}
+function axisMoney(value:number,maximum:number):string{
+  const digits=maximum>=0.01?3:maximum>=0.001?4:6;return `$${value.toFixed(digits)}`;
+}
+function placeLabel(target:string[],center:number,label:string):void{
+  const start=Math.max(0,Math.min(target.length-label.length,center-Math.floor(label.length/2)));
+  for(let index=0;index<label.length;index++)target[start+index]=label[index]!;
+}
+function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'●'|'○'):void{
+  const rows=values.map(value=>maximum<=0?usagePlotHeight-1:
+    Math.round((1-Math.max(0,Math.min(value/maximum,1)))*(usagePlotHeight-1)));
+  const put=(row:number,column:number,symbol:string,force=false):void=>{
+    if(force){if(grid[row]![column]!=='●'||marker==='●')grid[row]![column]=symbol;}
+    else if(grid[row]![column]===' ')grid[row]![column]=symbol;
+  };
+  for(let hour=0;hour<usagePlotHours;hour++){
+    const column=hour*2,nextColumn=column+2,row=rows[hour]!,nextRow=rows[hour+1]!;
+    if(row===nextRow){put(row,column,'─');put(row,column+1,'─');put(row,nextColumn,'─');continue;}
+    if(nextRow<row){put(row,column,'─');put(row,column+1,'╯');put(nextRow,column+1,'╭');put(nextRow,nextColumn,'─');continue;}
+    put(row,column,'─');put(row,column+1,'╮');put(nextRow,column+1,'╰');put(nextRow,nextColumn,'─');
   }
-  if(points.length===1)mark(points[0]!.x,points[0]!.y);
-  const bits=[[1,2,4,64],[8,16,32,128]] as const,rows:string[]=[];
-  for(let blockY=0;blockY<height/4;blockY++){
-    let row='';for(let blockX=0;blockX<Math.ceil(width/2);blockX++){
-      let code=0;for(let x=0;x<2;x++)for(let y=0;y<4;y++)if(pixels.has(`${blockX*2+x}:${blockY*4+y}`))code|=bits[x]![y]!;
-      row+=String.fromCodePoint(0x2800+code);
-    }rows.push(row);
-  }
-  return rows;
+  for(let hour=0;hour<=usagePlotHours;hour+=4)put(rows[hour]!,hour*2,marker,true);
+}
+export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
+  if(hours.length!==usagePlotHours+1)throw new Error('Usage timeline must contain 25 hourly points.');
+  const tokenStep=niceUsageStep(Math.max(...hours.map(hour=>hour.tokens),0));
+  const moneyStep=niceUsageStep(Math.max(...hours.map(hour=>hour.costUsd),0));
+  const tokenMaximum=tokenStep*usagePlotHeight,moneyMaximum=moneyStep*usagePlotHeight;
+  const grid=Array.from({length:usagePlotHeight},()=>Array<string>(usagePlotWidth).fill(' '));
+  drawUsageSeries(grid,hours.map(hour=>hour.tokens),tokenMaximum,'●');
+  drawUsageSeries(grid,hours.map(hour=>hour.costUsd),moneyMaximum,'○');
+  const leftLabels=Array.from({length:usagePlotHeight},(_,row)=>axisInteger(tokenStep*(usagePlotHeight-row)));
+  const leftWidth=Math.max(1,...leftLabels.map(label=>label.length));
+  const lines=[`● Токены — левая ось             ○ Деньги — правая ось`,
+    '2 символа на час · точки каждые 4 часа',`${' '.repeat(leftWidth+1)}┌${'─'.repeat(usagePlotWidth)}┐`];
+  for(let row=0;row<usagePlotHeight;row++)lines.push(`${leftLabels[row]!.padStart(leftWidth)} │${grid[row]!.join('')}│ `+
+    axisMoney(moneyStep*(usagePlotHeight-row),moneyMaximum));
+  lines.push(`${'0'.padStart(leftWidth)} └${'─'.repeat(usagePlotWidth)}┘ ${axisMoney(0,moneyMaximum)}`);
+  const timeLabels=Array<string>(usagePlotWidth).fill(' ');
+  for(let hour=0;hour<=usagePlotHours;hour+=4)placeLabel(timeLabels,hour*2,localHourLabel(hours[hour]!.at,timezone));
+  lines.push(`${' '.repeat(leftWidth+1)}${timeLabels.join('')}`);
+  const dayLabels=Array<string>(usagePlotWidth).fill(' ');placeLabel(dayLabels,2,'вчера');placeLabel(dayLabels,usagePlotWidth-4,'сегодня');
+  lines.push(`${' '.repeat(leftWidth+1)}${dayLabels.join('')}`);
+  const timeCaption=Array<string>(usagePlotWidth).fill(' ');placeLabel(timeCaption,Math.floor(usagePlotWidth/2),'местное время →');
+  lines.push(`${' '.repeat(leftWidth+1)}${timeCaption.join('')}`);
+  return lines.join('\n');
 }
 function compactNumber(value:number):string{return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value);}
 function money(value:number):string{return `$${value<0.01?value.toFixed(6):value.toFixed(2)}`;}
@@ -520,18 +557,15 @@ function configureTelegramBot(): Bot | null {
   });
   instance.command('usage', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
-    const [rows,llm]=await Promise.all([userUsageSummaries(),llmUsageSummary(14)]);
+    const [rows,llm,settings]=await Promise.all([userUsageSummaries(),llmUsageSummary(),getDeliverySettings(ownerUserId())]);
     const lines = rows.map((row) => `${row.userId.padEnd(14)} ${String(row.scores24h).padStart(4)}/${String(row.scoresTotal).padEnd(5)} ` +
       `${String(row.applications24h).padStart(3)}/${String(row.applicationsTotal).padEnd(4)} ${row.displayName.slice(0, 18)}`);
-    const first=llm.timeline[0]?.date??'',last=llm.timeline.at(-1)?.date??'';
-    const chart=(label:string,values:number[])=>`${label}\n${brailleLine(values).join('\n')}`;
-    const charts=[chart('токены',llm.timeline.map(day=>day.tokens)),chart('деньги',llm.timeline.map(day=>day.costUsd)),
-      chart('оценки',llm.timeline.map(day=>day.scores)),chart('отклики',llm.timeline.map(day=>day.applications))].join('\n');
+    const chart=usageTimelineChart(llm.hourlyTimeline,settings?.timezone??config.timezone);
     await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n`+
       `LLM-вызовы: <b>${llm.turns24h} / ${llm.turnsTotal}</b>\n`+
       `Токены: <b>${compactNumber(llm.tokens24h)} / ${compactNumber(llm.tokensTotal)}</b>\n`+
       `Стоимость модели: <b>${money(llm.cost24hUsd)} / ${money(llm.costTotalUsd)}</b>\n\n`+
-      `<b>14 дней · ${first}—${last}</b>\n<pre>${charts}</pre>\n`+
+      `<b>Почасовая динамика за 24 часа</b>\n<pre>${escapeHtml(chart)}</pre>\n`+
       `<b>Ресурсы и масштабирование</b>\n<pre>${escapeHtml(runtimeUsageText())}</pre>\n`+
       `<b>Пользователи</b>\n<pre>${escapeHtml(['ID              Оценки      Отклики  Пользователь', ...lines].join('\n'))}</pre>`,
       { parse_mode: 'HTML' });
