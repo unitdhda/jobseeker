@@ -540,8 +540,11 @@ export async function beginApplication(userId:string,id:number):Promise<void>{aw
     [timestamp,userId,id]);});}
 export async function markApplicationReady(userId:string,id:number):Promise<void>{await ready();await q(`update user_vacancies set application_status='ready',
   application_updated_at=$1 where user_id=$2 and vacancy_id=$3`,[now(),userId,id]);}
-export async function markApplicationDelivered(userId:string,id:number):Promise<void>{await ready();await q(`update user_vacancies set decision='applied',
-  application_updated_at=$1,updated_at=$1 where user_id=$2 and vacancy_id=$3`,[now(),userId,id]);}
+export async function markApplicationDelivered(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{
+  const timestamp=now();await client.query(`update user_vacancies set decision='applied',application_updated_at=$1,updated_at=$1
+    where user_id=$2 and vacancy_id=$3`,[timestamp,userId,id]);
+  await client.query(`insert into usage_events(user_id,kind,occurred_at) values($1,'application',$2)`,[userId,timestamp]);
+});}
 export async function failApplication(userId:string,id:number,error:string):Promise<void>{await ready();const timestamp=now();await q(`update user_vacancies
   set decision='alerted',application_status='failed',application_error=$1,application_updated_at=$2,updated_at=$2
   where user_id=$3 and vacancy_id=$4`,[error,timestamp,userId,id]);}

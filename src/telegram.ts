@@ -309,6 +309,14 @@ async function startApplicationLoader(userId: string, applyId: string): Promise<
   return indicator ? { setTask: (task) => indicator.setLabel(task), stop: () => indicator.stop() } : null;
 }
 
+function applicationFailureMessage(error:unknown,retryId:string):string{
+  const message=error instanceof Error?error.message:String(error);
+  if(/daily application-generation limit/i.test(message))return `Дневной лимит подготовки документов исчерпан. ID: ${retryId}.`;
+  if(/vacancy not found|scored vacancy .* was not found/i.test(message))return `Вакансия ${retryId} больше недоступна для подготовки документов.`;
+  if(/connection terminated|connection timeout|server closed the connection|socket hang up/i.test(message))
+    return `Временная ошибка базы данных для вакансии ${retryId}. Пришлите ID ещё раз.`;
+  return `Не удалось подготовить документы для вакансии ${retryId}. Пришлите ID ещё раз или нажмите кнопку.`;
+}
 async function generateAndSendApplication(userId: string, vacancyId: number, chat: string): Promise<void> {
   const jobKey = `${userId}:${vacancyId}`;
   if (applicationJobs.has(jobKey)) return;
@@ -334,7 +342,7 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
     const keyboard = new InlineKeyboard().text('Попробовать снова', `apply:${vacancyId}`)
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru');
     const retryId=vacancy?.applyId??String(vacancyId);
-    await getBot().api.sendMessage(chat, `Не удалось подготовить документы для вакансии ${retryId}. Пришлите ID ещё раз или нажмите кнопку.`,
+    await getBot().api.sendMessage(chat, applicationFailureMessage(error,retryId),
       { reply_markup: keyboard }).catch((notificationError)=>
       console.error(`Could not send application failure notice: ${errorMessage(notificationError)}`));
   } finally {

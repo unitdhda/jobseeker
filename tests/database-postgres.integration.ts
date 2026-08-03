@@ -86,6 +86,11 @@ try {
   assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,digestVacancy!.applyId.slice(0,2))).length,1);
   await d.replaceDigestSnapshot(userId,[],new Date(Date.parse(snapshotAt)+1_000).toISOString());
   assert.deepEqual(await d.currentDigestVacancies(userId),[]);
+  assert.equal(await d.usageInLast24Hours(userId,'application'),0);
+  await d.beginApplication(userId,vacancyId);await d.markApplicationReady(userId,vacancyId);
+  assert.equal(await d.usageInLast24Hours(userId,'application'),0);
+  await d.markApplicationDelivered(userId,vacancyId);
+  assert.equal(await d.usageInLast24Hours(userId,'application'),1);
   await d.recordUsage(userId, 'score');
   assert.equal(await d.usageInLast24Hours(userId, 'score'), 1);
   assert.equal((await d.userUsageSummaries()).some((summary) => summary.userId === userId && summary.scores24h === 1), true);

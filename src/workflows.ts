@@ -274,7 +274,6 @@ export async function tailorApplication(userId: string, vacancyId: number): Prom
   clearApplicationArtifacts(userId, vacancyId);
   await beginApplication(userId, vacancyId);
   try {
-    await recordUsage(userId,'application');
     const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
     const documents=await generateJson({userId,agent:'tailor-application',model:config.model,thinking:config.thinkingLevel,
       schema:applicationResultSchema,system:`Create a tailored plain-text CV and cover letter from authoritative evidence only. Preserve all
