@@ -308,17 +308,17 @@ async function startApplicationLoader(userId: string): Promise<ApplicationLoader
   return indicator ? { setTask: (task) => indicator.setLabel(task), stop: () => indicator.stop() } : null;
 }
 
-async function generateAndSendApplication(userId: string, vacancyId: number): Promise<void> {
+async function generateAndSendApplication(userId: string, vacancyId: number, chat: string): Promise<void> {
   const jobKey = `${userId}:${vacancyId}`;
   if (applicationJobs.has(jobKey)) return;
-  applicationJobs.add(jobKey); let loader: ApplicationLoader | null = null;
+  applicationJobs.add(jobKey); let loader: ApplicationLoader | null = null; let vacancy: ScoredVacancy | null = null;
   try {
-    const vacancy = await getScoredVacancy(userId, vacancyId);
+    vacancy = await getScoredVacancy(userId, vacancyId);
     if (!vacancy) throw new Error('Vacancy not found.');
     loader = await startApplicationLoader(userId);
     const documents = await tailorApplicationInWorker(userId, vacancyId);
     if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
-    const api = getBot().api; const chat = await targetChat(userId);
+    const api = getBot().api;
     loader?.setTask('Отправляю резюме');
     await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
       caption: `Адаптированное резюме — ${vacancy.name}`.slice(0, 1024),
@@ -328,17 +328,20 @@ async function generateAndSendApplication(userId: string, vacancyId: number): Pr
     await api.sendMessage(chat, documents.coverLetter, { link_preview_options: { is_disabled: true } });
     await markApplicationDelivered(userId, vacancyId); await loader?.stop();
   } catch (error) {
-    await loader?.stop(); console.error(`Application generation failed for ${userId}:${vacancyId}`,
-      error instanceof Error ? error.message : String(error));
-    if (!await isApprovedUser(userId)) return;
-    const vacancy = await getScoredVacancy(userId, vacancyId);
+    await loader?.stop().catch((stopError)=>console.warn(`Could not stop application indicator: ${errorMessage(stopError)}`));
+    console.error(`Application generation failed: ${errorMessage(error)}`);
     const keyboard = new InlineKeyboard().text('Попробовать снова', `apply:${vacancyId}`)
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru');
-    await getBot().api.sendMessage(await targetChat(userId), `Не удалось подготовить документы для вакансии ${vacancyId}. Попробуйте ещё раз.`,
-      { reply_markup: keyboard });
+    await getBot().api.sendMessage(chat, `Не удалось подготовить документы для вакансии ${vacancyId}. Попробуйте ещё раз.`,
+      { reply_markup: keyboard }).catch((notificationError)=>
+      console.error(`Could not send application failure notice: ${errorMessage(notificationError)}`));
   } finally {
     applicationJobs.delete(jobKey); clearApplicationArtifacts(userId, vacancyId);
   }
+}
+function launchApplication(userId:string,vacancyId:number,chat:string):void{
+  void generateAndSendApplication(userId,vacancyId,chat).catch((error)=>
+    console.error(`Detached application task failed: ${errorMessage(error)}`));
 }
 
 async function cvStatus(userId: string): Promise<string> {
@@ -694,7 +697,7 @@ function configureTelegramBot(): Bot | null {
     if (matches.length > 1) { await ctx.reply(`Префикс ${reference} подходит к нескольким вакансиям. Пришлите больше букв.`); return; }
     const vacancy = matches[0]; const key = `${userId}:${vacancy.id}`;
     if (applicationJobs.has(key)) { await ctx.reply(`Документы для ${vacancy.applyId} уже готовятся.`); return; }
-    void generateAndSendApplication(userId, vacancy.id);
+    launchApplication(userId,vacancy.id,String(ctx.chat?.id??ctx.from.id));
   });
   instance.callbackQuery(/^skip:(\d+)$/, async (ctx) => {
     const userId = String(ctx.from.id); const id = Number(ctx.match[1]); await skipVacancy(userId, id);
@@ -706,7 +709,7 @@ function configureTelegramBot(): Bot | null {
     const vacancy = await getScoredVacancy(userId, id);
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard()
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru') });
-    void generateAndSendApplication(userId, id);
+    launchApplication(userId,id,String(ctx.chat?.id??ctx.from.id));
   });
   instance.catch((error) => console.error(`Telegram bot error: ${errorMessage(error.error)}`));
   botConfigured = true;

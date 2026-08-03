@@ -287,7 +287,8 @@ Return exactly {"tailoredCvText":"...","coverLetter":"..."}. Use these exact fie
     stageApplicationArtifacts(userId,vacancyId,application);await markApplicationReady(userId,vacancyId);return application;
   } catch (error) {
     clearApplicationArtifacts(userId, vacancyId);
-    await failApplication(userId, vacancyId, error instanceof Error ? error.message : String(error));
+    try { await failApplication(userId, vacancyId, error instanceof Error ? error.message : String(error)); }
+    catch (statusError) { console.error(`Could not persist failed application status: ${errorMessage(statusError)}`); }
     throw error;
   }
 }
