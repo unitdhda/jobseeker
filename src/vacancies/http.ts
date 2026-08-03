@@ -5,6 +5,7 @@ const sourceHosts: Record<string, ReadonlySet<string>> = {
   hh: new Set(['hh.ru', 'www.hh.ru']),
   habr: new Set(['career.habr.com']),
   rabota: new Set(['rabota.ru', 'www.rabota.ru']),
+  hirehi: new Set(['hirehi.ru', 'www.hirehi.ru']),
 };
 
 function privateIpv4(address: string): boolean {

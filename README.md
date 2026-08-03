@@ -10,7 +10,7 @@ The same codebase supports local and cloud execution:
 - `src/worker.ts` — local child-process worker for long-running jobs.
 - `src/task-worker.ts` — authenticated Cloud Tasks worker.
 - `src/cycle.ts` — finite scheduled scrape cycle.
-- `src/vacancies/` — HH, Habr Career and Работа.ру adapters.
+- `src/vacancies/` — HH, Habr Career, Работа.ру, and HireHi adapters.
 - `src/database.ts` — repository for the seven-table PostgreSQL domain schema.
 - `src/ai.ts` / `src/workflows.ts` — direct typed Pi AI calls using Codex OAuth.
 
@@ -91,7 +91,7 @@ Readiness endpoints:
 | `TELEGRAM_BOT_TOKEN` | Telegram bot credential |
 | `TELEGRAM_USER_ID` | Owner user ID |
 | `TELEGRAM_MODE` | `polling`, `webhook`, or `off` |
-| `SEARCH_PLATFORMS` | `hh,habr,rabota` |
+| `SEARCH_PLATFORMS` | `hh,habr,rabota,hirehi` |
 | `AI_MODEL` | Profile and application model |
 | `AI_SCORING_MODEL` | Batched vacancy-scoring model |
 | `OPENAI_CODEX_AUTH_FILE` | Local encrypted OAuth source document |

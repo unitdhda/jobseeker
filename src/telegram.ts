@@ -55,7 +55,7 @@ function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 function sourceLabel(source: string): string {
-  return ({ hh: 'HH', habr: 'Habr Career', rabota: 'Работа.ру' } as Record<string, string>)[source] ?? 'источник';
+  return ({ hh: 'HH', habr: 'Habr Career', rabota: 'Работа.ру', hirehi: 'HireHi' } as Record<string, string>)[source] ?? 'источник';
 }
 function userStatusText(status: TelegramUser['status']): string {
   return ({ unregistered: 'не зарегистрирован', pending: 'на рассмотрении', approved: 'одобрен',
