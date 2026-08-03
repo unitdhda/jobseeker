@@ -61,10 +61,26 @@ function userStatusText(status: TelegramUser['status']): string {
   return ({ unregistered: 'не зарегистрирован', pending: 'на рассмотрении', approved: 'одобрен',
     rejected: 'отклонён', revoked: 'отозван' } as const)[status];
 }
-function sparkline(values: number[]): string {
-  const bars='▁▂▃▄▅▆▇█'; const finite=values.map(value=>Number.isFinite(value)?Math.max(0,value):0);
-  const maximum=Math.max(...finite,0); if(!maximum)return '▁'.repeat(finite.length);
-  return finite.map(value=>bars[Math.round(value/maximum*(bars.length-1))]).join('');
+function brailleLine(values:number[]):string[]{
+  const finite=values.map(value=>Number.isFinite(value)?Math.max(0,value):0),maximum=Math.max(...finite,0)||1;
+  const height=8,width=Math.max(2,finite.length*2),pixels=new Set<string>();
+  const points=finite.map((value,index)=>({x:index*2,y:Math.round((height-1)*(1-value/maximum))}));
+  const mark=(x:number,y:number)=>pixels.add(`${x}:${y}`);
+  for(let index=0;index<points.length-1;index++){
+    let {x:x0,y:y0}=points[index]!,{x:x1,y:y1}=points[index+1]!;
+    const dx=Math.abs(x1-x0),sx=x0<x1?1:-1,dy=-Math.abs(y1-y0),sy=y0<y1?1:-1;let error=dx+dy;
+    while(true){mark(x0,y0);if(x0===x1&&y0===y1)break;const twice=2*error;
+      if(twice>=dy){error+=dy;x0+=sx;}if(twice<=dx){error+=dx;y0+=sy;}}
+  }
+  if(points.length===1)mark(points[0]!.x,points[0]!.y);
+  const bits=[[1,2,4,64],[8,16,32,128]] as const,rows:string[]=[];
+  for(let blockY=0;blockY<height/4;blockY++){
+    let row='';for(let blockX=0;blockX<Math.ceil(width/2);blockX++){
+      let code=0;for(let x=0;x<2;x++)for(let y=0;y<4;y++)if(pixels.has(`${blockX*2+x}:${blockY*4+y}`))code|=bits[x]![y]!;
+      row+=String.fromCodePoint(0x2800+code);
+    }rows.push(row);
+  }
+  return rows;
 }
 function compactNumber(value:number):string{return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value);}
 function money(value:number):string{return `$${value<0.01?value.toFixed(6):value.toFixed(2)}`;}
@@ -504,10 +520,9 @@ function configureTelegramBot(): Bot | null {
     const lines = rows.map((row) => `${row.userId.padEnd(14)} ${String(row.scores24h).padStart(4)}/${String(row.scoresTotal).padEnd(5)} ` +
       `${String(row.applications24h).padStart(3)}/${String(row.applicationsTotal).padEnd(4)} ${row.displayName.slice(0, 18)}`);
     const first=llm.timeline[0]?.date??'',last=llm.timeline.at(-1)?.date??'';
-    const charts=[`токены   ${sparkline(llm.timeline.map(day=>day.tokens))}`,
-      `деньги   ${sparkline(llm.timeline.map(day=>day.costUsd))}`,
-      `оценки   ${sparkline(llm.timeline.map(day=>day.scores))}`,
-      `отклики  ${sparkline(llm.timeline.map(day=>day.applications))}`].join('\n');
+    const chart=(label:string,values:number[])=>`${label}\n${brailleLine(values).join('\n')}`;
+    const charts=[chart('токены',llm.timeline.map(day=>day.tokens)),chart('деньги',llm.timeline.map(day=>day.costUsd)),
+      chart('оценки',llm.timeline.map(day=>day.scores)),chart('отклики',llm.timeline.map(day=>day.applications))].join('\n');
     await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n`+
       `LLM-вызовы: <b>${llm.turns24h} / ${llm.turnsTotal}</b>\n`+
       `Токены: <b>${compactNumber(llm.tokens24h)} / ${compactNumber(llm.tokensTotal)}</b>\n`+
