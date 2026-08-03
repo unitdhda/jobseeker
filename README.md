@@ -95,6 +95,7 @@ Readiness endpoints:
 | `AI_MODEL` | Profile and application model |
 | `AI_SCORING_MODEL` | Batched vacancy-scoring model |
 | `SCRAPE_CONCURRENCY` | Bounded concurrent user/platform scrape operations; HH remains serialized |
+| `HH_OPERATION_TIMEOUT_SECONDS` | Hard deadline for each serialized HH browser search |
 | `OPENAI_CODEX_AUTH_FILE` | Local encrypted OAuth source document |
 | `RUNTIME_STATE_ENCRYPTION_KEY` | AES-256-GCM key for cloud OAuth/browser state |
 | `HH_BROWSER_DATA_PATH` | HH browser profile directory |

@@ -215,13 +215,24 @@ async function openContext(): Promise<BrowserContext> {
   });
 }
 
+async function closeContextBounded(context:BrowserContext):Promise<void>{
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  try{await Promise.race([context.close(),new Promise<void>(resolve=>{timer=setTimeout(resolve,5_000);})]);}
+  finally{if(timer)clearTimeout(timer);}
+}
+
 export async function scrapeHh(userId: string, profile: HhSearchProfile): Promise<{ seen: number; discovered: number }> {
   const context = await openContext();
-  const page = context.pages()[0] ?? await context.newPage();
-  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
-  const pagesPerSearch=Math.max(1,Math.min(config.hhMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
-  try {
+  const timeoutMessage=`HH browser search exceeded ${config.hhOperationTimeoutSeconds} seconds.`;
+  let deadline:ReturnType<typeof setTimeout>|undefined;
+  const timedOut=new Promise<never>((_resolve,reject)=>{deadline=setTimeout(()=>{
+    void context.close({reason:timeoutMessage}).catch(()=>undefined);reject(new Error(timeoutMessage));
+  },config.hhOperationTimeoutSeconds*1_000);});
+  const operation=(async()=>{
+    const page = context.pages()[0] ?? await context.newPage();
+    const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+    const pagesPerSearch=Math.max(1,Math.min(config.hhMaxPages,
+      Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
     searches: for (const search of profile.searches) {
       for (let pageNumber = 0; pageNumber < pagesPerSearch; pageNumber++) {
         const safeSearchUrl = sourceUrl('hh', hhSearchUrl(search, pageNumber)); await assertPublicAddress(safeSearchUrl);
@@ -245,9 +256,9 @@ export async function scrapeHh(userId: string, profile: HhSearchProfile): Promis
       }
     }
     return collector.result();
-  } finally {
-    await context.close();
-  }
+  })();
+  try{return await Promise.race([operation,timedOut]);}
+  finally{if(deadline)clearTimeout(deadline);await closeContextBounded(context);}
 }
 
 export async function normalizeHhCandidates(candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | Error>> {

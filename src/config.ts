@@ -70,6 +70,7 @@ export const config = {
   playwrightHeadless: booleanEnv('PLAYWRIGHT_HEADLESS', true),
   searchPlatforms: platformEnv(),
   hhMaxPages: integerEnv('HH_MAX_PAGES', 5, 1, 20),
+  hhOperationTimeoutSeconds: integerEnv('HH_OPERATION_TIMEOUT_SECONDS', 180, 30, 1_800),
   additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 5, 1, 20),
   hireHiMaxPages: integerEnv('HIREHI_MAX_PAGES', 5, 1, 20),
   searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),

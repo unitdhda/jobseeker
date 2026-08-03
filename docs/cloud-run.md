@@ -11,8 +11,8 @@ The cloud deployment uses separate web and worker images in five bounded roles:
 | Schedule | Cloud Scheduler | one paused schedule invoking only the cycle job |
 
 Cloud Tasks is limited to one concurrent and one dispatched request per second. The scrape cycle uses a PostgreSQL advisory lock
-and bounded user/platform concurrency; HH browser work remains serialized. The profile-repair job only fills missing or invalid
-profiles and has no schedule. Cloud Tasks provides delivery retries. These are hard workload bounds; a Google Cloud budget is only
+and bounded user/platform concurrency; HH browser work remains serialized and each HH search has a hard deadline. The
+profile-repair job only fills missing or invalid profiles and has no schedule. Cloud Tasks provides delivery retries. These are hard workload bounds; a Google Cloud budget is only
 an alert and is not a hard billing cutoff.
 
 ## Prerequisites
