@@ -16,7 +16,7 @@ import { readResponseBytes } from './vacancies/http.ts';
 import { errorMessage } from './observability.ts';
 import { claimTelegramSession, deleteTelegramSession, getTelegramSession, setTelegramSession } from './telegram-state.ts';
 import {
-  deliverySettingsStatus, digestSettingsStatus, normalizeUtcOffset, parseClockMinutes, removeDeliveryWindow,
+  deliverySettingsStatus, normalizeUtcOffset, parseClockMinutes, removeDeliveryWindow,
   updateDeliveryTimezone, updateDeliveryWindow, updateDigestTime,
 } from './vacancies/jobs.ts';
 
@@ -546,8 +546,7 @@ function configureTelegramBot(): Bot | null {
     await ctx.reply('Во сколько присылать ежедневную подборку? Отправьте время ЧЧ:ММ, например 09:30.');
   });
   instance.command('digest',async(ctx)=>{
-    await ctx.reply(`<b>Ежедневный дайджест</b>\n${escapeHtml(await digestSettingsStatus(String(ctx.from!.id)))}\n`+
-      `Диапазон оценки: ${config.digestMinScore}–${config.alertScore-1}`,{parse_mode:'HTML'});
+    await sendDailyDigest(String(ctx.from!.id));
   });
   instance.on('message:text', async (ctx, next) => {
     const userId = String(ctx.from.id); const setup = await getTelegramSession<WindowSetup>(userId, 'window-setup');

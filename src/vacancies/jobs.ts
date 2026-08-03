@@ -326,15 +326,6 @@ export async function updateDigestTime(userId: string, digest: string): Promise<
 export async function removeDeliveryWindow(userId: string): Promise<void> {
   await saveEffectiveSettings(userId, { startMinutes: 0, endMinutes: 0 });
 }
-export async function digestSettingsStatus(userId: string, date = new Date()): Promise<string> {
-  const configured = await getDeliverySettings(userId); const settings = await effectiveSettings(userId);
-  const timezone = offsetMinutes(settings.timezone) == null ? settings.timezone : `UTC${settings.timezone}`;
-  const lastParts = settings.lastDigestAt ? localParts(new Date(settings.lastDigestAt),settings.timezone) : null;
-  const last = lastParts ? `${lastParts.dateKey} ${timeText(lastParts.minutes)}` : 'ещё не отправлялся';
-  const due = await isDigestDue(userId,date);
-  return `Состояние: включён${configured?'':' (по умолчанию)'}\nВремя: ${timeText(settings.digestMinutes)} · ${timezone}\n`+
-    `Последняя отправка: ${last}\nСейчас: ${due?'готов к отправке':'ожидает времени или уже отправлен сегодня'}`;
-}
 
 async function sendAlerts(userId: string, now: Date): Promise<void> {
   if (!notifyHandler || !await isWithinDeliveryWindow(userId, now)) return;
