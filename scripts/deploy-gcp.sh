@@ -17,7 +17,7 @@ for file in .env .env.cloud fonts/Spectral-Regular.ttf fonts/Spectral-Bold.ttf \
   [ -f "$file" ] || { echo "$file is required." >&2; exit 1; }
 done
 plain_env() {
-  node --env-file=.env --env-file=.env.cloud -e "const value=process.env[process.argv[1]];if(!value)process.exit(2);process.stdout.write(value)" "$1"
+  bun --env-file=.env --env-file=.env.cloud -e "const value=process.env[process.argv[1]];if(!value)process.exit(2);process.stdout.write(value)" "$1"
 }
 SUPABASE_URL_VALUE="$(plain_env SUPABASE_URL)"
 SUPABASE_BUCKET_VALUE="$(plain_env SUPABASE_STORAGE_BUCKET)"

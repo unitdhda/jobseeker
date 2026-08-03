@@ -87,7 +87,7 @@ BILLING_ACCOUNT="${BILLING_ACCOUNT_NAME#billingAccounts/}"
 BILLING_CURRENCY="$(gcloud billing accounts describe "$BILLING_ACCOUNT" --format='value(currencyCode)')"
 BUDGET_NAME='Jobseeker monthly guardrail'
 BUDGET_EXISTS="$(gcloud billing budgets list --billing-account="$BILLING_ACCOUNT" --format=json | \
-  BUDGET_NAME="$BUDGET_NAME" node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(String(JSON.parse(s).some(x=>x.displayName===process.env.BUDGET_NAME))))")"
+  BUDGET_NAME="$BUDGET_NAME" bun -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(String(JSON.parse(s).some(x=>x.displayName===process.env.BUDGET_NAME))))")"
 if [ "$BUDGET_EXISTS" != true ]; then
   gcloud billing budgets create --billing-account="$BILLING_ACCOUNT" --display-name="$BUDGET_NAME" \
     --budget-amount="${GCP_MONTHLY_BUDGET_AMOUNT:-5}${BILLING_CURRENCY}" --filter-projects="projects/$GCP_PROJECT_ID" \

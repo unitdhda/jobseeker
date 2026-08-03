@@ -234,12 +234,11 @@ function command(): { modulePath: string; args: string[]; execArgv: string[] } {
       `--allow-fs-read=${resolve(root, 'dist')}`, `--allow-fs-read=${resolve(root, 'node_modules')}`,
     ] };
   }
-  const tsx = resolve(root, 'node_modules/tsx/dist/cli.mjs');
   const source = resolve(root, 'src/cv-worker.ts');
-  if (existsSync(tsx) && existsSync(source)) {
-    return { modulePath: tsx, args: [source], execArgv: [`--max-old-space-size=${parserMemoryMb}`] };
+  if (process.versions.bun && existsSync(source)) {
+    return { modulePath: source, args: [], execArgv: ['--no-env-file', `--max-old-space-size=${parserMemoryMb}`] };
   }
-  throw new Error('Isolated CV parser entry was not found. Run npm run build.');
+  throw new Error('Isolated CV parser entry was not found. Run bun run build.');
 }
 
 export function extractCvDocumentIsolated(filename: string, mediaType: string | undefined,
