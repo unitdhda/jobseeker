@@ -118,6 +118,7 @@ export interface ScrapeCycleResult {
   newVacancies: number;
   candidateQueue: Awaited<ReturnType<typeof processCandidateQueue>>;
   scoresAttempted: number;
+  scoresCompleted: number;
   llmUsage: LlmUsageReport;
 }
 
@@ -187,16 +188,17 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
             (phase,current,total)=>scoringProgress.report(user.userId,phase,current,total), config.userScoreLimitPerCycle)));
       } catch (error) {
         console.error(`Scoring allocation failed for user ${user.userId}: ${errorMessage(error)}`);
-        return 0;
+        return {attempted:0,completed:0};
       } finally { scoringProgress.done(user.userId); }
     });
-    const attempted = scoreCounts.reduce((sum, count) => sum + count, 0);
+    const attempted = scoreCounts.reduce((sum, result) => sum + result.attempted, 0);
+    const scoresCompleted = scoreCounts.reduce((sum, result) => sum + result.completed, 0);
     const totals = Object.values(platforms).reduce((sum, platform) => ({
       searches: sum.searches + platform.searches, seen: sum.seen + platform.seen,
       discovered: sum.discovered + platform.discovered, newVacancies: sum.newVacancies + platform.newVacancies,
     }), { searches: 0, seen: 0, discovered: 0, newVacancies: 0 });
     const result = { platforms, users: users.length, ...totals, candidateQueue: queue, scoresAttempted: attempted,
-      llmUsage: llmUsageSince(usageBefore) };
+      scoresCompleted, llmUsage: llmUsageSince(usageBefore) };
     trace('cycle.completed', result);
     console.info(`LLM cycle usage ${JSON.stringify(result.llmUsage)}`);
     console.info('Vacancy cycle complete', result);

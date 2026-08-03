@@ -179,12 +179,13 @@ async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
   }
 }
 
+export interface ScorePendingResult{attempted:number;completed:number}
 export async function scorePendingVacancies(
   userId: string,
   afterScore?: (vacancyId: number) => Promise<void>,
   progress?: (phase: 'filtering' | 'scoring', current: number, total: number) => void,
   scoreLimit = config.userScoreLimitPerCycle,
-): Promise<number> {
+): Promise<ScorePendingResult> {
   let vacancies: Vacancy[];
   let calibrationContext: string | undefined;
   if (config.prefilterEnabled) {
@@ -238,16 +239,16 @@ export async function scorePendingVacancies(
     poolActive: scoringPool.activeCount,
     poolQueued: scoringPool.queuedCount,
   });
-  let completed = 0;
+  let progressed = 0;let completed=0;
   await Promise.all(batches.map((batch) => scoringPool.run(async () => {
     try {
-      await scoreBatch(userId, batch);
+      await scoreBatch(userId, batch);completed+=batch.length;
       for (const vacancy of batch) await afterScore?.(vacancy.id);
     } catch (error) {
       console.error(`Failed to score vacancy batch [${batch.map((vacancy) => vacancy.id).join(',')}]: ${errorMessage(error)}`);
     } finally {
-      completed += batch.length;
-      progress?.('scoring', completed, vacancies.length);
+      progressed += batch.length;
+      progress?.('scoring', progressed, vacancies.length);
     }
   })));
   trace('scoring.parallel.completed', { vacancies: vacancies.length, batches: batches.length });
@@ -255,7 +256,7 @@ export async function scorePendingVacancies(
     trace('prefilter.calibration', await prefilterCalibration(userId, calibrationContext, config.alertScore,
       config.prefilterCalibrationMinLabels));
   }
-  return vacancies.length;
+  return {attempted:vacancies.length,completed};
 }
 
 export async function tailorApplication(userId: string, vacancyId: number): Promise<GeneratedApplication> {
