@@ -179,10 +179,22 @@ export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy):
   });
   await markAlerted(userId, vacancy.id);
 }
+function telegramRetryAfter(error:unknown):number|null{
+  const value=error as {error_code?:unknown;parameters?:{retry_after?:unknown};message?:unknown};
+  if(value?.error_code!==429&&!/429: Too Many Requests/i.test(String(value?.message??error)))return null;
+  const seconds=Number(value?.parameters?.retry_after);return Number.isFinite(seconds)&&seconds>0?seconds:1;
+}
+
 export async function sendPendingAlerts(userId: string): Promise<number> {
   let sent = 0;
-  for (const vacancy of await unsentHighScoreVacancies(userId, config.alertScore)) {
-    await sendHighScoreAlert(userId, vacancy); sent++;
+  const vacancies=await unsentHighScoreVacancies(userId, config.alertScore);
+  for (const vacancy of vacancies) {
+    try{await sendHighScoreAlert(userId, vacancy);sent++;}
+    catch(error){
+      const retryAfter=telegramRetryAfter(error);if(retryAfter==null)throw error;
+      console.warn(`Telegram rate limit deferred alerts for user ${userId}; retry after ${retryAfter} seconds.`);break;
+    }
+    if(sent<vacancies.length)await new Promise(resolve=>setTimeout(resolve,1_100));
   }
   return sent;
 }

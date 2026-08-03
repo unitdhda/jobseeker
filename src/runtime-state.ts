@@ -158,7 +158,10 @@ export async function persistHhBrowserState(): Promise<boolean> {
   const work = await mkdtemp(join(tmpdir(), 'jobseeker-hh-save-'));
   try {
     const archivePath = join(work, 'state.tar.gz');
-    await execute('tar', ['-czf', archivePath, '-C', dirname(config.hhBrowserDataPath), archiveRoot]);
+    await execute('tar', ['-czf', archivePath,
+      '--exclude=*/Cache','--exclude=*/Code Cache','--exclude=*/GPUCache','--exclude=*/DawnCache',
+      '--exclude=*/GrShaderCache','--exclude=*/ShaderCache','--exclude=*/Crashpad','--exclude=*/BrowserMetrics',
+      '-C', dirname(config.hhBrowserDataPath), archiveRoot]);
     const archive = await readFile(archivePath);
     if (archive.byteLength > maximumArchiveBytes) throw new Error('HH browser-state archive exceeds its encrypted storage limit.');
     await putEncryptedRuntimeState(objectPath, archive);

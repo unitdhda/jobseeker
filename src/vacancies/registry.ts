@@ -27,6 +27,7 @@ export interface VacancyPlatform<S extends BaseSchema<unknown, unknown, BaseIssu
 }
 
 import * as v from 'valibot';
+import { config } from '../config.ts';
 import { AdaptiveTaskPool } from '../concurrency.ts';
 import { normalizeAdditionalCandidate, scrapeHabr, scrapeRabota } from './additional.ts';
 import { normalizeHhCandidates, scrapeHh } from './hh.ts';
@@ -87,11 +88,21 @@ export function getSearchPlatform(id: string): AnyVacancyPlatform {
   return platform;
 }
 
+export function rotatedSearches<T>(searches:readonly T[],platformId:string,userId:string,now=Date.now()):T[]{
+  if(searches.length<=config.searchQueriesPerCycle)return [...searches];
+  let seed=0;for(const character of `${platformId}:${userId}`)seed=(seed*31+character.charCodeAt(0))>>>0;
+  const bucket=Math.floor(now/(config.searchRotationMinutes*60_000));
+  const offset=(seed+bucket)%searches.length;
+  return Array.from({length:Math.min(config.searchQueriesPerCycle,searches.length)},
+    (_unused,index)=>searches[(offset+index)%searches.length]);
+}
+
 export async function discoverPlatformVacancies(id: string, userId: string, profile: unknown): Promise<PlatformDiscoveryResult> {
   const platform = getSearchPlatform(id);
   const parsed = v.safeParse(platform.schema, profile);
   if (!parsed.success) throw new Error(`${platform.name} search profile is invalid.`);
-  return platform.discover(userId, parsed.output);
+  const output=parsed.output as {searches:unknown[]};
+  return platform.discover(userId,{...output,searches:rotatedSearches(output.searches,id,userId)});
 }
 
 export function normalizePlatformCandidates(source: string,

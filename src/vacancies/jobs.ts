@@ -70,6 +70,7 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
     selected: selected.map((candidate) => ({ source: candidate.source, sourceId: candidate.sourceId,
       title: candidate.title, score: candidate.combinedScore })) });
   const normalizationResults = new Map<string, VacancyInput | null | Error>();
+  progress?.('normalization', 0, selected.length);
   for (const source of new Set(selected.map((candidate) => candidate.source))) {
     const candidates = selected.filter((candidate) => candidate.source === source);
     const results = await normalizePlatformCandidates(source,candidates);
@@ -77,7 +78,6 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
   }
   let normalized = 0; let failed = 0; let closed = 0;
   const bySource: Record<string, number> = {};
-  progress?.('normalization', 0, selected.length);
   for (const [index, candidate] of selected.entries()) {
     try {
       const result = normalizationResults.get(`${candidate.source}:${candidate.sourceId}`);
@@ -342,6 +342,18 @@ async function sendDigest(userId: string, now: Date): Promise<void> {
   catch (error) { console.error(`Digest delivery failed for user ${userId}: ${errorMessage(error)}`); }
 }
 
+export async function deliverDueNotifications(notify:UserHandler,digest:UserHandler,now=new Date()):Promise<void>{
+  const users=await approvedUsers();
+  await mapConcurrent(users,config.deliveryConcurrency,async user=>{
+    try{if(await isWithinDeliveryWindow(user.userId,now))await notify(user.userId);}
+    catch(error){console.error(`Alert delivery failed for user ${user.userId}: ${errorMessage(error)}`);}
+  });
+  await mapConcurrent(users,config.deliveryConcurrency,async user=>{
+    try{if(await isDigestDue(user.userId,now))await digest(user.userId);}
+    catch(error){console.error(`Digest delivery failed for user ${user.userId}: ${errorMessage(error)}`);}
+  });
+}
+
 export async function runScheduledCycle(): Promise<void> {
   if (scheduledCycleRunning) return;
   if (!scrapeHandler || !notifyHandler || !digestHandler) throw new Error('Cycle schedule has not been initialized.');
@@ -349,10 +361,7 @@ export async function runScheduledCycle(): Promise<void> {
   try {
     try { await scrapeHandler(); }
     catch (error) { console.error(`Scrape cycle failed: ${errorMessage(error)}`); }
-    const now = new Date();
-    const users = await approvedUsers();
-    await mapConcurrent(users, config.deliveryConcurrency, (user) => sendAlerts(user.userId, now));
-    await mapConcurrent(users, config.deliveryConcurrency, (user) => sendDigest(user.userId, now));
+    await deliverDueNotifications(notifyHandler,digestHandler);
   } finally { scheduledCycleRunning = false; }
 }
 

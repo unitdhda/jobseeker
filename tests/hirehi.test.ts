@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
 import { hireHiCandidateUrl, hireHiListingUrls, hireHiPlatform, hireHiSearchProfileSchema, hireHiSearchUrl } from '../src/vacancies/hirehi.ts';
-import { getSearchPlatform, searchPlatformIds } from '../src/vacancies/registry.ts';
+import { getSearchPlatform, rotatedSearches, searchPlatformIds } from '../src/vacancies/registry.ts';
 
 test('HireHi adapter validates constrained SEO search profiles',()=>{
   const profile={version:1 as const,searches:[{name:'Frontend',rationale:'CV evidence',specialization:'frontend' as const,facet:'all' as const}]};
@@ -36,6 +36,14 @@ test('HireHi uses a canonical listing URL and retains the legacy fallback',()=>{
   const canonical=new Map([['71268','https://hirehi.ru/development/frontend-razrabotchik-71268']]);
   assert.equal(hireHiCandidateUrl(71268,'development',canonical),canonical.get('71268'));
   assert.equal(hireHiCandidateUrl(71247,'development',canonical),'https://hirehi.ru/development/job-71247');
+});
+
+test('search variants rotate once per cycle without duplication',()=>{
+  const searches=['a','b','c'];
+  const interval=30*60_000;
+  const selected=[0,1,2].map(bucket=>rotatedSearches(searches,'hh','user',bucket*interval)[0]);
+  assert.equal(new Set(selected).size,3);
+  assert.ok(selected.every(search=>searches.includes(search)));
 });
 
 test('HireHi is registered through the common vacancy-platform interface',()=>{

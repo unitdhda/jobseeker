@@ -125,7 +125,7 @@ export async function normalizeAdditionalCandidate(candidate: VacancyCandidate):
   if (candidate.source === 'habr') {
     const page = await fetchSourceHtml('habr', candidate.url);
     const posting = jobPostings(page.html)[0];
-    if (!posting) throw new Error(`Habr vacancy ${candidate.sourceId} has no JobPosting JSON-LD`);
+    if (!posting) return null;
     return structuredVacancy('habr', candidate.sourceId, page.url, candidate.searchName, posting);
   }
   if (candidate.source === 'rabota') {

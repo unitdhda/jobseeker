@@ -196,9 +196,11 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
   return { ...base, contentHash: createHash('sha256').update(JSON.stringify(base)).digest('hex') };
 }
 
-async function openContext(): Promise<BrowserContext> {
+let sharedContext:BrowserContext|undefined;
+
+async function launchContext(): Promise<BrowserContext> {
   const browserData = config.hhBrowserDataPath;
-  return chromium.launchPersistentContext(browserData, {
+  const context=await chromium.launchPersistentContext(browserData, {
     executablePath: config.playwrightChromiumPath,
     headless: config.playwrightHeadless,
     locale: 'ru-RU',
@@ -212,7 +214,21 @@ async function openContext(): Promise<BrowserContext> {
       TMPDIR: '/tmp',
     },
     args: ['--disable-dev-shm-usage'],
+    serviceWorkers:'block',
   });
+  await context.route('**/*',route=>
+    ['image','media','font'].includes(route.request().resourceType())?route.abort():route.continue());
+  return context;
+}
+
+async function openContext():Promise<BrowserContext>{
+  if(sharedContext)return sharedContext;
+  let lastError:unknown;
+  for(let attempt=1;attempt<=3;attempt++){
+    try{return sharedContext=await launchContext();}
+    catch(error){lastError=error;if(attempt<3)await new Promise(resolve=>setTimeout(resolve,2_000*attempt));}
+  }
+  throw lastError;
 }
 
 async function closeContextBounded(context:BrowserContext):Promise<void>{
@@ -221,16 +237,32 @@ async function closeContextBounded(context:BrowserContext):Promise<void>{
   finally{if(timer)clearTimeout(timer);}
 }
 
-export async function scrapeHh(userId: string, profile: HhSearchProfile): Promise<{ seen: number; discovered: number }> {
-  const context = await openContext();
-  const timeoutMessage=`HH browser search exceeded ${config.hhOperationTimeoutSeconds} seconds.`;
+export async function closeHhBrowser():Promise<void>{
+  const context=sharedContext;sharedContext=undefined;
+  if(context)await closeContextBounded(context);
+}
+
+async function withHhDeadline<T>(operationName:string,operation:(context:BrowserContext)=>Promise<T>):Promise<T>{
+  const context=await openContext(),timeoutMessage=
+    `HH browser ${operationName} exceeded ${config.hhOperationTimeoutSeconds} seconds.`;
   let deadline:ReturnType<typeof setTimeout>|undefined;
   const timedOut=new Promise<never>((_resolve,reject)=>{deadline=setTimeout(()=>{
+    if(sharedContext===context)sharedContext=undefined;
     void context.close({reason:timeoutMessage}).catch(()=>undefined);reject(new Error(timeoutMessage));
   },config.hhOperationTimeoutSeconds*1_000);});
-  const operation=(async()=>{
+  try{return await Promise.race([operation(context),timedOut]);}
+  catch(error){
+    if(/closed|crashed|disconnected/i.test(error instanceof Error?error.message:String(error))&&sharedContext===context){
+      sharedContext=undefined;await closeContextBounded(context);
+    }
+    throw error;
+  }finally{if(deadline)clearTimeout(deadline);}
+}
+
+export async function scrapeHh(userId: string, profile: HhSearchProfile): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  try{await withHhDeadline('search',async context=>{
     const page = context.pages()[0] ?? await context.newPage();
-    const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
     const pagesPerSearch=Math.max(1,Math.min(config.hhMaxPages,
       Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
     searches: for (const search of profile.searches) {
@@ -255,24 +287,30 @@ export async function scrapeHh(userId: string, profile: HhSearchProfile): Promis
         await pause();
       }
     }
-    return collector.result();
-  })();
-  try{return await Promise.race([operation,timedOut]);}
-  finally{if(deadline)clearTimeout(deadline);await closeContextBounded(context);}
+  });}
+  catch(error){
+    if(!/HH browser search exceeded/i.test(error instanceof Error?error.message:String(error)))throw error;
+    console.warn(`HH browser search reached its deadline; retaining ${collector.result().seen} collected listings.`);
+  }
+  return collector.result();
 }
 
 export async function normalizeHhCandidates(candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | Error>> {
   const results = new Map<string, VacancyInput | Error>();
   if (!candidates.length) return results;
-  const context = await openContext();
-  const page = context.pages()[0] ?? await context.newPage();
-  try {
-    for (const candidate of candidates) {
-      try {
-        results.set(candidate.sourceId, await stripVacancy(page, candidate.url, candidate.searchName));
-        await pause(500, 1_200);
-      } catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
-    }
-  } finally { await context.close(); }
+  try{
+    await withHhDeadline('normalization',async context=>{
+      const page = context.pages()[0] ?? await context.newPage();
+      for (const candidate of candidates) {
+        try {
+          results.set(candidate.sourceId, await stripVacancy(page, candidate.url, candidate.searchName));
+          await pause(500, 1_200);
+        } catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
+      }
+    });
+  }catch(error){
+    const failure=error instanceof Error?error:new Error(String(error));
+    for(const candidate of candidates)if(!results.has(candidate.sourceId))results.set(candidate.sourceId,failure);
+  }
   return results;
 }
