@@ -80,11 +80,12 @@ function placeLabel(target:string[],center:number,label:string):void{
   const start=Math.max(0,Math.min(target.length-label.length,center-Math.floor(label.length/2)));
   for(let index=0;index<label.length;index++)target[start+index]=label[index]!;
 }
-function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'●'|'○'):void{
+function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'●'|'○',foreground=false):void{
   const rows=values.map(value=>maximum<=0?usagePlotHeight-1:
     Math.round((1-Math.max(0,Math.min(value/maximum,1)))*(usagePlotHeight-1)));
   const put=(row:number,column:number,symbol:string,force=false):void=>{
     const current=grid[row]![column]!;
+    if(foreground){grid[row]![column]=symbol;return;}
     if(force){if(current!=='●'||marker==='●')grid[row]![column]=symbol;return;}
     if(current===' '||('╭╮╯╰'.includes(symbol)&&current!=='●'&&current!=='○'))grid[row]![column]=symbol;
   };
@@ -109,7 +110,7 @@ export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
   const tokenMaximum=tokenStep*usagePlotHeight,moneyMaximum=moneyStep*usagePlotHeight;
   const grid=Array.from({length:usagePlotHeight},()=>Array<string>(usagePlotWidth).fill(' '));
   drawUsageSeries(grid,hours.map(hour=>hour.tokens),tokenMaximum,'●');
-  drawUsageSeries(grid,hours.map(hour=>hour.costUsd),moneyMaximum,'○');
+  drawUsageSeries(grid,hours.map(hour=>hour.costUsd),moneyMaximum,'○',true);
   const leftLabels=Array.from({length:usagePlotHeight},(_,row)=>axisInteger(tokenStep*(usagePlotHeight-row)));
   const leftWidth=Math.max(1,...leftLabels.map(label=>label.length));
   const lines=[`● Токены — левая ось             ○ Деньги — правая ось`,

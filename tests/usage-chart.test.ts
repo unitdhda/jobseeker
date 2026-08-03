@@ -21,6 +21,14 @@ test('usage timeline renders a fixed dual-axis rectangle with four-hour markers'
   assert.match(chart,/12\s+16\s+20\s+00\s+04\s+08\s+12/u);
 });
 
+test('money series stays in front when both lines overlap',()=>{
+  const overlapping=hours.map(hour=>({...hour,costUsd:0.12}));
+  const chart=usageTimelineChart(overlapping,'+00:00');
+  const plot=chart.split('\n').slice(3,15).join('\n');
+  assert.equal((plot.match(/○/gu)??[]).length,7);
+  assert.equal((plot.match(/●/gu)??[]).length,0);
+});
+
 test('usage timeline connects steep hourly slopes with verticals and corners',()=>{
   const steep=hours.map((hour,index)=>({...hour,tokens:index===12?12_000:0}));
   const chart=usageTimelineChart(steep,'+00:00');
