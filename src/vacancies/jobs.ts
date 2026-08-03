@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import {
   approvedUsers, candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, getDeliverySettings, getSearchProfile,
-  markCandidateClosed, markCandidateFailed, markCandidateNormalized, markDigestRun, rankedCandidateQueueForUsers,
+  markCandidateClosed, markCandidateFailed, markCandidateNormalized, rankedCandidateQueueForUsers,
   saveCandidatePrefilter, saveDeliverySettings, upsertVacancy,
   type Vacancy, type VacancyCandidate, type VacancyInput,
 } from '../database.ts';
@@ -337,10 +337,8 @@ async function sendAlerts(userId: string, now: Date): Promise<void> {
 
 async function sendDigest(userId: string, now: Date): Promise<void> {
   if (!digestHandler || !await isDigestDue(userId, now)) return;
-  try {
-    await digestHandler(userId);
-    await markDigestRun(userId, now.toISOString());
-  } catch (error) { console.error(`Digest delivery failed for user ${userId}: ${errorMessage(error)}`); }
+  try { await digestHandler(userId); }
+  catch (error) { console.error(`Digest delivery failed for user ${userId}: ${errorMessage(error)}`); }
 }
 
 export async function runScheduledCycle(): Promise<void> {
