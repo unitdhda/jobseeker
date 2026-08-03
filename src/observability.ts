@@ -1,5 +1,5 @@
 const traceEnabled=process.env.TRACE_VERBOSE==='true';
-const sensitiveKey=/(?:^|_)(?:cv|cvtext|cvdocument|document|body|profile|agentoutput|output|vacancy|description|coverletter|tailoredcvtext|text|query|queries|search|searches|localqueries|rationale)(?:$|_)/i;
+const sensitiveKey=/(?:^|_)(?:cv|cvtext|cvdocument|document|body|profile|agentoutput|output|vacancy|description|coverletter|tailoredcvtext|text|query|queries|search|searches|localqueries|rationale|url|user|userid|chat|chatid)(?:$|_)/i;
 const secretKey=/(token|authorization|api.?key|secret|password|credential|cookie)/i;
 
 function safe(value:unknown,key=''):unknown{

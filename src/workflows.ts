@@ -21,10 +21,11 @@ import { detectCvLanguage } from './cv.ts';
 
 const scoringPool = new AdaptiveTaskPool(config.scoreAgentConcurrencyMin, config.scoreAgentConcurrencyMax);
 const vacancyScoreSchema=v.object({vacancyId:v.pipe(v.number(),v.integer(),v.minValue(1)),score:v.pipe(v.number(),v.integer(),v.minValue(0),v.maxValue(100)),
-  primaryTrack:v.pipe(v.string(),v.minLength(1),v.maxLength(80)),summary:v.pipe(v.string(),v.minLength(5),v.maxLength(300)),
-  reasons:v.pipe(v.array(v.pipe(v.string(),v.minLength(2),v.maxLength(240))),v.maxLength(3)),
-  gaps:v.pipe(v.array(v.pipe(v.string(),v.minLength(2),v.maxLength(240))),v.maxLength(3)),hardRejection:v.boolean()});
-const scoringResultSchema=v.object({scores:v.pipe(v.array(vacancyScoreSchema),v.minLength(1),v.maxLength(20))});
+  primaryTrack:v.pipe(v.string(),v.minLength(1),v.maxLength(200)),summary:v.pipe(v.string(),v.minLength(5),v.maxLength(1_000)),
+  reasons:v.pipe(v.array(v.pipe(v.string(),v.minLength(2),v.maxLength(500))),v.maxLength(10)),
+  gaps:v.pipe(v.array(v.pipe(v.string(),v.minLength(2),v.maxLength(500))),v.maxLength(10)),hardRejection:v.boolean()});
+const vacancyScoresSchema=v.pipe(v.array(vacancyScoreSchema),v.minLength(1),v.maxLength(20));
+const scoringResultSchema=v.union([v.object({scores:vacancyScoresSchema}),vacancyScoresSchema]);
 const applicationSchema=v.object({tailoredCvText:v.pipe(v.string(),v.minLength(500),v.maxLength(30_000)),
   coverLetter:v.pipe(v.string(),v.minLength(80),v.maxLength(3_500))});
 
@@ -132,13 +133,18 @@ async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provid
     system:`Score each CV-vacancy match independently. Use no fixed occupation taxonomy and never score keyword overlap without
 role compatibility. Rubric: must-have skills 40, seniority/years 20, responsibilities 15, domain 10, location/work format 10,
 compensation 5; missing salary is neutral. Penalize underqualification and substantial overqualification. An explicit hard
-blocker sets hardRejection=true and caps score at 49. Return exactly one result for each vacancyId.`,
+blocker sets hardRejection=true and caps score at 49. Return exactly one result for each vacancyId, at most three reasons and
+at most three gaps. The JSON must be either
+{"scores":[{"vacancyId":1,"score":0,"primaryTrack":"...","summary":"...","reasons":[],"gaps":[],"hardRejection":false}]}
+or the same scores array directly. Use these exact field names and no additional wrapper.`, 
     prompt:`AUTHORITATIVE CV:\n${cv.cvText}\n\nVACANCIES:\n${JSON.stringify(contexts)}`});
-  const expected=new Set(vacancies.map(vacancy=>vacancy.id)),received=new Set(result.scores.map(score=>score.vacancyId));
-  if(result.scores.length!==expected.size||received.size!==expected.size||[...expected].some(id=>!received.has(id)))
+  const scores=Array.isArray(result)?result:result.scores;
+  const expected=new Set(vacancies.map(vacancy=>vacancy.id)),received=new Set(scores.map(score=>score.vacancyId));
+  if(scores.length!==expected.size||received.size!==expected.size||[...expected].some(id=>!received.has(id)))
     throw new Error('AI did not return exactly one score per vacancy.');
-  for(const score of result.scores){if(score.hardRejection&&score.score>49)throw new Error(`Hard-rejected vacancy ${score.vacancyId} scored above 49.`);
-    await saveScore(userId,score.vacancyId,score.score,score.primaryTrack,score.summary,score.reasons,score.gaps,score.hardRejection);}
+  for(const score of scores){if(score.hardRejection&&score.score>49)throw new Error(`Hard-rejected vacancy ${score.vacancyId} scored above 49.`);
+    await saveScore(userId,score.vacancyId,score.score,score.primaryTrack.slice(0,80),score.summary.slice(0,300),
+      score.reasons.slice(0,3).map(reason=>reason.slice(0,240)),score.gaps.slice(0,3).map(gap=>gap.slice(0,240)),score.hardRejection);}
 }
 
 async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {

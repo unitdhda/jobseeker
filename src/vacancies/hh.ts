@@ -219,9 +219,11 @@ export async function scrapeHh(userId: string, profile: HhSearchProfile): Promis
   const context = await openContext();
   const page = context.pages()[0] ?? await context.newPage();
   const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  const pagesPerSearch=Math.max(1,Math.min(config.hhMaxPages,
+    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
   try {
     searches: for (const search of profile.searches) {
-      for (let pageNumber = 0; pageNumber < config.hhMaxPages; pageNumber++) {
+      for (let pageNumber = 0; pageNumber < pagesPerSearch; pageNumber++) {
         const safeSearchUrl = sourceUrl('hh', hhSearchUrl(search, pageNumber)); await assertPublicAddress(safeSearchUrl);
         const searchUrl = safeSearchUrl.toString();
         trace('scrape.search.request', { platform: 'hh', search: search.name, page: pageNumber + 1, url: searchUrl });

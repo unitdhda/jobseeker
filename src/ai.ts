@@ -26,9 +26,11 @@ export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,
   }]},{reasoning:options.thinking==='off'?undefined:options.thinking,maxRetries:2,maxRetryDelayMs:60_000});
   await recordLlmUsage(options.userId,options.agent,options.model,response.usage);
   if(response.stopReason==='error'||response.stopReason==='aborted')throw new Error(response.errorMessage??'AI request failed.');
-  const result=v.safeParse(options.schema,jsonText(contentText(response.content)));
+  const parsed=jsonText(contentText(response.content));const result=v.safeParse(options.schema,parsed);
   if(!result.success){const issues=result.issues.slice(0,8).map(issue=>`${v.getDotPath(issue)??'(root)'}: ${issue.message}`);
-    throw new Error(`AI returned invalid ${options.agent} JSON: ${issues.join('; ')}`);}
+    const shape=Array.isArray(parsed)?`array(${parsed.length})`:parsed&&typeof parsed==='object'
+      ?`object keys=${Object.keys(parsed).slice(0,12).join(',')}`:typeof parsed;
+    throw new Error(`AI returned invalid ${options.agent} JSON (${shape}): ${issues.join('; ')}`);}
   return result.output;
 }
 
