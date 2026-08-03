@@ -121,6 +121,16 @@ export interface ScrapeCycleResult {
   llmUsage: LlmUsageReport;
 }
 
+async function retryTransientPostgres<T>(label:string,operation:()=>Promise<T>):Promise<T>{
+  for(let attempt=0;;attempt++){
+    try{return await operation();}catch(error){
+      if(attempt>=2||!transientPostgresError(error))throw error;
+      console.warn(`${label} hit a transient PostgreSQL failure; retrying (${attempt+1}/2).`);
+      await new Promise(resolve=>setTimeout(resolve,1_000*2**attempt));
+    }
+  }
+}
+
 function addPlatformResult(target: Record<string, PlatformScrapeResult>, platformId: string,
   result: Omit<PlatformScrapeResult, 'newVacancies'>): void {
   const current = target[platformId] ?? { searches: 0, seen: 0, discovered: 0, newVacancies: 0 };
@@ -139,6 +149,8 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
     trace('cycle.start', { users: users.map((user) => user.userId), platforms: config.searchPlatforms,
       scoreLimitPerUser: config.userScoreLimitPerCycle });
     const platforms: Record<string, PlatformScrapeResult> = {};
+    const scrapeTotal=users.length*config.searchPlatforms.length;let scrapeCompleted=0;
+    cycleStatus?.set('scraping',0,scrapeTotal);
     await mapConcurrent(users, config.userWorkflowConcurrency, async (user) => {
       try {
         await runUserTask(user.userId, async () => {
@@ -151,6 +163,9 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
               addPlatformResult(platforms, platformId, await discoverPlatformVacancies(platformId,user.userId,profile));
             } catch (error) {
               console.error(`Failed to scrape ${platformId} for user ${user.userId}: ${errorMessage(error)}`);
+            } finally {
+              scrapeCompleted++;cycleStatus?.set('scraping',scrapeCompleted,scrapeTotal);
+              console.info(`Scrape progress ${scrapeCompleted}/${scrapeTotal} (${platformId})`);
             }
           }
         });
@@ -165,8 +180,9 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
     }
     const scoreCounts = await mapConcurrent(users, config.userWorkflowConcurrency, async (user) => {
       try {
-        return await runUserTask(user.userId, () => scorePendingVacancies(user.userId, undefined,
-          (phase, current, total) => cycleStatus?.set(phase, current, total), config.userScoreLimitPerCycle));
+        return await retryTransientPostgres('Scoring allocation',()=>runUserTask(user.userId,
+          () => scorePendingVacancies(user.userId, undefined,
+            (phase, current, total) => cycleStatus?.set(phase, current, total), config.userScoreLimitPerCycle)));
       } catch (error) {
         console.error(`Scoring allocation failed for user ${user.userId}: ${errorMessage(error)}`);
         return 0;
@@ -361,7 +377,7 @@ export function stopSchedules(): void {
   cycleJob?.stop();
 }
 
-import { getPostgresPool } from '../postgres.ts';
+import { getPostgresPool, transientPostgresError } from '../postgres.ts';
 
 export async function runSingletonScrapeCycle(runUserTask?: UserTaskRunner): Promise<ScrapeCycleResult | null> {
   const client = await getPostgresPool().connect();

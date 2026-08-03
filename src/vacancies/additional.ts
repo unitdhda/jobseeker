@@ -52,8 +52,10 @@ function pause(): Promise<void> {
 
 export async function scrapeHabr(userId: string, profile: TextSearchProfile): Promise<{ seen: number; discovered: number }> {
   const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  const pagesPerSearch=Math.max(1,Math.min(config.additionalMaxPages,
+    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
   searches: for (const search of profile.searches) {
-    for (let page = 1; page <= config.additionalMaxPages; page++) {
+    for (let page = 1; page <= pagesPerSearch; page++) {
       const url = new URL('/vacancies', 'https://career.habr.com');
       url.searchParams.set('q', search.query);
       url.searchParams.set('type', 'all');
@@ -87,8 +89,10 @@ export async function scrapeHabr(userId: string, profile: TextSearchProfile): Pr
 
 export async function scrapeRabota(userId: string, profile: TextSearchProfile): Promise<{ seen: number; discovered: number }> {
   const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+  const pagesPerSearch=Math.max(1,Math.min(config.additionalMaxPages,
+    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
   searches: for (const search of profile.searches) {
-    for (let page = 1; page <= config.additionalMaxPages; page++) {
+    for (let page = 1; page <= pagesPerSearch; page++) {
       try {
         const url = new URL(`/vacancy/${encodeURIComponent(search.query)}/`, 'https://www.rabota.ru');
         if (page > 1) url.searchParams.set('page', String(page));

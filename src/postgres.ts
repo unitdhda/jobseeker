@@ -32,7 +32,7 @@ function errorText(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return `${errorCode(error)}: ${message.replace(/\s+/g,' ').slice(0,180)}`;
 }
-function transientConnectionError(error: unknown): boolean {
+export function transientPostgresError(error: unknown): boolean {
   const code=errorCode(error);
   if(['ECONNRESET','ECONNREFUSED','ETIMEDOUT','ENOTFOUND','EAI_AGAIN','57P01','57P02','57P03','08000','08001','08003','08004','08006','08007','08P01'].includes(code))return true;
   return /connection terminated|connection timeout|server closed the connection|socket hang up/i.test(error instanceof Error?error.message:String(error));
@@ -67,7 +67,7 @@ export async function postgresQuery<T extends QueryResultRow = QueryResultRow>(t
   for(let attempt=0;attempt<3;attempt++){
     try{return (await getPostgresPool().query<T>(text, params)).rows;}
     catch(error){
-      lastError=error;if(!transientConnectionError(error)||attempt===2)throw error;
+      lastError=error;if(!transientPostgresError(error)||attempt===2)throw error;
       console.warn(`Retrying PostgreSQL query after connection failure (${attempt+1}/2): ${errorText(error)}`);
       await wait(300*2**attempt);
     }
