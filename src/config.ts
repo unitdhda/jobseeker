@@ -92,6 +92,7 @@ export const config = {
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
   scoreBatchSize: integerEnv('SCORE_BATCH_SIZE', 3, 1, 20),
   scoringBatchTimeoutSeconds: integerEnv('SCORING_BATCH_TIMEOUT_SECONDS', 180, 30, 1_800),
+  claudeCliTimeoutSeconds: integerEnv('CLAUDE_CLI_TIMEOUT_SECONDS', 300, 30, 1_800),
   scoringBatchMaxAttempts: integerEnv('SCORING_BATCH_MAX_ATTEMPTS', 3, 1, 5),
   userDailyApplicationLimit: integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100),
   userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 7, 1, 100),

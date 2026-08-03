@@ -128,7 +128,11 @@ export async function restoreHhBrowserState(): Promise<boolean> {
   const archive = await getEncryptedRuntimeState(objectPath);
   if (!archive) return false;
   if (archive.byteLength > maximumArchiveBytes) throw new Error('Encrypted HH browser-state archive exceeds its limit.');
-  const work = await mkdtemp(join(tmpdir(), 'jobseeker-hh-restore-'));
+  // Staged beside the target rather than in the system temp dir: the final step is a rename, and when /tmp is a
+  // separate mount (tmpfs in a container) a cross-device rename fails with EXDEV.
+  const parent = dirname(config.hhBrowserDataPath);
+  await mkdir(parent, { recursive: true, mode: 0o700 });
+  const work = await mkdtemp(join(parent, '.hh-restore-'));
   try {
     const archivePath = join(work, 'state.tar.gz');
     await writeFile(archivePath, archive, { mode: 0o600 });
@@ -141,7 +145,6 @@ export async function restoreHhBrowserState(): Promise<boolean> {
     await execute('tar', ['-xzf', archivePath, '-C', work]);
     const extracted = join(work, archiveRoot);
     await stat(extracted);
-    await mkdir(dirname(config.hhBrowserDataPath), { recursive: true, mode: 0o700 });
     await rm(config.hhBrowserDataPath, { recursive: true, force: true });
     await rename(extracted, config.hhBrowserDataPath);
     return true;

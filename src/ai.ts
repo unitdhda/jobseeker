@@ -169,6 +169,8 @@ import { dirname, resolve } from 'node:path';
 import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
 import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
 import { createModels, type Models, type OAuthCredential, type Provider } from '@earendil-works/pi-ai';
+import { claudeCliProvider } from './claude-cli.ts';
+import { config } from './config.ts';
 import { getEncryptedRuntimeState, putEncryptedRuntimeState } from './runtime-state.ts';
 import { postgresQuery, withPostgresTransaction } from './postgres.ts';
 
@@ -252,6 +254,9 @@ export function aiModels(): Models {
   if (configuredModels) return configuredModels;
   const models=createModels();
   models.setProvider(openaiProvider());
+  // Forwards `claude-cli/*` models to the local Claude Code CLI; it resolves its own credentials, so registering
+  // it never requires configuration and stays inert unless a model explicitly selects it.
+  models.setProvider(claudeCliProvider({defaultTimeoutMs:config.claudeCliTimeoutSeconds*1_000}));
   const source=openaiCodexProvider(),oauth=source.auth.oauth;
   if(!oauth)throw new Error('OpenAI Codex provider has no OAuth implementation.');
   models.setProvider({...source,auth:{apiKey:{name:'OpenAI Codex OAuth',async resolve(){
