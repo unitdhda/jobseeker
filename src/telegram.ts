@@ -235,7 +235,7 @@ export async function sendDailyDigest(userId:string,options:DigestDeliveryOption
 }
 
 const loaderFrames = ['⋆', '✦', '✧', '✶', '✷'] as const;
-const loaderEditIntervalMs = 1_800;
+const loaderEditIntervalMs = 1_000;
 type LoaderTask = 'Адаптирую резюме' | 'Отправляю резюме' | 'Готовлю письмо';
 interface ApplicationLoader { setTask(task: LoaderTask): void; stop(): Promise<void> }
 interface EditableIndicator { setLabel(label: string): void; stop(): Promise<void> }
@@ -275,7 +275,7 @@ async function startEditableIndicator(userId: string, initialLabel: string): Pro
     };
     timer = setInterval(() => { frame = (frame + 1) % loaderFrames.length; update(); }, loaderEditIntervalMs);
     return {
-      setLabel(nextLabel) { label = nextLabel; frame = 0; update(); },
+      setLabel(nextLabel) { label = nextLabel; },
       async stop() {
         stopped = true;if(timer)clearInterval(timer); await updating;if(messageMissing)return;
         try { await api.deleteMessage(chat, message.message_id); }
