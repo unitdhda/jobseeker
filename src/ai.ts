@@ -16,22 +16,40 @@ function jsonText(text:string):unknown{
   }
 }
 
+const jsonValidationAttempts=3;
+
+function invalidJsonError(agent:string,parsed:unknown,validationIssues:readonly v.BaseIssue<unknown>[]):Error{
+  const issues=validationIssues.slice(0,8).map(issue=>`${v.getDotPath(issue)??'(root)'}: ${issue.message}`);
+  const shape=Array.isArray(parsed)?`array(${parsed.length})`:parsed&&typeof parsed==='object'
+    ?`object keys=${Object.keys(parsed).slice(0,12).join(',')}`:typeof parsed;
+  return new Error(`AI returned invalid ${agent} JSON (${shape}): ${issues.join('; ')}`);
+}
+
 export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,v.BaseIssue<unknown>>>(options:{
   userId:string;agent:string;model:string;thinking:ModelThinkingLevel;system:string;prompt:string;schema:TSchema;
 }):Promise<v.InferOutput<TSchema>>{
   const [provider,id]=modelParts(options.model),models=aiModels(),model=models.getModel(provider,id);
   if(!model)throw new Error(`Configured AI model is unavailable: ${options.model}`);
-  const response=await models.completeSimple(model,{systemPrompt:options.system,messages:[{
-    role:'user',content:`${options.prompt}\n\nReturn only the requested JSON value without Markdown or commentary.`,timestamp:Date.now(),
-  }]},{reasoning:options.thinking==='off'?undefined:options.thinking,maxRetries:2,maxRetryDelayMs:60_000});
-  await recordLlmUsage(options.userId,options.agent,options.model,response.usage);
-  if(response.stopReason==='error'||response.stopReason==='aborted')throw new Error(response.errorMessage??'AI request failed.');
-  const parsed=jsonText(contentText(response.content));const result=v.safeParse(options.schema,parsed);
-  if(!result.success){const issues=result.issues.slice(0,8).map(issue=>`${v.getDotPath(issue)??'(root)'}: ${issue.message}`);
-    const shape=Array.isArray(parsed)?`array(${parsed.length})`:parsed&&typeof parsed==='object'
-      ?`object keys=${Object.keys(parsed).slice(0,12).join(',')}`:typeof parsed;
-    throw new Error(`AI returned invalid ${options.agent} JSON (${shape}): ${issues.join('; ')}`);}
-  return result.output;
+  let correction='';let lastError:Error|undefined;
+  for(let attempt=1;attempt<=jsonValidationAttempts;attempt++){
+    const response=await models.completeSimple(model,{systemPrompt:options.system,messages:[{
+      role:'user',content:`${options.prompt}\n\nReturn only the requested JSON value without Markdown or commentary.${correction}`,
+      timestamp:Date.now(),
+    }]},{reasoning:options.thinking==='off'?undefined:options.thinking,maxRetries:2,maxRetryDelayMs:60_000});
+    await recordLlmUsage(options.userId,options.agent,options.model,response.usage);
+    if(response.stopReason==='error'||response.stopReason==='aborted')throw new Error(response.errorMessage??'AI request failed.');
+    try{
+      const parsed=jsonText(contentText(response.content)),result=v.safeParse(options.schema,parsed);
+      if(result.success)return result.output;
+      lastError=invalidJsonError(options.agent,parsed,result.issues);
+    }catch(error){lastError=error instanceof Error?error:new Error(String(error));}
+    if(attempt<jsonValidationAttempts){
+      console.warn(`Retrying ${options.agent} after invalid JSON (${attempt}/${jsonValidationAttempts-1}).`);
+      correction=`\n\nThe previous response failed strict validation: ${lastError.message}. Correct those exact errors. `+
+        'Include every required field and do not add, rename, or wrap fields.';
+    }
+  }
+  throw lastError??new Error(`AI returned invalid ${options.agent} JSON.`);
 }
 
 

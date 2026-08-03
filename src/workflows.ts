@@ -41,9 +41,11 @@ async function ensureCareerProfile(userId: string, cvText: string, cvHash: strin
   if (!force && existing) return existing;
   const generated=await generateJson({userId,agent:'prepare-career-profile',model:config.model,thinking:config.thinkingLevel,
     schema:careerProfileSchema,system:`Derive occupation-neutral career tracks solely from explicit CV evidence. Never use a fixed
-occupation or industry taxonomy. Each titleVariants item is one title in one language; Russian and English translations
-must be separate items. Translation must not broaden the occupation. Contact details, employer technologies and project
-names are not candidate skills. Do not invent adjacent occupations.`,prompt:`Authoritative CV source:\n\n${cvText}`});
+occupation or industry taxonomy. Return exactly {"version":1,"tracks":[{"name":"...","titleVariants":["..."],
+"coreSkills":["..."],"evidence":["..."]}]}. The root key is tracks, never careerTracks. Each titleVariants item is one title
+in one language; Russian and English translations must be separate items. Translation must not broaden the occupation.
+Contact details, employer technologies and project names are not candidate skills. Do not invent adjacent occupations.`,
+    prompt:`Authoritative CV source:\n\n${cvText}`});
   if(await getCvHash(userId)!==cvHash)throw new Error('CV changed during career-profile generation.');
   await saveSearchProfile(userId,careerProfilePlatformId,{cvHash,profile:generated});
   return generated;

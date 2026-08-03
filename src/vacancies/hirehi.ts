@@ -3,7 +3,7 @@ import * as v from 'valibot';
 import { config } from '../config.ts';
 import type { VacancyCandidate, VacancyInput } from '../database.ts';
 import { errorMessage, trace } from '../observability.ts';
-import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, type JsonObject, VacancySearchCollector } from './http.ts';
+import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, sourceUrl, type JsonObject, VacancySearchCollector } from './http.ts';
 import type { SearchPlatform } from './registry.ts';
 
 export const hireHiSpecializations=[
@@ -42,6 +42,26 @@ function scriptJson(html:string,id:string):unknown{
   const match=html.match(new RegExp(`<script\\b(?=[^>]*\\bid=["']${escaped}["'])[^>]*>([\\s\\S]*?)<\\/script>`,'i'));
   if(!match)throw new Error(`HireHi page does not contain ${id} data`);return JSON.parse(match[1]!);
 }
+function itemLists(value:unknown):JsonObject[]{
+  if(Array.isArray(value))return value.flatMap(itemLists);const object=asObject(value);if(!object)return[];
+  return[...(object['@type']==='ItemList'?[object]:[]),...itemLists(object['@graph'])];
+}
+export function hireHiListingUrls(html:string):Map<string,string>{
+  const urls=new Map<string,string>();
+  for(const script of html.matchAll(/<script\b(?=[^>]*\btype=["']application\/ld\+json["'])[^>]*>([\s\S]*?)<\/script>/gi))try{
+    for(const list of itemLists(JSON.parse(script[1]!))){const items=Array.isArray(list.itemListElement)?list.itemListElement:[];
+      for(const value of items){const item=asObject(value),nested=asObject(item?.item);
+        const raw=plainText(item?.url)||plainText(item?.item)||plainText(nested?.url);if(!raw)continue;
+        try{const url=sourceUrl('hirehi',raw);if(url.search||url.hash)continue;
+          const id=url.pathname.match(/^\/[^/]+\/[^/]+-(\d+)\/?$/)?.[1];if(id)urls.set(id,url.toString());}catch{/* Ignore unrelated invalid structured links. */}
+      }
+    }
+  }catch{/* Ignore unrelated malformed JSON-LD. */}
+  return urls;
+}
+export function hireHiCandidateUrl(id:number,category:string,canonicalUrls:ReadonlyMap<string,string>):string{
+  return canonicalUrls.get(String(id))??`https://hirehi.ru/${encodeURIComponent(category)}/job-${id}`;
+}
 function pause():Promise<void>{return new Promise(resolve=>setTimeout(resolve,250+Math.random()*400));}
 function listingJobs(value:unknown):JsonObject[]{
   const jobs=asObject(value)?.jobs;return Array.isArray(jobs)?jobs.map(asObject).filter(job=>job!==null):[];
@@ -68,10 +88,11 @@ export async function scrapeHireHi(userId:string,profile:HireHiSearchProfile):Pr
   searches:for(const search of profile.searches)for(let page=1;page<=pagesPerSearch;page++){
     try{
       const url=hireHiSearchUrl(search,page);trace('scrape.search.request',{platform:'hirehi',search:search.name,page,url});
-      const {html}=await fetchSourceHtml('hirehi',url);const listing=asObject(scriptJson(html,'__SSR_JOBS__'));const jobs=listingJobs(listing);
+      const {html}=await fetchSourceHtml('hirehi',url),canonicalUrls=hireHiListingUrls(html);
+      const listing=asObject(scriptJson(html,'__SSR_JOBS__')),jobs=listingJobs(listing);
       trace('scrape.search.result',{platform:'hirehi',search:search.name,page,found:jobs.length});
       for(const job of jobs){const id=integer(job.id),category=plainText(job.category);if(id&&category)await collector.record({source:'hirehi',sourceId:String(id),
-        url:`https://hirehi.ru/${encodeURIComponent(category)}/job-${id}`,searchName:search.name,title:plainText(job.title)||search.name,
+        url:hireHiCandidateUrl(id,category,canonicalUrls),searchName:search.name,title:plainText(job.title)||search.name,
         summary:[plainText(job.company),plainText(job.format),plainText(job.salary_display)].filter(Boolean).join(' '),
         publishedAt:plainText(job.created_at),payload:job});if(collector.complete)break;}
       if(collector.complete)break searches;if(!jobs.length||listing?.has_more===false)break;await pause();
