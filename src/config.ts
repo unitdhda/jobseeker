@@ -26,8 +26,17 @@ function thinkingLevelEnv(name: string, fallback: ThinkingLevel): ThinkingLevel 
   return value as ThinkingLevel;
 }
 
-const supportedSearchPlatforms = ['hh', 'hirehi', 'habr', 'getmatch', 'geekjob', 'superjob', 'avito', 'rabota'] as const;
-const defaultSearchPlatforms = supportedSearchPlatforms.filter((platform) => platform !== 'superjob');
+const telegramModes = ['polling', 'webhook', 'off'] as const;
+type TelegramMode = typeof telegramModes[number];
+function telegramModeEnv(): TelegramMode {
+  const explicit = process.env.TELEGRAM_MODE;
+  const value = explicit ?? (booleanEnv('TELEGRAM_POLLING', true) ? 'polling' : 'off');
+  if (!telegramModes.includes(value as TelegramMode)) throw new Error(`Invalid TELEGRAM_MODE: ${value}`);
+  return value as TelegramMode;
+}
+
+const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi'] as const;
+const defaultSearchPlatforms: SearchPlatformId[] = [...supportedSearchPlatforms];
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
 
 function platformEnv(): SearchPlatformId[] {
@@ -49,22 +58,22 @@ if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
 }
 
 export const config = {
-  databasePath: resolve(process.env.DATABASE_PATH ?? './data/jobseeker.db'),
-  model: process.env.FLUE_MODEL ?? 'openai-codex/gpt-5.6-terra',
-  thinkingLevel: thinkingLevelEnv('FLUE_THINKING_LEVEL', 'high'),
-  scoringModel: process.env.FLUE_SCORING_MODEL ?? 'openai-codex/gpt-5.6-luna',
-  scoringThinkingLevel: thinkingLevelEnv('FLUE_SCORING_THINKING_LEVEL', 'medium'),
-  scoringFallbackModel: process.env.FLUE_SCORING_FALLBACK_MODEL ?? 'openai/gpt-5.4-mini',
-  scoringFallbackThinkingLevel: thinkingLevelEnv('FLUE_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
+  hhBrowserDataPath: resolve(process.env.HH_BROWSER_DATA_PATH ?? './data/hh-browser'),
+  model: process.env.AI_MODEL ?? 'openai-codex/gpt-5.6-terra',
+  thinkingLevel: thinkingLevelEnv('AI_THINKING_LEVEL', 'high'),
+  scoringModel: process.env.AI_SCORING_MODEL ?? 'openai-codex/gpt-5.6-luna',
+  scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
+  scoringFallbackModel: process.env.AI_SCORING_FALLBACK_MODEL ?? 'openai/gpt-5.4-mini',
+  scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
   hhAreaId: process.env.HH_AREA_ID ?? '1',
   playwrightChromiumPath: process.env.PLAYWRIGHT_CHROMIUM_PATH,
   playwrightHeadless: booleanEnv('PLAYWRIGHT_HEADLESS', true),
   searchPlatforms: platformEnv(),
   hhMaxPages: integerEnv('HH_MAX_PAGES', 5, 1, 20),
-  hireHiMaxPages: integerEnv('HIREHI_MAX_PAGES', 5, 1, 20),
   additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 5, 1, 20),
+  hireHiMaxPages: integerEnv('HIREHI_MAX_PAGES', 5, 1, 20),
+  searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),
   searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
-  getmatchMaxCandidates: integerEnv('GETMATCH_MAX_CANDIDATES', 100, 1, 5_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
   candidatePrefilterBatchSize: integerEnv('CANDIDATE_PREFILTER_BATCH_SIZE', 1_000, 1, 20_000),
   candidateRefreshBatchSize: integerEnv('CANDIDATE_REFRESH_BATCH_SIZE', 2, 0, 1_000),
@@ -75,13 +84,6 @@ export const config = {
   prefilterAuditPercent: integerEnv('PREFILTER_AUDIT_PERCENT', 5, 0, 100),
   prefilterAuditSlots: integerEnv('PREFILTER_AUDIT_SLOTS', 1, 0, 100),
   prefilterCalibrationMinLabels: integerEnv('PREFILTER_CALIBRATION_MIN_LABELS', 100, 1, 100_000),
-  semanticPrefilterEnabled: booleanEnv('SEMANTIC_PREFILTER_ENABLED', true),
-  semanticEmbeddingModel: process.env.SEMANTIC_EMBEDDING_MODEL ?? 'Xenova/multilingual-e5-small',
-  semanticEmbeddingDtype: process.env.SEMANTIC_EMBEDDING_DTYPE ?? 'q8',
-  semanticEmbeddingCacheDirectory: resolve(process.env.SEMANTIC_EMBEDDING_CACHE_DIRECTORY ?? './data/models'),
-  avitoRegion: process.env.AVITO_REGION ?? 'moskva',
-  superJobApiKey: process.env.SUPERJOB_API_KEY,
-  superJobTownId: integerEnv('SUPERJOB_TOWN_ID', 4, 1, 1_000_000),
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
@@ -101,5 +103,8 @@ export const config = {
   telegramUserId: process.env.TELEGRAM_USER_ID ?? process.env.TELEGRAM_CHAT_ID,
   runJobs: booleanEnv('RUN_JOBS', true),
   runInitialCycle: booleanEnv('RUN_INITIAL_CYCLE', true),
-  telegramPolling: booleanEnv('TELEGRAM_POLLING', true),
+  telegramMode: telegramModeEnv(),
+  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
+  telegramWebhookAsync: booleanEnv('TELEGRAM_WEBHOOK_ASYNC',false),
+  backgroundDeliveryAsync: booleanEnv('BACKGROUND_DELIVERY_ASYNC',false),
 } as const;

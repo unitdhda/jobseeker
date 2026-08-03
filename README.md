@@ -1,153 +1,119 @@
 # Jobseeker
 
-Приватный Telegram-бот для поиска вакансий по резюме. Он собирает вакансии с российских площадок, оценивает соответствие опыту пользователя и помогает подготовить адаптированное резюме и сопроводительное письмо.
+A PostgreSQL-backed Telegram service that discovers vacancies, normalizes them through source adapters, filters and scores them against an authoritative CV, sends alerts/digests, and generates tailored applications.
 
-## Как пользоваться ботом
+## Architecture
 
-Доступ выдаёт владелец бота:
+The same codebase supports local and cloud execution:
 
-1. Отправьте `/request`.
-2. После одобрения откройте `/privacy` и загрузите актуальное резюме через `/cv`.
-3. Настройте уведомления и ежедневную подборку через `/window`.
-4. Получайте вакансии с оценкой от 0 до 100.
+- `src/web.ts` — Telegram polling locally or webhook receiver in Cloud Run.
+- `src/worker.ts` — local child-process worker for long-running jobs.
+- `src/task-worker.ts` — authenticated Cloud Tasks worker.
+- `src/cycle.ts` — finite scheduled scrape cycle.
+- `src/vacancies/` — HH, Habr Career, Работа.ру, and HireHi adapters.
+- `src/database.ts` — repository for the seven-table PostgreSQL domain schema.
+- `src/ai.ts` / `src/workflows.ts` — direct typed Pi AI calls using Codex OAuth.
 
-Основные команды:
+Production domain tables:
 
-- `/start` — статус и краткая инструкция;
-- `/cv` — загрузить или заменить резюме;
-- `/window` — настроить время уведомлений, дайджеста и UTC-смещение;
-- `/search запрос` — поиск по уже оценённым вакансиям;
-- `/privacy` — как обрабатываются данные;
-- `/export_me` — экспортировать резюме, поисковые профили и оценки;
-- `/delete_me confirm` — удалить персональные данные.
+- `users`
+- `profiles`
+- `vacancies`
+- `user_vacancies`
+- `telegram_updates`
+- `user_state`
+- `usage_events`
 
-Высокие оценки приходят отдельными уведомлениями с кнопками **Пропустить**, **Откликнуться** и **Открыть**. В ежедневную подборку попадают только новые, ещё не показанные вакансии. Чтобы подготовить отклик из подборки, отправьте выделенный префикс или полный ID вакансии.
+There is no SQLite, Flue, Redis, local embedding model, or generic background-task database.
 
-Команды владельца доступны вручную, но не добавляются в меню Telegram:
+## Runtime ownership
 
-- `/ok 123456789` или `/ok @username` — одобрить доступ;
-- `/users` — список пользователей;
-- `/revoke ССЫЛКА` — отозвать доступ;
-- `/usage` — статистика использования.
+Keep exactly one Telegram receiver and one scrape producer active.
 
-## Что поддерживается
+### Local
 
-Источники по умолчанию: hh.ru, HireHi, Habr Career, getmatch, GeekJob, Avito Работа и Работа.ру. SuperJob можно включить отдельно при наличии официального API-ключа.
-
-Резюме принимается в формате PDF, Markdown, TXT или DOCX, максимум 20 МБ. Исходный файл не сохраняется.
-
-## Быстрый локальный запуск
-
-Требуется Node.js 22.19+.
-
-```bash
-npm install
-npx playwright install chromium
-cp .env.example .env
-# Заполните .env
-npm run dev
+```env
+TELEGRAM_MODE=polling
+RUN_JOBS=true
+RUN_INITIAL_CYCLE=false
 ```
 
-Проверка:
+### Cloud web
 
-```bash
-curl http://127.0.0.1:3000/health
+```env
+TELEGRAM_MODE=webhook
+TELEGRAM_WEBHOOK_ASYNC=true
+RUN_JOBS=false
 ```
 
-Telegram работает через long polling, поэтому публичный webhook и внешний HTTP-порт не нужны.
+### Cloud cycle and task workers
 
-## Настройка `.env`
-
-Минимальная конфигурация:
-
-```dotenv
-TELEGRAM_BOT_TOKEN=123456:token
-TELEGRAM_USER_ID=123456789
-TELEGRAM_CHAT_ID=123456789
-OPENAI_CODEX_AUTH_FILE=/path/to/auth.json
-DATABASE_PATH=./data/jobseeker.db
-CYCLE_CRON=*/30 * * * *
-TIMEZONE=Europe/Moscow
+```env
+TELEGRAM_MODE=off
+RUN_JOBS=false
 ```
 
-`TELEGRAM_USER_ID` и `TELEGRAM_CHAT_ID` должны указывать на один приватный чат владельца.
+Cloud Tasks concurrency and the scrape advisory lock provide bounded execution. Deployments leave Scheduler paused and do not configure the Telegram webhook automatically.
 
-### Модель
+## Development
 
-| Переменная | Назначение | По умолчанию |
-|---|---|---|
-| `OPENAI_CODEX_AUTH_FILE` | Записываемый OAuth JSON для провайдера подписки | обязательна |
-| `FLUE_MODEL` | Модель подписки для поисковых профилей и подготовки откликов | указана в `.env.example` |
-| `FLUE_THINKING_LEVEL` | Глубина рассуждений основной модели | `high` |
-| `FLUE_SCORING_MODEL` | Более дешёвая модель подписки для пакетной оценки вакансий | `openai-codex/gpt-5.6-luna` |
-| `FLUE_SCORING_THINKING_LEVEL` | Глубина рассуждений при оценке | `medium` |
-| `SCORE_BATCH_SIZE` | Вакансий одного пользователя в одном вызове модели | `3` |
-| `FLUE_SCORING_FALLBACK_MODEL` | Платная API-модель после исчерпания лимита подписки | `openai/gpt-5.4-mini` |
-| `OPENAI_API_KEY` | Включает платный API fallback; без ключа fallback отключён | необязательна |
+Requirements:
 
-### Поиск и расписание
-
-| Переменная | Назначение | По умолчанию |
-|---|---|---|
-| `CYCLE_CRON` | Один цикл: поиск, оценка, уведомления и дайджест | `*/30 * * * *` |
-| `TIMEZONE` | Часовой пояс cron процесса | `Europe/Moscow` |
-| `SEARCH_PLATFORMS` | Список площадок через запятую | семь основных площадок |
-| `SEARCH_NEW_VACANCY_LIMIT` | Новых вакансий на пользователя и площадку за цикл | `10` |
-| `HH_MAX_PAGES` | Максимум страниц hh.ru на запрос | `5` |
-| `HIREHI_MAX_PAGES` | Максимум страниц HireHi | `5` |
-| `ADDITIONAL_MAX_PAGES` | Максимум страниц остальных источников | `5` |
-| `HH_AREA_ID` | Регион hh.ru для поискового профиля | `1` — Москва |
-
-### Оценка и лимиты
-
-| Переменная | Назначение | По умолчанию |
-|---|---|---|
-| `ALERT_SCORE` | Порог отдельного уведомления | `80` |
-| `DIGEST_MIN_SCORE` | Минимальная оценка для дайджеста | `50` |
-| `USER_SCORE_LIMIT_PER_CYCLE` | LLM-оценок на пользователя за цикл | `3` |
-| `USER_DAILY_APPLICATION_LIMIT` | Подготовленных откликов за 24 часа | `5` |
-| `USER_DAILY_SEARCH_PROFILE_LIMIT` | Генераций поисковых профилей за 24 часа | `7` |
-| `SCORE_AGENT_CONCURRENCY_MIN/MAX` | Размер общего пула оценщиков | `5` / `10` |
-| `USER_WORKFLOW_CONCURRENCY` | Параллельные процессы разных пользователей; задачи одного пользователя выполняются по очереди | `3` |
-| `DELIVERY_CONCURRENCY` | Параллельная отправка уведомлений и дайджестов | `5` |
-
-Дополнительные параметры источников, предфильтра и кэша embeddings документированы комментариями в [`.env.example`](.env.example).
-
-## Запуск в Docker
+- Bun 1.3.14+
+- Node.js 22.19+ for the test/build toolchain
+- PostgreSQL via `DATABASE_URL`
+- Chromium for HH browser search
 
 ```bash
-cp .env.example .env
-# Заполните .env и положите OAuth JSON в auth/auth.json
-docker compose up -d --build
-
-docker compose ps jobseeker
-docker compose logs -f jobseeker
-curl http://127.0.0.1:3000/health
-```
-
-SQLite хранится в именованном volume `jobseeker-data`. Не удаляйте volume при обновлении: в нём находятся резюме, оценки и состояние бота.
-
-Контейнер работает без root, с read-only файловой системой, сброшенными capabilities и доступом к порту только через loopback хоста.
-
-## Данные и приватность
-
-- В SQLite хранятся нормализованный текст и структура резюме, поисковые профили, числовые оценки, настройки и служебное состояние.
-- Строка оценки содержит только ID пользователя, ID вакансии и число. Пояснение к высокой оценке удаляется после доставки уведомления.
-- Релевантный текст резюме и вакансии передаётся настроенному провайдеру модели.
-- Исходные файлы, готовые PDF, сопроводительные письма и завершённые диалоги с моделью не сохраняются.
-- `/export_me` возвращает только текст резюме, нормализованный документ, поисковые профили и пары URL/оценка.
-- `/delete_me confirm` удаляет персональные данные из активной базы; общая база вакансий остаётся.
-
-Резервные копии диска должны быть зашифрованы и храниться не более 30 дней. Подробности — в [SECURITY.md](SECURITY.md).
-
-## Разработка
-
-```bash
+npm ci
 npm run typecheck
 npm test
 npm run build
-npm run run:cycle   # один цикл без постоянного Telegram polling
-npm start           # собранный сервер и Telegram-бот
+npm run test:postgres
 ```
 
-Архитектура остаётся однопроцессной с управляемым child worker: сервер отвечает за Telegram и расписание, а worker выполняет поиск, LLM-оценку и подготовку документов. Общие вакансии дедуплицируются, а резюме, оценки и отклики изолированы по пользователям.
+Start the built service:
+
+```bash
+bun --env-file=.env --env-file=.env.cloud dist/server.mjs
+```
+
+Readiness endpoints:
+
+- `GET /health` — process health
+- `GET /ready` — PostgreSQL readiness
+
+## Main configuration
+
+| Variable | Purpose |
+|---|---|
+| `DATABASE_URL` | PostgreSQL connection string |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot credential |
+| `TELEGRAM_USER_ID` | Owner user ID |
+| `TELEGRAM_MODE` | `polling`, `webhook`, or `off` |
+| `SEARCH_PLATFORMS` | `hh,habr,rabota,hirehi` |
+| `AI_MODEL` | Profile and application model |
+| `AI_SCORING_MODEL` | Batched vacancy-scoring model |
+| `OPENAI_CODEX_AUTH_FILE` | Local encrypted OAuth source document |
+| `RUNTIME_STATE_ENCRYPTION_KEY` | AES-256-GCM key for cloud OAuth/browser state |
+| `HH_BROWSER_DATA_PATH` | HH browser profile directory |
+| `TYPST_FONT_PATHS` | Font directories for generated PDFs |
+
+See `.env.example` for bounded limits and optional settings.
+
+## Cloud images
+
+`Dockerfile` exposes two targets:
+
+- `web` — Bun webhook image without Chromium, Typst, PDF parsing or Pi AI.
+- `worker` — Bun cycle/task image with Chromium, document generation and Pi AI.
+
+`cloudbuild.yaml` builds both images. `scripts/deploy-gcp.sh` deploys them but intentionally leaves cutover inactive.
+
+## Data and secrets
+
+- PostgreSQL is the only runtime database.
+- SQLite files are historical backups only.
+- OAuth and browser state are encrypted before storage.
+- Never commit `.env`, OAuth documents, database passwords, Telegram tokens, or encryption keys.
+- Historical Supabase migrations are immutable.
