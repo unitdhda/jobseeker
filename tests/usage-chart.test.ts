@@ -14,9 +14,15 @@ test('usage timeline renders a fixed dual-axis rectangle with four-hour markers'
   assert.equal(right-left-1,49);
   for(const line of plotRows){
     assert.equal(line.indexOf('│'),left);assert.equal(line.lastIndexOf('│'),right);
-    assert.match(line.slice(left+1,right),/^[ ╭╮─╯╰○●]+$/u);
+    assert.match(line.slice(left+1,right),/^[ │╭╮─╯╰○●]+$/u);
   }
   assert.equal((chart.match(/●/gu)??[]).length,8); // seven plot markers plus the legend
   assert.equal((chart.match(/○/gu)??[]).length,8);
   assert.match(chart,/12\s+16\s+20\s+00\s+04\s+08\s+12/u);
+});
+
+test('usage timeline connects steep hourly slopes with verticals and corners',()=>{
+  const steep=hours.map((hour,index)=>({...hour,tokens:index===12?12_000:0}));
+  const chart=usageTimelineChart(steep,'+00:00');
+  assert.match(chart,/│/u);assert.match(chart,/╭●/u);
 });

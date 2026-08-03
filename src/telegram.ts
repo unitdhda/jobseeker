@@ -84,14 +84,21 @@ function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'
   const rows=values.map(value=>maximum<=0?usagePlotHeight-1:
     Math.round((1-Math.max(0,Math.min(value/maximum,1)))*(usagePlotHeight-1)));
   const put=(row:number,column:number,symbol:string,force=false):void=>{
-    if(force){if(grid[row]![column]!=='●'||marker==='●')grid[row]![column]=symbol;}
-    else if(grid[row]![column]===' ')grid[row]![column]=symbol;
+    const current=grid[row]![column]!;
+    if(force){if(current!=='●'||marker==='●')grid[row]![column]=symbol;return;}
+    if(current===' '||('╭╮╯╰'.includes(symbol)&&current!=='●'&&current!=='○'))grid[row]![column]=symbol;
   };
   for(let hour=0;hour<usagePlotHours;hour++){
     const column=hour*2,nextColumn=column+2,row=rows[hour]!,nextRow=rows[hour+1]!;
     if(row===nextRow){put(row,column,'─');put(row,column+1,'─');put(row,nextColumn,'─');continue;}
-    if(nextRow<row){put(row,column,'─');put(row,column+1,'╯');put(nextRow,column+1,'╭');put(nextRow,nextColumn,'─');continue;}
-    put(row,column,'─');put(row,column+1,'╮');put(nextRow,column+1,'╰');put(nextRow,nextColumn,'─');
+    if(nextRow<row){
+      put(row,column,'─');put(row,column+1,'╯');
+      for(let vertical=nextRow+1;vertical<row;vertical++)put(vertical,column+1,'│');
+      put(nextRow,column+1,'╭');put(nextRow,nextColumn,'─');continue;
+    }
+    put(row,column,'─');put(row,column+1,'╮');
+    for(let vertical=row+1;vertical<nextRow;vertical++)put(vertical,column+1,'│');
+    put(nextRow,column+1,'╰');put(nextRow,nextColumn,'─');
   }
   for(let hour=0;hour<=usagePlotHours;hour+=4)put(rows[hour]!,hour*2,marker,true);
 }
