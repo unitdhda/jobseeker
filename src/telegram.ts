@@ -341,9 +341,10 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
     applicationJobs.delete(jobKey); clearApplicationArtifacts(userId, vacancyId);
   }
 }
-function launchApplication(userId:string,vacancyId:number,chat:string):void{
-  void generateAndSendApplication(userId,vacancyId,chat).catch((error)=>
-    console.error(`Detached application task failed: ${errorMessage(error)}`));
+async function runApplication(userId:string,vacancyId:number,chat:string):Promise<void>{
+  const task=generateAndSendApplication(userId,vacancyId,chat);
+  if(config.telegramMode==='webhook'){await task;return;}
+  void task.catch((error)=>console.error(`Detached application task failed: ${errorMessage(error)}`));
 }
 
 async function cvStatus(userId: string): Promise<string> {
@@ -699,7 +700,7 @@ function configureTelegramBot(): Bot | null {
     if (matches.length > 1) { await ctx.reply(`Префикс ${reference} подходит к нескольким вакансиям. Пришлите больше букв.`); return; }
     const vacancy = matches[0]; const key = `${userId}:${vacancy.id}`;
     if (applicationJobs.has(key)) { await ctx.reply(`Документы для ${vacancy.applyId} уже готовятся.`); return; }
-    launchApplication(userId,vacancy.id,String(ctx.chat?.id??ctx.from.id));
+    await runApplication(userId,vacancy.id,String(ctx.chat?.id??ctx.from.id));
   });
   instance.callbackQuery(/^skip:(\d+)$/, async (ctx) => {
     const userId = String(ctx.from.id); const id = Number(ctx.match[1]); await skipVacancy(userId, id);
@@ -711,7 +712,7 @@ function configureTelegramBot(): Bot | null {
     const vacancy = await getScoredVacancy(userId, id);
     await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard()
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru') });
-    launchApplication(userId,id,String(ctx.chat?.id??ctx.from.id));
+    await runApplication(userId,id,String(ctx.chat?.id??ctx.from.id));
   });
   instance.catch((error) => console.error(`Telegram bot error: ${errorMessage(error.error)}`));
   botConfigured = true;

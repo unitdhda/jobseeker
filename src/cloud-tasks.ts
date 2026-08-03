@@ -41,6 +41,7 @@ async function dispatch(request: CloudTaskRequest): Promise<boolean> {
   const parent = `projects/${project}/locations/${location}/queues/${queue}`;
   const task: protos.google.cloud.tasks.v2.ITask = {
     name: `${parent}/tasks/${taskId(request.key)}`,
+    dispatchDeadline: { seconds: 1_800 },
     httpRequest: {
       httpMethod: protos.google.cloud.tasks.v2.HttpMethod.POST,
       url: `${workerUrl}/tasks/execute`,

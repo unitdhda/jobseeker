@@ -46,7 +46,9 @@ export function getPostgresPool(): Pool {
   const created=new Pool({
     connectionString,
     max: poolMaximum(),
-    idleTimeoutMillis: 30_000,
+    // AI and document work can run for several minutes between database writes.
+    // Keep the session-pooler connection alive instead of reconnecting at the end of each long task.
+    idleTimeoutMillis: 15 * 60_000,
     connectionTimeoutMillis: 10_000,
     keepAlive:true,
     keepAliveInitialDelayMillis:10_000,
