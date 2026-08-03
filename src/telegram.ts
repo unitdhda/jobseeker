@@ -135,11 +135,20 @@ function highlightedApplyId(applyId: string, allApplyIds: string[]): RichText {
     other !== applyId && other.startsWith(applyId.slice(0, prefixLength)))) prefixLength++;
   return [{ type: 'bold', text: applyId.slice(0, prefixLength) }, applyId.slice(prefixLength)];
 }
-export async function sendDailyDigest(userId: string): Promise<number> {
+export async function sendDailyDigest(userId: string, sendEmptyTable=false): Promise<number> {
   if (!await isApprovedUser(userId)) throw new Error('User access is not approved.');
   const settings = await getDeliverySettings(userId);
   const vacancies = await digestVacancies(userId, config.digestMinScore, config.alertScore, settings?.lastDigestAt ?? null);
-  if (!vacancies.length) return 0;
+  if (!vacancies.length) {
+    if(sendEmptyTable){
+      const table:InputRichBlockTable={type:'table',is_bordered:true,is_striped:true,cells:[
+        [headerCell('ID','left'),headerCell('Балл','right'),headerCell('Вакансия','left'),headerCell('Ссылка','center')],
+        [cell('—'),cell('—','right'),cell('Нет новых вакансий для дайджеста'),cell('—','center')],
+      ]};
+      await getBot().api.sendRichMessage(await targetChat(userId),{blocks:[table]},{disable_notification:true});
+    }
+    return 0;
+  }
   const applyIds = vacancies.map((vacancy) => vacancy.applyId);
   for (let offset = 0; offset < vacancies.length; offset += 30) {
     const page = vacancies.slice(offset, offset + 30);
@@ -546,7 +555,7 @@ function configureTelegramBot(): Bot | null {
     await ctx.reply('Во сколько присылать ежедневную подборку? Отправьте время ЧЧ:ММ, например 09:30.');
   });
   instance.command('digest',async(ctx)=>{
-    await sendDailyDigest(String(ctx.from!.id));
+    await sendDailyDigest(String(ctx.from!.id),true);
   });
   instance.on('message:text', async (ctx, next) => {
     const userId = String(ctx.from.id); const setup = await getTelegramSession<WindowSetup>(userId, 'window-setup');
