@@ -41,9 +41,9 @@ app.post('/tasks/execute', async (c) => {
 
 import { serve } from '@hono/node-server';
 import { closePostgresPool } from './postgres.ts';
-import { initializeTelegramWebhookHandler } from './telegram.ts';
+import { initializeTelegramWebhookMode } from './telegram.ts';
 
-await initializeTelegramWebhookHandler();
+await initializeTelegramWebhookMode();
 const port=Number(process.env.PORT??3000);
 if (!Number.isSafeInteger(port)||port<1||port>65_535) throw new Error('PORT must be an integer between 1 and 65535.');
 const server=serve({ fetch:app.fetch,port });
