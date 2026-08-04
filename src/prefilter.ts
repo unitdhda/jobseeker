@@ -27,6 +27,35 @@ export interface StoredCareerProfile {
   profile: CareerProfile;
 }
 
+/**
+ * Splits the one mistake the career-profile agent repeats: several titles packed into a single variant, usually a
+ * role and its translation joined by " / ". Only the separator the schema rejects is split, so a title that already
+ * validates is never rewritten. This runs on the raw JSON after the model has failed to correct itself.
+ */
+const packedTitleSeparator = /\s+[\/|]\s+/;
+export function normalizeCareerProfileJson(value: unknown): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const root = value as Record<string, unknown>;
+  if (!Array.isArray(root.tracks)) return value;
+  return { ...root, tracks: root.tracks.map((track) => {
+    if (!track || typeof track !== 'object' || Array.isArray(track)) return track;
+    const entry = track as Record<string, unknown>;
+    if (!Array.isArray(entry.titleVariants)) return track;
+    const seen = new Set<string>();
+    const titleVariants: unknown[] = [];
+    for (const variant of entry.titleVariants) {
+      if (typeof variant !== 'string') { titleVariants.push(variant); continue; }
+      for (const part of variant.split(packedTitleSeparator)) {
+        const title = part.trim();
+        if (title.length < 2 || seen.has(title.toLowerCase())) continue;
+        seen.add(title.toLowerCase());
+        titleVariants.push(title);
+      }
+    }
+    return { ...entry, titleVariants: titleVariants.slice(0, 16) };
+  }) };
+}
+
 export function parseStoredCareerProfile(value: unknown, expectedCvHash: string): CareerProfile | null {
   if (!value || typeof value !== 'object') return null;
   const stored = value as Partial<StoredCareerProfile>;

@@ -34,6 +34,9 @@ import { normalizeHhCandidates, scrapeHh } from './hh.ts';
 import { hhPlatform } from './hh.ts';
 import { habrPlatform, rabotaPlatform } from './additional.ts';
 import { hireHiPlatform, normalizeHireHiCandidate, scrapeHireHi } from './hirehi.ts';
+import { atsPlatform, normalizeAtsCandidate, scrapeAts } from './ats.ts';
+import { boardPlatform, normalizeJsonLdCandidate, scrapeJsonLdBoard, type JsonLdBoardId } from './boards.ts';
+import { normalizeTrudvsemCandidate, scrapeTrudvsem, trudvsemPlatform } from './trudvsem.ts';
 
 export type AnyVacancyPlatform = VacancyPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>;
 const hhPool = new AdaptiveTaskPool(1, 1);
@@ -77,7 +80,35 @@ const hireHiAdapter:VacancyPlatform<typeof hireHiPlatform.schema>={
   async discover(userId,profile){const result=await scrapeHireHi(userId,profile);return{searches:profile.searches.length,...result};},
   normalize:candidates=>normalizeIndividually(candidates,normalizeHireHiCandidate),
 };
-const registeredPlatforms: AnyVacancyPlatform[] = [hhAdapter,habrAdapter,rabotaAdapter,hireHiAdapter] as AnyVacancyPlatform[];
+function jsonLdBoardAdapter(id: JsonLdBoardId): VacancyPlatform<ReturnType<typeof boardPlatform>['schema']> {
+  const platform = boardPlatform(id);
+  return {
+    ...platform,
+    async discover(userId, profile) {
+      const result = await scrapeJsonLdBoard(id, userId, profile);
+      return { searches: profile.searches.length, ...result };
+    },
+    normalize: candidates => normalizeIndividually(candidates, normalizeJsonLdCandidate),
+  };
+}
+const atsAdapter: VacancyPlatform<typeof atsPlatform.schema> = {
+  ...atsPlatform,
+  async discover(userId, profile) {
+    const result = await scrapeAts(userId, profile);
+    return { searches: profile.searches.length, ...result };
+  },
+  normalize: candidates => normalizeIndividually(candidates, normalizeAtsCandidate),
+};
+const trudvsemAdapter: VacancyPlatform<typeof trudvsemPlatform.schema> = {
+  ...trudvsemPlatform,
+  async discover(userId, profile) {
+    const result = await scrapeTrudvsem(userId, profile);
+    return { searches: profile.searches.length, ...result };
+  },
+  normalize: candidates => normalizeIndividually(candidates, normalizeTrudvsemCandidate),
+};
+const registeredPlatforms: AnyVacancyPlatform[] = [hhAdapter,habrAdapter,rabotaAdapter,hireHiAdapter,
+  jsonLdBoardAdapter('geekjob'),jsonLdBoardAdapter('avito'),trudvsemAdapter,atsAdapter] as AnyVacancyPlatform[];
 
 const platforms = new Map(registeredPlatforms.map((platform) => [platform.id, platform]));
 export const searchPlatformIds = registeredPlatforms.map((platform) => platform.id);

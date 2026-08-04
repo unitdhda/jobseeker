@@ -380,13 +380,47 @@ export async function saveCandidatePrefilter(userId: string, candidate: VacancyC
     where user_id=$9 and source=$10 and source_id=$11`,[contextHash,candidate.listingHash,score.regexScore,score.lexicalCosine,
       score.combinedScore,Number(score.filtered),JSON.stringify(score.reasons),now(),userId,candidate.source,candidate.sourceId]);
 }
+/**
+ * Slots are shared across sources, and prefilter scores are not comparable between them: a source whose listing
+ * titles happen to echo CV vocabulary outranks every other source and takes the whole batch. Each source is
+ * therefore capped at a quota of the best-scoring candidates first, and only leftover slots are filled purely by
+ * score, so a strong source still wins spare capacity without starving the rest.
+ */
+export function applySourceQuota(pool: (VacancyCandidate & { sourceRank: number })[],
+  perUserLimit: number, quota: number): VacancyCandidate[] {
+  const byScore = (left: VacancyCandidate, right: VacancyCandidate) => (right.combinedScore ?? 0) - (left.combinedScore ?? 0);
+  const withinQuota = pool.filter((candidate) => candidate.sourceRank <= quota).sort(byScore);
+  const selected = withinQuota.slice(0, perUserLimit);
+  if (selected.length < perUserLimit) {
+    const taken = new Set(selected.map((candidate) => `${candidate.source}:${candidate.sourceId}`));
+    const overflow = pool.filter((candidate) => !taken.has(`${candidate.source}:${candidate.sourceId}`)).sort(byScore);
+    selected.push(...overflow.slice(0, perUserLimit - selected.length));
+  }
+  return selected.map(({ sourceRank: _sourceRank, ...candidate }) => candidate);
+}
+
+export function sourceQuotaFor(perUserLimit: number, sourceCount: number): number {
+  if (config.normalizationPerSourceQuota > 0) return config.normalizationPerSourceQuota;
+  return Math.max(1, Math.ceil(perUserLimit / Math.max(1, sourceCount)));
+}
+
 export async function rankedCandidateQueueForUsers(userIds: string[], perUserLimit: number): Promise<VacancyCandidate[]> {
-  await ready(); const queues = await Promise.all(userIds.map(async (userId) => (await q(`select c.*,d.search_name discovery_search_name,
-    d.candidate_score combined_score from vacancies c join user_vacancies d on d.source=c.source and d.source_id=c.source_id
-    where d.user_id=$1 and c.lifecycle_status in ('discovered','queued','filtered','failed') and d.candidate_filtered=0 and
-    (c.normalization_retry_at is null or c.normalization_retry_at<=$2) and c.source=any($4::text[])
-    order by d.candidate_score desc,c.published_at desc limit $3`,
-    [userId,now(),perUserLimit,config.searchPlatforms])).map(rowToCandidate)));
+  await ready();
+  const quota = sourceQuotaFor(perUserLimit, config.searchPlatforms.length);
+  // The pool is wide enough to hold every source's quota plus overflow candidates for the leftover slots.
+  const poolLimit = perUserLimit + quota * config.searchPlatforms.length;
+  const queues = await Promise.all(userIds.map(async (userId) => {
+    const rows = await q(`select * from (select c.*,d.search_name discovery_search_name,
+      d.candidate_score combined_score,
+      row_number() over (partition by c.source order by d.candidate_score desc,c.published_at desc) source_rank
+      from vacancies c join user_vacancies d on d.source=c.source and d.source_id=c.source_id
+      where d.user_id=$1 and c.lifecycle_status in ('discovered','queued','filtered','failed') and d.candidate_filtered=0 and
+      (c.normalization_retry_at is null or c.normalization_retry_at<=$2) and c.source=any($4::text[])) ranked
+      order by combined_score desc,published_at desc limit $3`,
+      [userId,now(),poolLimit,config.searchPlatforms]);
+    const pool = rows.map((row) => ({ ...rowToCandidate(row), sourceRank: Number(row.source_rank) }));
+    return applySourceQuota(pool, perUserLimit, quota);
+  }));
   const selected = new Map<string,VacancyCandidate>(); for(let rank=0;rank<perUserLimit;rank++) for(const queue of queues) {
     const candidate=queue[rank]; if(candidate) selected.set(`${candidate.source}:${candidate.sourceId}`,candidate); }
   return [...selected.values()];

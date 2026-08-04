@@ -17,21 +17,41 @@ function jsonText(text:string):unknown{
 }
 
 const jsonValidationAttempts=3;
+const shownValidationIssues=8;
+const receivedValueLength=160;
 
+/**
+ * The message is written for the model that has to fix it, so every issue carries the value that was rejected and
+ * what was expected instead. A path and a rule name alone left the model guessing which of its items was wrong.
+ */
+export function describeValidationIssues(validationIssues:readonly v.BaseIssue<unknown>[]):string{
+  const shown=validationIssues.slice(0,shownValidationIssues).map(issue=>{
+    const received=String(issue.received);
+    const value=received.length>receivedValueLength?`${received.slice(0,receivedValueLength-1)}…`:received;
+    const expected=issue.expected==null?'':`, expected ${issue.expected}`;
+    return `${v.getDotPath(issue)??'(root)'}: ${issue.message} — received ${value}${expected}`;
+  });
+  const omitted=validationIssues.length-shown.length;
+  return `${shown.join('; ')}${omitted>0?`; and ${omitted} further issue${omitted===1?'':'s'}`:''}`;
+}
 function invalidJsonError(agent:string,parsed:unknown,validationIssues:readonly v.BaseIssue<unknown>[]):Error{
-  const issues=validationIssues.slice(0,8).map(issue=>`${v.getDotPath(issue)??'(root)'}: ${issue.message}`);
   const shape=Array.isArray(parsed)?`array(${parsed.length})`:parsed&&typeof parsed==='object'
     ?`object keys=${Object.keys(parsed).slice(0,12).join(',')}`:typeof parsed;
-  return new Error(`AI returned invalid ${agent} JSON (${shape}): ${issues.join('; ')}`);
+  return new Error(`AI returned invalid ${agent} JSON (${shape}): ${describeValidationIssues(validationIssues)}`);
 }
 
 export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,v.BaseIssue<unknown>>>(options:{
   userId:string;agent:string;model:string;thinking:ModelThinkingLevel;system:string;prompt:string;schema:TSchema;
   signal?:AbortSignal;
+  /**
+   * Last-resort salvage for a shape the model keeps getting wrong. It runs only after every attempt has failed
+   * validation, so the model always gets its own chance to correct the response first.
+   */
+  repair?:(value:unknown)=>unknown;
 }):Promise<v.InferOutput<TSchema>>{
   const [provider,id]=modelParts(options.model),models=aiModels(),model=models.getModel(provider,id);
   if(!model)throw new Error(`Configured AI model is unavailable: ${options.model}`);
-  let correction='';let lastError:Error|undefined;
+  let correction='';let lastError:Error|undefined;let lastParsed:unknown;let parsedAny=false;
   for(let attempt=1;attempt<=jsonValidationAttempts;attempt++){
     const response=await models.completeSimple(model,{systemPrompt:options.system,messages:[{
       role:'user',content:`${options.prompt}\n\nReturn only the requested JSON value without Markdown or commentary.${correction}`,
@@ -43,12 +63,20 @@ export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,
     try{
       const parsed=jsonText(contentText(response.content)),result=v.safeParse(options.schema,parsed);
       if(result.success)return result.output;
+      lastParsed=parsed;parsedAny=true;
       lastError=invalidJsonError(options.agent,parsed,result.issues);
     }catch(error){lastError=error instanceof Error?error:new Error(String(error));}
     if(attempt<jsonValidationAttempts){
-      console.warn(`Retrying ${options.agent} after invalid JSON (${attempt}/${jsonValidationAttempts-1}).`);
-      correction=`\n\nThe previous response failed strict validation: ${lastError.message}. Correct those exact errors. `+
-        'Include every required field and do not add, rename, or wrap fields.';
+      console.warn(`Retrying ${options.agent} after invalid JSON (${attempt}/${jsonValidationAttempts-1}): ${lastError.message}`);
+      correction=`\n\nThe previous response failed strict validation: ${lastError.message}. Correct those exact errors `+
+        'and return the corrected JSON value in full. Include every required field and do not add, rename, or wrap fields.';
+    }
+  }
+  if(options.repair&&parsedAny){
+    const repaired=v.safeParse(options.schema,options.repair(lastParsed));
+    if(repaired.success){
+      console.warn(`Repaired ${options.agent} JSON locally after ${jsonValidationAttempts} failed attempts: ${lastError?.message}`);
+      return repaired.output;
     }
   }
   throw lastError??new Error(`AI returned invalid ${options.agent} JSON.`);

@@ -3,12 +3,14 @@ import type { InputRichBlockTable, InputRichMessage, RichBlockTableCell, RichTex
 import { config } from './config.ts';
 import {
   approvedUsers, currentDigestVacancies, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
-  getScoredVacancy, getScoredVacancyByApplyId, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix, listTelegramUsers,
-  markAlerted, markApplicationDelivered, replaceDigestSnapshot, requestAccess, searchScoredVacancies, setUserStatus,
+  getScoredVacancy, getScoredVacancyByApplyId, getSearchProfile, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix,
+  listTelegramUsers, markAlerted, markApplicationDelivered, replaceDigestSnapshot, requestAccess, searchScoredVacancies, setUserStatus,
   skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries, llmUsageSummary,
   type AlertVacancy, type ScoredVacancy, type TelegramIdentity, type TelegramUser, type UsageHour,
 } from './database.ts';
 import { importCvSource } from './cv.ts';
+import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from './prefilter.ts';
+import { getSearchPlatform } from './vacancies/registry.ts';
 import { jobWorkerStatus, refreshUserInWorker, tailorApplicationInWorker } from './worker-client.ts';
 import { clearApplicationArtifacts } from './documents.ts';
 import { maximumCvBytes } from './cv.ts';
@@ -54,8 +56,17 @@ function identity(ctx: Context): TelegramIdentity | null {
 function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
+const sourceLabels: Record<string, string> = {
+  hh: 'HH', habr: 'Habr Career', rabota: 'Работа.ру', hirehi: 'HireHi',
+  geekjob: 'GeekJob', avito: 'Avito', trudvsem: 'Работа России', ats: 'ATS-борды компаний',
+};
 function sourceLabel(source: string): string {
-  return ({ hh: 'HH', habr: 'Habr Career', rabota: 'Работа.ру', hirehi: 'HireHi' } as Record<string, string>)[source] ?? 'источник';
+  return sourceLabels[source] ?? 'источник';
+}
+// Search profiles are shown per platform, so an unlabelled platform falls back to its registry name instead of
+// the placeholder used for alert buttons.
+function platformLabel(platformId: string): string {
+  return sourceLabels[platformId] ?? getSearchPlatform(platformId).name;
 }
 function userStatusText(status: TelegramUser['status']): string {
   return ({ unregistered: 'не зарегистрирован', pending: 'на рассмотрении', approved: 'одобрен',
@@ -267,7 +278,12 @@ const loaderFrames = ['⋆', '✦', '✧', '✶', '✷'] as const;
 const loaderEditIntervalMs = 1_000;
 type LoaderTask = 'Адаптирую резюме' | 'Отправляю резюме' | 'Готовлю письмо';
 interface ApplicationLoader { setTask(task: LoaderTask): void; stop(): Promise<void> }
-interface EditableIndicator { setLabel(label: string): void; stop(): Promise<void> }
+interface EditableIndicator {
+  setLabel(label: string): void;
+  stop(): Promise<void>;
+  /** Replaces the indicator with its own result instead of deleting it, so one message carries the whole task. */
+  finish(text: string, keyboard?: InlineKeyboard): Promise<void>;
+}
 export type CycleStatusPhase = 'scraping' | 'filtering' | 'normalization' | 'scoring';
 export interface CycleStatus { set(phase: CycleStatusPhase, current?: number, total?: number): void; stop(): Promise<void> }
 
@@ -309,10 +325,36 @@ async function startEditableIndicator(userId: string, initialLabel: string): Pro
         }).finally(() => { updating = null; });
     };
     timer = setInterval(() => { frame = (frame + 1) % loaderFrames.length; update(); }, loaderEditIntervalMs);
+    const settle = async (): Promise<void> => {
+      stopped = true; if (timer) clearInterval(timer); await updating;
+    };
     return {
       setLabel(nextLabel) { label = nextLabel; },
+      async finish(text, keyboard) {
+        await settle();
+        const options = { parse_mode: 'HTML' as const, link_preview_options: { is_disabled: true },
+          reply_markup: keyboard };
+        if (!messageMissing) {
+          try { await api.editMessageText(chat, message.message_id, text, options); return; }
+          catch (error) {
+            if (isUnchangedMessageError(error)) return;
+            const delay = isMissingTelegramMessageError(error) ? 0 : retryAfterMilliseconds(error);
+            if (delay) {
+              await new Promise((resolve) => setTimeout(resolve, delay));
+              try { await api.editMessageText(chat, message.message_id, text, options); return; }
+              catch (retryError) {
+                console.warn(`Could not replace task indicator after rate-limit retry: ${errorMessage(retryError)}`);
+              }
+            } else if (!isMissingTelegramMessageError(error)) {
+              console.warn(`Could not replace task indicator: ${errorMessage(error)}`);
+            }
+          }
+        }
+        // The indicator text is still on screen when the edit fails, so the result is delivered as a new message.
+        await api.sendMessage(chat, text, options);
+      },
       async stop() {
-        stopped = true;if(timer)clearInterval(timer); await updating;if(messageMissing)return;
+        await settle();if(messageMissing)return;
         try { await api.deleteMessage(chat, message.message_id); }
         catch (error) {
           if(isMissingTelegramMessageError(error))return;
@@ -406,9 +448,108 @@ async function downloadTelegramFile(fileId: string, declaredSize?: number): Prom
   if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
   return readResponseBytes(response, maximumCvBytes);
 }
-async function refreshSearchesAfterCvUpload(userId: string): Promise<void> {
-  const cvHash = await getCvHash(userId);
-  if (!cvHash) return;
+const searchProfileTermsShown = 4;
+const searchProfileTracksShown = 6;
+const searchProfileTermLength = 60;
+export interface SearchProfilePlatformView { label: string; terms: string[] }
+export interface SearchProfileView { filename: string; tracks: string[]; platforms: SearchProfilePlatformView[] }
+
+function clip(value: string, limit: number): string {
+  const text = value.trim();
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+/**
+ * Every platform profile keeps its searches in a `searches` array, but names the searchable term differently:
+ * a free-text query, an hh.ru search text, or a picked specialization with a facet.
+ */
+function profileSearchTerms(profile: unknown): string[] {
+  const searches = (profile as { searches?: unknown } | null)?.searches;
+  if (!Array.isArray(searches)) return [];
+  return searches.map((entry) => {
+    const search = entry as Record<string, unknown>;
+    const term = [search.query, search.text, search.specialization, search.name]
+      .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
+    if (!term) return '';
+    const facet = typeof search.facet === 'string' && search.facet !== 'all' ? ` · ${search.facet}` : '';
+    return clip(`${term.trim()}${facet}`, searchProfileTermLength);
+  }).filter(Boolean);
+}
+export function searchProfileMessage(view: SearchProfileView): string {
+  const ready = view.platforms.filter((platform) => platform.terms.length);
+  const searches = ready.reduce((total, platform) => total + platform.terms.length, 0);
+  const lines = ['<b>Поисковый профиль</b>', `Резюме: ${escapeHtml(clip(view.filename, searchProfileTermLength))}`];
+  if (view.tracks.length) {
+    const shown = view.tracks.slice(0, searchProfileTracksShown);
+    lines.push(`Направления: ${shown.map((track) => escapeHtml(clip(track, searchProfileTermLength))).join(' · ')}` +
+      (view.tracks.length > shown.length ? ` и ещё ${view.tracks.length - shown.length}` : ''));
+  }
+  if (!ready.length) {
+    lines.push('', 'Поисковые запросы пока не созданы.');
+    return lines.join('\n');
+  }
+  lines.push('', `<b>Запросы: ${searches} на ${ready.length} площадках</b>`);
+  for (const platform of ready) {
+    const shown = platform.terms.slice(0, searchProfileTermsShown);
+    lines.push(`• ${escapeHtml(platform.label)}: ${shown.map((term) => `«${escapeHtml(term)}»`).join(', ')}` +
+      (platform.terms.length > shown.length ? ` и ещё ${platform.terms.length - shown.length}` : ''));
+  }
+  const empty = view.platforms.filter((platform) => !platform.terms.length);
+  if (empty.length) lines.push(`Без запросов: ${empty.map((platform) => escapeHtml(platform.label)).join(', ')}.`);
+  lines.push('', 'Запросы будут использованы в следующем цикле поиска. Заменить резюме: /cv.');
+  return lines.join('\n');
+}
+async function searchProfileResult(userId: string): Promise<{ text: string; complete: boolean }> {
+  const cv = await getCvSource(userId);
+  if (!cv) return { text: 'Резюме не загружено. Отправьте /cv, чтобы загрузить файл.', complete: false };
+  const career = parseStoredCareerProfile(
+    await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256,
+  );
+  const platforms: SearchProfilePlatformView[] = [];
+  for (const platformId of config.searchPlatforms) {
+    platforms.push({ label: platformLabel(platformId), terms: profileSearchTerms(await getSearchProfile(userId, platformId)) });
+  }
+  const text = searchProfileMessage({ filename: cv.originalFilename,
+    tracks: career?.tracks.map((track) => track.name) ?? [], platforms });
+  // A constrained platform may legitimately have no supported search, so one ready platform is enough.
+  return { text, complete: Boolean(career) && platforms.some((platform) => platform.terms.length > 0) };
+}
+
+function cvRetryKeyboard(action: 'cv:retry' | 'cv:refresh'): InlineKeyboard {
+  return new InlineKeyboard().text(action === 'cv:retry' ? 'Загрузить резюме заново' : 'Повторить подготовку', action);
+}
+async function finishNotice(userId: string, indicator: EditableIndicator | null, text: string,
+  keyboard?: InlineKeyboard): Promise<void> {
+  if (indicator) { await indicator.finish(text, keyboard); return; }
+  await getBot().api.sendMessage(await targetChat(userId), text,
+    { parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: true } });
+}
+// The refresh loop outlives the request that started it, so the indicator it must turn into a result is
+// handed over here rather than captured by the caller.
+const refreshIndicators = new Map<string, EditableIndicator>();
+async function deliverRefreshResult(userId: string, text: string, keyboard?: InlineKeyboard): Promise<void> {
+  const indicator = refreshIndicators.get(userId) ?? null;
+  refreshIndicators.delete(userId);
+  await finishNotice(userId, indicator, text, keyboard);
+}
+
+/** Takes ownership of the indicator, so it always ends as a result and never keeps spinning after a failure. */
+async function refreshSearchesAfterCvUpload(userId: string, indicator: EditableIndicator | null = null): Promise<void> {
+  if (indicator) {
+    const previous = refreshIndicators.get(userId);
+    refreshIndicators.set(userId, indicator);
+    if (previous) await previous.stop().catch((error) => console.warn(`Could not stop CV indicator: ${errorMessage(error)}`));
+  }
+  let cvHash: string | null = null;
+  let readFailed = false;
+  try { cvHash = await getCvHash(userId); }
+  catch (error) { readFailed = true; console.error(`Could not read the stored CV of user ${userId}: ${errorMessage(error)}`); }
+  if (!cvHash) {
+    await deliverRefreshResult(userId, readFailed
+      ? 'Не удалось прочитать сохранённое резюме. Попробуйте ещё раз.'
+      : 'Резюме не найдено. Загрузите файл заново командой /cv.',
+      cvRetryKeyboard(readFailed ? 'cv:refresh' : 'cv:retry'));
+    return;
+  }
   pendingRefreshHashes.set(userId, cvHash);
   if (refreshingUsers.has(userId)) return;
   refreshingUsers.add(userId);
@@ -419,24 +560,29 @@ async function refreshSearchesAfterCvUpload(userId: string): Promise<void> {
         if (!requestedHash) break;
         pendingRefreshHashes.delete(userId);
         try {
-          const refreshed = await refreshUserInWorker(userId, requestedHash);
+          await refreshUserInWorker(userId, requestedHash);
           if (!pendingRefreshHashes.has(userId) && await isApprovedUser(userId) && await getCvHash(userId) === requestedHash) {
-            await getBot().api.sendMessage(await targetChat(userId),
-              `Готово: создано ${refreshed.searchCount} поисковых запросов для ${refreshed.platformCount} платформ. ` +
-              'Они будут использованы в следующем цикле поиска.');
+            const result = await searchProfileResult(userId);
+            await deliverRefreshResult(userId, result.text, result.complete ? undefined : cvRetryKeyboard('cv:refresh'));
           }
         } catch (error) {
           if (!pendingRefreshHashes.has(userId) && await isApprovedUser(userId) && await getCvHash(userId)) {
             console.error(`Search-profile refresh failed for user ${userId}`,
               error instanceof Error ? error.message : String(error));
-            await getBot().api.sendMessage(await targetChat(userId),
-              'Резюме сохранено, но поисковые настройки пока не удалось обновить. Бот повторит попытку в следующем цикле, когда позволит лимит.');
+            await deliverRefreshResult(userId,
+              'Резюме сохранено, но поисковые настройки пока не удалось обновить. Бот повторит попытку в следующем цикле, когда позволит лимит.',
+              cvRetryKeyboard('cv:refresh'));
           }
         }
       }
     } finally {
       pendingRefreshHashes.delete(userId);
       refreshingUsers.delete(userId);
+      const leftover = refreshIndicators.get(userId);
+      if (leftover) {
+        refreshIndicators.delete(userId);
+        await leftover.stop().catch((error) => console.warn(`Could not stop CV indicator: ${errorMessage(error)}`));
+      }
     }
   })();
 }
@@ -736,6 +882,7 @@ function configureTelegramBot(): Bot | null {
     if (!await getTelegramSession(userId, 'cv-upload')) { await ctx.reply('Сначала отправьте /cv, затем прикрепите файл с резюме.'); return; }
     if (activeCvImports.has(userId)) { await ctx.reply('Предыдущий файл ещё проверяется. Пожалуйста, подождите.'); return; }
     activeCvImports.add(userId);
+    let indicator: EditableIndicator | null = null;
     try {
       const document = ctx.message.document;
       const filename = document.file_name ?? 'cv';
@@ -749,15 +896,35 @@ function configureTelegramBot(): Bot | null {
       if (unsupportedExtension || (!supportedExtension && !supportedMediaType)) {
         await ctx.reply('Поддерживаются только PDF, Markdown, TXT и DOCX.'); return;
       }
+      indicator = await startEditableIndicator(userId, 'Загружаю файл');
       const bytes = await downloadTelegramFile(document.file_id, document.file_size);
+      indicator?.setLabel('Разбираю резюме');
       await importCvSource(userId, filename, document.mime_type, bytes);
       await deleteTelegramSession(userId, 'cv-upload');
-      await ctx.reply(`Резюме сохранено. ${await cvStatus(userId)}.\nОбновляю настройки поиска…`);
-      await refreshSearchesAfterCvUpload(userId);
+      indicator?.setLabel('Резюме сохранено · готовлю поисковые запросы');
+      const handedOver = indicator; indicator = null;
+      await refreshSearchesAfterCvUpload(userId, handedOver);
     } catch (error) {
       console.error(`CV import failed for user ${userId}: ${errorMessage(error)}`);
-      if (await isApprovedUser(userId)) await ctx.reply('Не удалось обработать файл. Проверьте формат и размер, затем попробуйте снова.');
+      if (await isApprovedUser(userId)) {
+        await finishNotice(userId, indicator, 'Не удалось обработать файл. Проверьте формат и размер, затем попробуйте снова.',
+          cvRetryKeyboard('cv:retry'));
+      } else await indicator?.stop().catch((stopError) => console.warn(`Could not stop CV indicator: ${errorMessage(stopError)}`));
     } finally { activeCvImports.delete(userId); }
+  });
+  instance.callbackQuery('cv:retry', async (ctx) => {
+    const userId = String(ctx.from.id);
+    await ctx.answerCallbackQuery();
+    await ctx.editMessageReplyMarkup().catch(() => undefined);
+    // The upload cooldown was already claimed for this attempt, so a retry only re-arms the upload session.
+    await setTelegramSession(userId, 'cv-upload', {}, cvUploadSessionTtlMs);
+    await ctx.reply('Пришлите резюме одним файлом ещё раз: PDF, Markdown, TXT или DOCX до 20 МБ.');
+  });
+  instance.callbackQuery('cv:refresh', async (ctx) => {
+    const userId = String(ctx.from.id);
+    await ctx.answerCallbackQuery({ text: 'Готовлю поисковые запросы…' });
+    await ctx.editMessageReplyMarkup().catch(() => undefined);
+    await refreshSearchesAfterCvUpload(userId, await startEditableIndicator(userId, 'Готовлю поисковые запросы'));
   });
   instance.hears(/^\s*([a-zA-Z]{1,6})\s*$/, async (ctx) => {
     if (!ctx.from) return;

@@ -6,6 +6,16 @@ const sourceHosts: Record<string, ReadonlySet<string>> = {
   habr: new Set(['career.habr.com']),
   rabota: new Set(['rabota.ru', 'www.rabota.ru']),
   hirehi: new Set(['hirehi.ru', 'www.hirehi.ru']),
+  geekjob: new Set(['geekjob.ru', 'www.geekjob.ru']),
+  avito: new Set(['career.avito.com']),
+  trudvsem: new Set(['opendata.trudvsem.ru', 'trudvsem.ru', 'www.trudvsem.ru']),
+  // One adapter spans several ATS products, so both their APIs and the public posting pages they link to are listed.
+  ats: new Set([
+    'boards-api.greenhouse.io', 'boards.greenhouse.io', 'job-boards.greenhouse.io',
+    'api.lever.co', 'jobs.lever.co',
+    'api.ashbyhq.com', 'jobs.ashbyhq.com',
+    'api.smartrecruiters.com', 'jobs.smartrecruiters.com',
+  ]),
 };
 
 function privateIpv4(address: string): boolean {

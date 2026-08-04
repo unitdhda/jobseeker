@@ -35,7 +35,7 @@ function telegramModeEnv(): TelegramMode {
   return value as TelegramMode;
 }
 
-const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi'] as const;
+const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi', 'geekjob', 'avito', 'trudvsem', 'ats'] as const;
 const defaultSearchPlatforms: SearchPlatformId[] = [...supportedSearchPlatforms];
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
 
@@ -78,6 +78,9 @@ export const config = {
   searchRotationMinutes: integerEnv('SEARCH_ROTATION_MINUTES', 30, 5, 1_440),
   searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
+  // Best candidates each source is guaranteed per user before leftover slots are filled by score alone.
+  // Zero spreads the batch evenly across the configured platforms.
+  normalizationPerSourceQuota: integerEnv('NORMALIZATION_PER_SOURCE_QUOTA', 0, 0, 1_000),
   candidatePrefilterBatchSize: integerEnv('CANDIDATE_PREFILTER_BATCH_SIZE', 1_000, 1, 20_000),
   candidateRefreshBatchSize: integerEnv('CANDIDATE_REFRESH_BATCH_SIZE', 2, 0, 1_000),
   candidateRefreshDays: integerEnv('CANDIDATE_REFRESH_DAYS', 7, 1, 365),
@@ -95,7 +98,8 @@ export const config = {
   claudeCliTimeoutSeconds: integerEnv('CLAUDE_CLI_TIMEOUT_SECONDS', 300, 30, 1_800),
   scoringBatchMaxAttempts: integerEnv('SCORING_BATCH_MAX_ATTEMPTS', 3, 1, 5),
   userDailyApplicationLimit: integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100),
-  userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 7, 1, 100),
+  // Counted per platform, so three refreshes of the eight default platforms.
+  userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 24, 1, 100),
   maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),
   userWorkflowConcurrency: integerEnv('USER_WORKFLOW_CONCURRENCY', 5, 1, 20),
   scrapeConcurrency: integerEnv('SCRAPE_CONCURRENCY', 8, 1, 40),
