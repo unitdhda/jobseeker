@@ -93,6 +93,10 @@ export const config = {
   searchClusterSimilarity: integerEnv('SEARCH_CLUSTER_SIMILARITY', 60, 0, 100),
   // Vacancies the shared store already holds that are linked to each user per cycle. Zero disables the store source.
   storeLinkLimitPerUser: integerEnv('STORE_LINK_LIMIT_PER_USER', 50, 0, 1_000),
+  // How long a vacancy is kept after it stops appearing in searches, and the oldest the store will serve.
+  vacancyRetentionDays: integerEnv('VACANCY_RETENTION_DAYS', 30, 7, 365),
+  // Rows deleted per retention pass, so one cycle cannot spend itself purging a large backlog.
+  vacancyPurgeBatchSize: integerEnv('VACANCY_PURGE_BATCH_SIZE', 500, 0, 20_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
   // Best candidates each source is guaranteed per user before leftover slots are filled by score alone.
   // Zero spreads the batch evenly across the configured platforms.
@@ -103,6 +107,9 @@ export const config = {
   prefilterEnabled: booleanEnv('PREFILTER_ENABLED', true),
   prefilterBatchSize: integerEnv('PREFILTER_BATCH_SIZE', 500, 1, 20_000),
   prefilterMinScore: integerEnv('PREFILTER_MIN_SCORE', 20, 0, 100),
+  // An advert older than this is rejected outright, however well it matches: it is almost certainly filled.
+  // Measured against the advert's own publication date, which every adapter reads from the source.
+  prefilterMaxAgeDays: integerEnv('PREFILTER_MAX_AGE_DAYS', 30, 1, 365),
   prefilterAuditPercent: integerEnv('PREFILTER_AUDIT_PERCENT', 5, 0, 100),
   prefilterAuditSlots: integerEnv('PREFILTER_AUDIT_SLOTS', 1, 0, 100),
   prefilterCalibrationMinLabels: integerEnv('PREFILTER_CALIBRATION_MIN_LABELS', 100, 1, 100_000),

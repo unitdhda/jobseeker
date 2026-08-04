@@ -14,7 +14,7 @@ import { prefilterVacancy } from './prefilter.ts';
 import { errorMessage } from './observability.ts';
 import { adaptiveConcurrency, AdaptiveTaskPool } from './concurrency.ts';
 import {
-  careerProfilePlatformId, careerProfileSchema, normalizeCareerProfileJson, parseStoredCareerProfile,
+  careerProfilePlatformId, careerProfileSchema, normalizeCareerProfileJson, parseStoredCareerProfile, vacancyRecency,
   type CareerProfile, type StoredCareerProfile,
 } from './prefilter.ts';
 import { compilePlainTextCv } from './documents.ts';
@@ -145,16 +145,20 @@ function scoringApiFallbackConfigured(): boolean {
 async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provider: 'subscription' | 'api',
   signal:AbortSignal): Promise<void> {
   const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
-  const contexts=vacancies.map(vacancy=>({vacancyId:vacancy.id,language:detectCvLanguage(`${vacancy.name}\n${vacancy.description}`),
+  const contexts=vacancies.map(vacancy=>{const recency=vacancyRecency(vacancy);return{vacancyId:vacancy.id,
+    language:detectCvLanguage(`${vacancy.name}\n${vacancy.description}`),
     source:vacancy.source,name:vacancy.name,employer:vacancy.employer,area:vacancy.area,salaryFrom:vacancy.salaryFrom,
     salaryTo:vacancy.salaryTo,salaryCurrency:vacancy.salaryCurrency,salaryGross:vacancy.salaryGross,experience:vacancy.experience,
-    employment:vacancy.employment,schedule:vacancy.schedule,workFormat:vacancy.workFormat,description:vacancy.description,keySkills:vacancy.keySkills}));
+    employment:vacancy.employment,schedule:vacancy.schedule,workFormat:vacancy.workFormat,
+    age:recency.label,ageBand:recency.band,description:vacancy.description,keySkills:vacancy.keySkills};});
   const result=await generateJson({userId,agent:'score-vacancies',model:provider==='api'?config.scoringFallbackModel:config.scoringModel,
     thinking:provider==='api'?config.scoringFallbackThinkingLevel:config.scoringThinkingLevel,schema:scoringResultSchema,
     system:`Score each CV-vacancy match independently. Use no fixed occupation taxonomy and never score keyword overlap without
 role compatibility. Rubric: must-have skills 40, seniority/years 20, responsibilities 15, domain 10, location/work format 10,
 compensation 5; missing salary is neutral. Penalize underqualification and substantial overqualification. An explicit hard
-blocker sets hardRejection=true and caps score at 49. Return exactly one result for each vacancyId, at most three reasons and
+blocker sets hardRejection=true and caps score at 49.
+The age field states how old the advert is, in bands, from the date the source published it. Fit decides the score; age
+only separates otherwise comparable matches, and an advert several weeks old is worth noting as possibly filled. Return exactly one result for each vacancyId, at most three reasons and
 at most three gaps. The JSON must be either
 {"scores":[{"vacancyId":1,"score":0,"primaryTrack":"...","summary":"...","reasons":[],"gaps":[],"hardRejection":false}]}
 or the same scores array directly. Use these exact field names and no additional wrapper.`, 
@@ -244,7 +248,7 @@ export async function scorePendingVacancies(
     if (!careerProfile) throw new Error('A current CV-derived career profile is required for prefiltering.');
     const careerProfileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
     const contextHash = createHash('sha256').update([
-      'prefilter-v5-cv-derived-lexical', cvContentHash, careerProfileHash, config.prefilterMinScore,
+      'prefilter-v6-cv-derived-lexical-recency', cvContentHash, careerProfileHash, config.prefilterMinScore,
       config.prefilterAuditPercent,
     ].join(':')).digest('hex');
     calibrationContext = contextHash;

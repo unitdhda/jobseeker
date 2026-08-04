@@ -388,6 +388,8 @@ export async function linkStoreVacancies(userId: string, limit: number, roleTerm
   const timestamp = now();
   const terms = [...new Set(roleTerms.map((term) => term.toLowerCase().trim()))]
     .filter((term) => term.length > 2).slice(0, 32);
+  // Anything older than the prefilter's age limit is rejected on sight, so linking it would only spend a slot.
+  const freshest = new Date(Date.now() - config.prefilterMaxAgeDays * 86_400_000).toISOString();
   const relevance = `(select count(*) from unnest($4::text[]) term
     where position(term in lower(coalesce(v.name,v.listing_title,''))) > 0)`;
   const columns = `user_vacancies(user_id,vacancy_id,source,source_id,search_name,discovered_at,
@@ -397,22 +399,62 @@ export async function linkStoreVacancies(userId: string, limit: number, roleTerm
   const normalized = await q(`insert into ${columns}
     select $1,v.id,v.source,v.source_id,coalesce(nullif(v.source_query,''),nullif(v.listing_search_name,''),'store'),
       $2,$2,$2,$2 from vacancies v
-    where v.lifecycle_status='normalized' and v.normalized_vacancy_id=v.id and ${unlinked}
+    where v.lifecycle_status='normalized' and v.normalized_vacancy_id=v.id and v.published_at>=$5 and ${unlinked}
       and not exists(select 1 from user_vacancies uv where uv.user_id=$1 and uv.vacancy_id=v.id)
     order by ${relevance} desc,v.published_at desc nulls last limit $3
-    on conflict do nothing returning source_id`, [userId, timestamp, limit, terms]);
+    on conflict do nothing returning source_id`, [userId, timestamp, limit, terms, freshest]);
   const candidates = await q(`insert into ${columns}
     select $1,null,v.source,v.source_id,coalesce(nullif(v.listing_search_name,''),'store'),$2,$2,$2,$2 from vacancies v
     where v.lifecycle_status in ('discovered','queued','filtered','failed') and v.apply_id is null
-      and v.source=any($5::text[]) and ${unlinked}
+      and v.source=any($5::text[]) and v.published_at>=$6 and ${unlinked}
     order by ${relevance} desc,v.published_at desc nulls last limit $3
-    on conflict do nothing returning source_id`, [userId, timestamp, limit, terms, config.searchPlatforms]);
+    on conflict do nothing returning source_id`, [userId, timestamp, limit, terms, config.searchPlatforms, freshest]);
   return { normalized: normalized.length, candidates: candidates.length };
+}
+
+/**
+ * Retention for the shared store.
+ *
+ * `vacancies` is also the deduplication memory, so age alone is the wrong criterion: deleting a listing a source
+ * still advertises means rediscovering it, fetching it again, paying to score it again, and delivering it to a
+ * user who has already seen or skipped it. A row is therefore only dropped once the sources have stopped
+ * returning it — `last_seen_at` older than the retention window — and it is old in its own right. Resurrection is
+ * not free either: `recordVacancyCandidate` reports newness against this table, so a re-inserted row consumes one
+ * of the cycle's `SEARCH_NEW_VACANCY_LIMIT` slots that a genuinely new listing should have had.
+ *
+ * Anything a user acted on, was already told about, or is still waiting to be delivered is kept whatever its age,
+ * so a source that goes quiet for a month and comes back cannot alert anybody twice.
+ */
+export async function purgeExpiredVacancies(retentionDays: number, limit: number): Promise<number> {
+  await ready();
+  if (limit <= 0) return 0;
+  const cutoff = new Date(Date.now() - retentionDays * 86_400_000).toISOString();
+  const deleted = await q(`delete from vacancies where id = any(select v.id from vacancies v
+    where coalesce(v.last_seen_at,v.first_seen_at) < $1 and coalesce(v.published_at,v.first_seen_at) < $1
+      and not exists(select 1 from user_vacancies uv
+        where (uv.vacancy_id=v.id or (uv.source=v.source and uv.source_id=v.source_id))
+          and (uv.decision in ('applied','applying','skipped','alerted','digested') or uv.application_status is not null
+            or (uv.decision='new' and uv.score >= $3)))
+    order by coalesce(v.last_seen_at,v.first_seen_at) limit $2) returning id`,
+    [cutoff, limit, config.digestMinScore]);
+  return deleted.length;
+}
+/**
+ * A prefilter score discounts the advert's age, but it is cached until the CV, the profile or the advert itself
+ * changes — so without this a vacancy scored on the day it appeared would keep its fresh score for ever. A row is
+ * re-scored once it crosses one of the age bands `vacancyRecency` uses, which happens at most four times in its
+ * life.
+ */
+function crossedRecencyBand(vacancy: string, scoredAt: string): string {
+  return `exists(select 1 from unnest(array[1,7,14,30]) band
+    where ${vacancy}.published_at + (band || ' days')::interval > ${scoredAt}
+      and ${vacancy}.published_at + (band || ' days')::interval <= now())`;
 }
 export async function candidatesNeedingPrefilter(userId: string, contextHash: string, limit: number): Promise<VacancyCandidate[]> {
   await ready(); return (await q(`select c.*,d.search_name discovery_search_name from vacancies c join user_vacancies d
     on d.source=c.source and d.source_id=c.source_id and d.user_id=$1 where c.lifecycle_status in ('discovered','queued','filtered','failed') and
-    (d.candidate_context_hash is null or d.candidate_context_hash<>$2 or d.candidate_listing_hash<>c.listing_hash)
+    (d.candidate_context_hash is null or d.candidate_context_hash<>$2 or d.candidate_listing_hash<>c.listing_hash
+      or ${crossedRecencyBand('c', 'd.candidate_scored_at')})
     order by d.last_discovered_at desc limit $3`, [userId,contextHash,limit])).map(rowToCandidate);
 }
 export async function saveCandidatePrefilter(userId: string, candidate: VacancyCandidate, contextHash: string, score: PrefilterScoreInput): Promise<void> {
@@ -509,7 +551,8 @@ export async function pendingVacancies(userId:string,limit:number):Promise<Vacan
 export async function vacanciesNeedingPrefilter(userId:string,contextHash:string,limit:number):Promise<Vacancy[]>{
   await ready(); return (await q(`select v.*,uv.decision user_decision from vacancies v
     join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id where uv.score is null and uv.decision not in ('skipped','applied')
-    and (uv.prefilter_context_hash is null or uv.prefilter_context_hash<>$2 or uv.prefilter_content_hash<>v.content_hash)
+    and (uv.prefilter_context_hash is null or uv.prefilter_context_hash<>$2 or uv.prefilter_content_hash<>v.content_hash
+      or ${crossedRecencyBand('v', 'uv.prefilter_scored_at')})
     order by v.published_at desc limit $3`,[userId,contextHash,limit])).map(rowToVacancy);
 }
 export async function savePrefilterScore(userId:string,vacancyId:number,contextHash:string,contentHash:string,score:PrefilterScoreInput):Promise<void>{

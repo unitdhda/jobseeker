@@ -2,8 +2,8 @@ import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import {
   approvedUsers, candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, getDeliverySettings, getSearchProfile,
-  linkStoreVacancies, markCandidateClosed, markCandidateFailed, markCandidateNormalized, rankedCandidateQueueForUsers,
-  saveCandidatePrefilter, saveDeliverySettings, upsertVacancy,
+  linkStoreVacancies, markCandidateClosed, markCandidateFailed, markCandidateNormalized, purgeExpiredVacancies,
+  rankedCandidateQueueForUsers, saveCandidatePrefilter, saveDeliverySettings, upsertVacancy,
   type StoreLinkResult, type Vacancy, type VacancyCandidate, type VacancyInput,
 } from '../database.ts';
 import { prefilterVacancy } from '../prefilter.ts';
@@ -42,8 +42,8 @@ async function prefilterCandidates(userIds: string[],
     storeLinked.normalized += linked.normalized; storeLinked.candidates += linked.candidates;
     if (linked.normalized || linked.candidates) trace('store.linked', { userId, ...linked });
     const profileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
-    const contextHash = createHash('sha256').update(['candidate-prefilter-v6-lexical-per-user', cv.cvSha256, profileHash,
-      config.prefilterMinScore].join(':')).digest('hex');
+    const contextHash = createHash('sha256').update(['candidate-prefilter-v7-lexical-recency-per-user', cv.cvSha256,
+      profileHash, config.prefilterMinScore].join(':')).digest('hex');
     const candidates = await candidatesNeedingPrefilter(userId, contextHash, config.candidatePrefilterBatchSize);
     return { userId, cvText: cv.cvText, cvHash: cv.cvSha256, careerProfile, contextHash, candidates };
   }))).filter((profile) => profile !== null);
@@ -65,9 +65,13 @@ async function prefilterCandidates(userIds: string[],
   return { evaluated: total, queued, storeLinked };
 }
 
-export interface CandidateQueueResult { evaluated: number; queued: number; storeLinked: StoreLinkResult; selected: number; refreshed: number; normalized: number; failed: number; closed: number; bySource: Record<string, number> }
+export interface CandidateQueueResult { evaluated: number; queued: number; storeLinked: StoreLinkResult; expired: number; selected: number; refreshed: number; normalized: number; failed: number; closed: number; bySource: Record<string, number> }
 
 export async function processCandidateQueue(userIds: string[], progress?: QueueProgress): Promise<CandidateQueueResult> {
+  // Retention runs before linking so a listing about to expire is never handed to a user first.
+  const expired = await purgeExpiredVacancies(config.vacancyRetentionDays, config.vacancyPurgeBatchSize)
+    .catch((error) => { console.error(`Vacancy retention pass failed: ${errorMessage(error)}`); return 0; });
+  if (expired) trace('vacancy.expired', { expired, retentionDays: config.vacancyRetentionDays });
   const prefilter = await prefilterCandidates(userIds, progress);
   const capacity = config.normalizationBatchSizePerUser * userIds.length;
   const ranked = await rankedCandidateQueueForUsers(userIds, config.normalizationBatchSizePerUser);
@@ -103,7 +107,7 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
     }
     progress?.('normalization', index + 1, selected.length);
   }
-  return { ...prefilter, selected: selected.length, refreshed: refresh.length, normalized, failed, closed, bySource };
+  return { ...prefilter, expired, selected: selected.length, refreshed: refresh.length, normalized, failed, closed, bySource };
 }
 
 import { startCycleStatus } from '../telegram.ts';

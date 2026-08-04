@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { careerProfileSchema, type CareerProfile } from '../src/prefilter.ts';
+import { careerProfileSchema, vacancyRecency, type CareerProfile } from '../src/prefilter.ts';
 import { prefilterVacancy } from '../src/prefilter.ts';
 import type { Vacancy } from '../src/database.ts';
 import * as v from 'valibot';
 import { textSearchProfileSchema } from '../src/vacancies/additional.ts';
+import { hhPublishedAt } from '../src/vacancies/hh.ts';
 
-function vacancy(name: string, description: string, keySkills: string[] = []): Vacancy {
+const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
+
+function vacancy(name: string, description: string, keySkills: string[] = [], publishedAt = daysAgo(0)): Vacancy {
   return { id: 1, source: 'hh', sourceId: '1', applyId: 'aaaaaa', name, employer: 'Employer', area: 'Remote',
     salaryFrom: null, salaryTo: null, salaryCurrency: null, salaryGross: null, experience: '', employment: '', schedule: '',
-    workFormat: '', description, keySkills, url: 'https://hh.ru/vacancy/1', publishedAt: '2026-01-01', sourceQuery: name,
+    workFormat: '', description, keySkills, url: 'https://hh.ru/vacancy/1', publishedAt, sourceQuery: name,
     contentHash: 'hash', decision: 'new' };
 }
 
@@ -68,9 +71,59 @@ await test('constrained platforms can decline incompatible CV tracks without inv
   assert.equal(v.safeParse(textSearchProfileSchema, { version: 1, searches: [] }).success, true);
 });
 
+await test('age is reported in bands from the advert’s own publication date', () => {
+  const at = (days: number) => vacancyRecency({ publishedAt: daysAgo(days) });
+  assert.deepEqual([0, 3, 10, 20, 90].map((days) => at(days).band),
+    ['today', 'week', 'fortnight', 'month', 'stale']);
+  assert.match(at(3).label, /^published /);
+  assert.deepEqual([at(3).expired, at(20).expired, at(31).expired], [false, false, true]);
+  assert.equal(vacancyRecency({ publishedAt: 'not a date' }).band, 'today',
+    'an unreadable date must not be rejected on a guess');
+});
+
+await test('an advert past the age limit is rejected however well it matches', () => {
+  const strong = ['Senior Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity']] as const;
+  const fresh = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(0)), 20, designerProfile);
+  const expired = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(45)), 20, designerProfile);
+  assert.equal(fresh.filtered, false);
+  assert.equal(expired.filtered, true, 'over the age limit must be a hard rejection, not a discount');
+  assert.ok(expired.reasons.some((reason) => reason.startsWith('rejected: published')));
+  assert.equal(expired.regexScore, fresh.regexScore, 'the evidence score is kept for calibration');
+});
+
+await test('inside the limit age discounts a match without letting it outrank fit', () => {
+  const strong = ['Senior Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity']] as const;
+  const fresh = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(0)), 20, designerProfile);
+  const ageing = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(20)), 20, designerProfile);
+  assert.equal(ageing.filtered, false);
+  assert.ok(ageing.combinedScore < fresh.combinedScore, 'an ageing advert must score below the same advert today');
+  assert.ok(ageing.reasons.some((reason) => reason.startsWith('age discount')));
+  assert.equal(fresh.reasons.some((reason) => reason.startsWith('age discount')), false);
+
+  const weakButFresh = prefilterVacancy(designerCv,
+    vacancy('Senior Fullstack Developer', 'Build backend services with TypeScript.', ['TypeScript'], daysAgo(0)),
+    20, designerProfile);
+  assert.ok(ageing.combinedScore > weakButFresh.combinedScore, 'recency must not outrank a genuinely better match');
+});
+
 await test('contact details do not create skill evidence', () => {
   const result = prefilterVacancy(designerCv,
     vacancy('Telegram Bot Developer', 'Develop Telegram integrations.', ['Telegram']), 20, designerProfile);
   assert.equal(result.filtered, true);
   assert.equal(result.reasons.some((reason) => reason.startsWith('evidenced skills: Telegram')), false);
+});
+
+await test('hh reads the advert’s own publication date rather than the time it was read', () => {
+  const posting = (extra: string) => `<html><body>${extra}<script type="application/ld+json">${JSON.stringify({
+    '@context': 'https://schema.org', '@type': 'JobPosting', title: 'Data Scientist',
+    datePosted: '2026-07-29T11:39:03.741+03:00' })}</script></body></html>`;
+  assert.equal(hhPublishedAt(posting(''), ''), '2026-07-29T08:39:03.741Z');
+  // The visible line is the fallback when the page ships no JobPosting block.
+  assert.equal(hhPublishedAt('<html><body></body></html>', 'Вакансия опубликована 29 июля 2026 в Москве'),
+    '2026-07-29T00:00:00.000Z');
+  assert.equal(hhPublishedAt('<html><body></body></html>', 'Вакансия опубликована 1 мая 2026 в Москве'),
+    '2026-05-01T00:00:00.000Z');
+  // No date at all must be reported as unknown, never silently replaced with the current time.
+  assert.equal(hhPublishedAt('<html><body></body></html>', 'Описание вакансии'), null);
+  assert.equal(hhPublishedAt('<html><body></body></html>', 'Вакансия опубликована 3 сентебря 2026'), null);
 });

@@ -128,8 +128,29 @@ import { chromium, type BrowserContext, type Page } from 'playwright';
 import { type VacancyCandidate, type VacancyInput } from '../database.ts';
 import { trace } from '../observability.ts';
 import { VacancySearchCollector } from './http.ts';
-import { assertPublicAddress, sourceUrl } from './http.ts';
+import { assertPublicAddress, jobPostings, plainText, sourceUrl } from './http.ts';
 import type { SearchPlan } from './plan.ts';
+
+const russianMonths = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+/**
+ * The advert's own publication date.
+ *
+ * hh renders its vacancy page as schema.org JobPosting, and its `datePosted` is the real posting date rather than
+ * a render stamp — a vacancy first seen on 29 July still reports 29 July days later. The visible
+ * "Вакансия опубликована ..." line is the fallback, because it carries no time zone and no element of its own to
+ * select on. Returning null rather than the current time keeps the caller from inventing a date.
+ */
+export function hhPublishedAt(html: string, bodyText: string): string | null {
+  const posted = plainText(jobPostings(html)[0]?.datePosted);
+  if (posted && Number.isFinite(Date.parse(posted))) return new Date(posted).toISOString();
+  const match = /Вакансия опубликована\s+(\d{1,2})\s+(\p{L}+)\s+(\d{4})/u.exec(bodyText);
+  if (!match) return null;
+  const month = russianMonths.indexOf(match[2]!.toLowerCase());
+  if (month < 0) return null;
+  return new Date(Date.UTC(Number(match[3]), month, Number(match[1]))).toISOString();
+}
 
 async function pause(min = 350, max = 900): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, min + Math.random() * (max - min)));
@@ -173,6 +194,8 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
   sourceUrl('hh', page.url());
   await assertSearchPage(page);
   await page.locator('[data-qa="vacancy-title"]').waitFor({ state: 'visible', timeout: 20_000 });
+  const published = hhPublishedAt(await page.content(), await page.locator('body').innerText());
+  if (!published) console.warn(`hh vacancy ${safeUrl} published no date; recording the time it was read instead.`);
 
   const hhId = new URL(page.url()).pathname.match(/\/vacancy\/(\d+)/)?.[1];
   if (!hhId) throw new Error(`Cannot determine HH vacancy id from ${page.url()}`);
@@ -194,7 +217,7 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
   const base = {
     source: 'hh', sourceId: hhId, name, employer, area, ...salary, experience, employment,
     schedule: scheduleParts.filter(Boolean).join(' · '), workFormat, description,
-    keySkills: [] as string[], url: canonicalUrl, publishedAt: new Date().toISOString(), sourceQuery,
+    keySkills: [] as string[], url: canonicalUrl, publishedAt: published ?? new Date().toISOString(), sourceQuery,
   };
   return { ...base, contentHash: createHash('sha256').update(JSON.stringify(base)).digest('hex') };
 }
@@ -278,6 +301,8 @@ export async function scrapeHh(plan: SearchPlan<HhSearch>): Promise<{ seen: numb
         await assertSearchPage(page);
         const found = await page.locator('[data-qa="serp-item__title"]').evaluateAll((anchors) =>
           anchors.map((anchor) => ({ href: (anchor as HTMLAnchorElement).href, title: anchor.textContent?.trim() ?? '' })));
+        // hh search cards carry no publication date, so a candidate has none until it is normalized. The search
+        // itself bounds the age instead: `period` is capped at 30 days and defaults to 7.
         trace('scrape.search.result', { platform: 'hh', search: search.name, page: pageNumber + 1, found: found.length });
         for (const item of found) {
           const id = new URL(item.href).pathname.match(/\/vacancy\/(\d+)/)?.[1];

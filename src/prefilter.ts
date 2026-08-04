@@ -64,6 +64,7 @@ export function parseStoredCareerProfile(value: unknown, expectedCvHash: string)
   return parsed.success ? parsed.output : null;
 }
 
+import { config } from './config.ts';
 import type { Vacancy } from './database.ts';
 
 const stop = new Set([
@@ -154,6 +155,34 @@ function relevanceCvText(input: string): string {
     .replace(/(?:\+?\d[\s().-]*){7,}/g, ' ');
 }
 
+export type RecencyBand = 'today' | 'week' | 'fortnight' | 'month' | 'stale';
+/**
+ * Age bands rather than a raw timestamp: a day's difference does not change how worth reading a vacancy is, but
+ * the difference between this week and last month does. The weight discounts an ageing match without letting
+ * recency outrank fit — a strong match a fortnight old still beats a weak one posted today. Past
+ * `PREFILTER_MAX_AGE_DAYS` the gradient stops and the vacancy is rejected outright.
+ *
+ * `publishedAt` is the advert's own date, taken from the source by each adapter, never the time we first saw it.
+ */
+const recencyBands: readonly { band: RecencyBand; withinDays: number; weight: number; label: string }[] = [
+  { band: 'today', withinDays: 1, weight: 1, label: 'today' },
+  { band: 'week', withinDays: 7, weight: 1, label: '1-7 days ago' },
+  { band: 'fortnight', withinDays: 14, weight: 0.92, label: '8-14 days ago' },
+  { band: 'month', withinDays: 30, weight: 0.8, label: '15-30 days ago' },
+  { band: 'stale', withinDays: Number.POSITIVE_INFINITY, weight: 0.6, label: 'over 30 days ago' },
+];
+
+export interface VacancyRecency { band: RecencyBand; days: number; weight: number; expired: boolean; label: string }
+
+export function vacancyRecency(vacancy: Pick<Vacancy, 'publishedAt'>, now = Date.now()): VacancyRecency {
+  const published = Date.parse(vacancy.publishedAt);
+  // An unparseable or future date says nothing, so it is treated as current rather than rejected on a guess.
+  const days = Number.isFinite(published) ? Math.max(0, (now - published) / 86_400_000) : 0;
+  const band = recencyBands.find((entry) => days < entry.withinDays) ?? recencyBands.at(-1)!;
+  return { band: band.band, days: Math.floor(days), weight: band.weight,
+    expired: days >= config.prefilterMaxAgeDays, label: `published ${band.label}` };
+}
+
 export interface PrefilterResult {
   regexScore: number;
   lexicalCosine: number;
@@ -181,13 +210,21 @@ export function prefilterVacancy(cvText: string, vacancy: Vacancy, minimumScore:
   const cleanCv = relevanceCvText(cvText);
   const lexicalCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(`${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`));
   const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
+  const recency = vacancyRecency(vacancy);
   let combinedScore = Math.round(regexScore * 0.75 + lexicalScore * 0.25);
+  if (recency.weight < 1) {
+    combinedScore = Math.round(combinedScore * recency.weight);
+    reasons.push(`age discount: ${recency.label}`);
+  }
   if (lexicalCosine > 0) reasons.push(`lexical cosine: ${lexicalCosine.toFixed(3)}`);
   if (regexScore < 15 && combinedScore >= minimumScore) {
     combinedScore = Math.max(0, minimumScore - 1);
     reasons.push('semantic similarity lacked CV-derived role or skill evidence');
   }
-  const filtered = combinedScore < minimumScore;
-  if (filtered) reasons.push(`combined score below ${minimumScore}`);
+  // An advert this old is treated as filled whatever it matches, so the evidence score is kept for calibration
+  // but no longer decides admission.
+  const filtered = recency.expired || combinedScore < minimumScore;
+  if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${config.prefilterMaxAgeDays}-day limit`);
+  else if (filtered) reasons.push(`combined score below ${minimumScore}`);
   return { regexScore, lexicalCosine, lexicalScore, combinedScore, filtered, reasons };
 }
