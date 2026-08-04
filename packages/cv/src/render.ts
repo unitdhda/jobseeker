@@ -56,16 +56,23 @@ function documentLanguage(document: CvDocument): string {
   return /[Ѐ-ӿ]/.test(sample) ? 'ru' : 'en';
 }
 
-export function cvSource(document: CvDocument): string {
+export function cvSource(document: CvDocument, density: number): string {
   const sections = document.sections.map((section) => {
     const blocks = section.blocks.map(blockContent).join('\n  #cv-gap\n  ');
     return `#cv-section(${content(section.title)})[\n  ${blocks}\n]`;
   }).join('\n');
-  return `${cvPreamble(documentLanguage(document))}
+  return `${cvPreamble(density, documentLanguage(document))}
 #cv-header(${content(document.name)}, ${optional(document.headline)}, ${array(document.contacts)})
 ${sections}
 `;
 }
+
+/**
+ * Densities tried in order. The first one that needs fewer pages than the natural layout wins, so the gentlest
+ * compression that removes a stranded page is the one used. The floor of 0.82 puts the body around 7.9pt — dense but
+ * ordinary for a CV — and a document that still does not fit keeps its pages rather than being squeezed unread.
+ */
+const densitySteps = [1, 0.96, 0.93, 0.9, 0.87, 0.84, 0.82] as const;
 
 export interface CvPdfOptions { fontPaths?: readonly string[] }
 
@@ -85,7 +92,8 @@ export function createCvPdf(options: CvPdfOptions = {}): CvPdf {
   const compiler = NodeCompiler.create(options.fontPaths?.length
     ? { fontArgs: [{ fontPaths: [...options.fontPaths] }] } : undefined);
 
-  const compileTypst = (source: string): Buffer => {
+  /** Compiles once and reports the page count alongside the PDF, so density fitting costs no extra compilation. */
+  const compileMeasured = (source: string): { pdf: Buffer; pages: number } => {
     if (forbidden.test(source)) {
       throw new Error('Typst source must be self-contained; import, include, and read are forbidden.');
     }
@@ -97,7 +105,7 @@ export function createCvPdf(options: CvPdfOptions = {}): CvPdf {
       if (!document) throw new Error('Compiler produced no document.');
       const pdf = compiler.pdf(document);
       if (!pdf.length || pdf.subarray(0, 4).toString() !== '%PDF') throw new Error('Compiler returned an invalid PDF.');
-      return pdf;
+      return { pdf, pages: document.numOfPages };
     } catch (error) {
       const shortDiagnostics = error && typeof error === 'object' && 'shortDiagnostics' in error
         ? (error as { shortDiagnostics: unknown }).shortDiagnostics : undefined;
@@ -108,7 +116,18 @@ export function createCvPdf(options: CvPdfOptions = {}): CvPdf {
     }
   };
 
-  const compileCvDocument = (document: CvDocument): Buffer => compileTypst(cvSource(document));
+  const compileTypst = (source: string): Buffer => compileMeasured(source).pdf;
+
+  const compileCvDocument = (document: CvDocument): Buffer => {
+    const natural = compileMeasured(cvSource(document, 1));
+    if (natural.pages <= 1) return natural.pdf;
+    for (const density of densitySteps.slice(1)) {
+      const candidate = compileMeasured(cvSource(document, density));
+      if (candidate.pages < natural.pages) return candidate.pdf;
+    }
+    return natural.pdf;
+  };
+
   const compilePlainTextCv = (text: string): Buffer => compileCvDocument(parseCvText(text));
   return { compileTypst, compileCvDocument, compilePlainTextCv };
 }

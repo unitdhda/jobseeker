@@ -8,13 +8,12 @@ const renderer = createCvPdf();
 const document = (...sections: CvDocument['sections']): CvDocument =>
   ({ name: 'Ivan Petrov', headline: 'Backend Engineer', contacts: ['Remote', 'first.last@example.com'], sections });
 
-async function render(cv: CvDocument): Promise<{ text: string; pages: number; height: number }> {
+async function render(cv: CvDocument): Promise<{ text: string; pages: number }> {
   const pdf = renderer.compileCvDocument(cv);
   assert.equal(pdf.subarray(0, 4).toString(), '%PDF');
   const proxy = await getDocumentProxy(Uint8Array.from(pdf));
   const { text } = await extractText(proxy, { mergePages: true });
-  const [, , , height] = (await proxy.getPage(1)).view as number[];
-  return { text: String(text).replace(/\s+/g, ' '), pages: proxy.numPages, height: height! };
+  return { text: String(text).replace(/\s+/g, ' '), pages: proxy.numPages };
 }
 
 const filler = (count: number): string[] => Array.from({ length: count }, (_, index) =>
@@ -56,22 +55,14 @@ test('emphasis markers are consumed rather than printed', async () => {
   assert.ok(text.includes('A bold and italic claim.'), text);
 });
 
-test('long content grows the page rather than breaking across pages', async () => {
-  const short = await render(document({ title: 'EXPERIENCE',
-    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(4) }] }));
-  const long = await render(document({ title: 'EXPERIENCE',
-    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(130) }] }));
-  assert.equal(short.pages, 1);
-  assert.equal(long.pages, 1);
-  assert.ok(long.height > short.height * 3, `expected the page to grow, got ${short.height} then ${long.height}`);
+test('a CV that just overflows is tightened onto one page instead of stranding a few lines', async () => {
+  const { pages } = await render(document({ title: 'EXPERIENCE',
+    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(42) }] }));
+  assert.equal(pages, 1);
 });
 
-test('the type is not shrunk to fit, so a long CV reads at the same size as a short one', async () => {
-  const short = await render(document({ title: 'EXPERIENCE',
-    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(4) }] }));
-  const long = await render(document({ title: 'EXPERIENCE',
-    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(40) }] }));
-  // Each bullet costs the same vertical space in both, which it would not if the long one had been compressed.
-  const perBullet = (long.height - short.height) / 36;
-  assert.ok(perBullet > 8 && perBullet < 30, `unexpected per-bullet height ${perBullet}`);
+test('a CV with genuinely two pages of content is not squeezed into one', async () => {
+  const { pages } = await render(document({ title: 'EXPERIENCE',
+    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(130) }] }));
+  assert.ok(pages >= 2, `expected the content to keep its pages, got ${pages}`);
 });

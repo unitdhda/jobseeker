@@ -2,13 +2,11 @@
  * The Typst side of the CV layout: a component library plus the page setup that drives it.
  *
  * Every vertical space, colour and weight lives here rather than being emitted per line by the renderer, so the
- * document has one rhythm instead of a dozen hand-tuned block deltas. `u` scales all of it from one place.
- *
- * The page grows to its content instead of paginating: these CVs are read in Telegram, where a continuous page beats
- * a break in the middle of a job. The trade is that the PDF no longer has a printable page size.
+ * document has one rhythm instead of a dozen hand-tuned block deltas. `u` is the density knob — the renderer recompiles
+ * at a smaller `u` when that removes a nearly empty trailing page, and only sizes and spacing scale with it.
  */
-export function cvPreamble(lang: string): string {
-  return `#let u = 1.0
+export function cvPreamble(density: number, lang: string): string {
+  return `#let u = ${density.toFixed(3)}
 
 #let theme = (
   accent: rgb("#b0553c"),
@@ -20,7 +18,7 @@ export function cvPreamble(lang: string): string {
 #let label-font = ("PragmataPro Liga", "Spectral")
 
 #set page(
-  width: 595.28pt, height: auto,
+  width: 595.28pt, height: 841.89pt,
   margin: (top: 46pt * u, bottom: 40pt * u, left: 52pt, right: 52pt),
 )
 #set text(font: body-font, size: 9.6pt * u, fill: theme.ink, lang: "${lang}", hyphenate: false)
@@ -49,7 +47,7 @@ export function cvPreamble(lang: string): string {
   #line(length: 100%, stroke: 0.7pt + theme.hairline)
 ]
 
-/// A section label and its blocks. The label stays sticky so the design survives a fixed page height being restored.
+/// A section label and its blocks. The label is sticky so it can never be stranded at the foot of a page.
 #let cv-section(title, body) = block(width: 100%, above: 14pt * u, below: 0pt, breakable: true)[
   // No letter-spacing: a tracked label extracts from the PDF as "S K I L L S", and these CVs are read by ATS
   // parsers before they are read by people. The monospaced label face already gives the width the tracking bought.
