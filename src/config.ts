@@ -18,10 +18,18 @@ function booleanEnv(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be true or false.`);
 }
 
+// Model and thinking settings are left blank in .env.example so the operator picks a provider deliberately; a
+// blank value therefore has to mean "unset" rather than an empty model identifier that fails at request time.
+function modelEnv(name: string, fallback: string): string {
+  const raw = process.env[name]?.trim();
+  return raw ? raw : fallback;
+}
+
 const thinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 type ThinkingLevel = typeof thinkingLevels[number];
 function thinkingLevelEnv(name: string, fallback: ThinkingLevel): ThinkingLevel {
-  const value = process.env[name] ?? fallback;
+  const raw = process.env[name]?.trim();
+  const value = raw ? raw : fallback;
   if (!thinkingLevels.includes(value as ThinkingLevel)) throw new Error(`Invalid ${name}: ${value}`);
   return value as ThinkingLevel;
 }
@@ -59,11 +67,11 @@ if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
 
 export const config = {
   hhBrowserDataPath: resolve(process.env.HH_BROWSER_DATA_PATH ?? './data/hh-browser'),
-  model: process.env.AI_MODEL ?? 'openai-codex/gpt-5.6-terra',
+  model: modelEnv('AI_MODEL', 'openai-codex/gpt-5.6-terra'),
   thinkingLevel: thinkingLevelEnv('AI_THINKING_LEVEL', 'high'),
-  scoringModel: process.env.AI_SCORING_MODEL ?? 'openai-codex/gpt-5.6-luna',
+  scoringModel: modelEnv('AI_SCORING_MODEL', 'openai-codex/gpt-5.6-luna'),
   scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
-  scoringFallbackModel: process.env.AI_SCORING_FALLBACK_MODEL ?? 'openai/gpt-5.4-mini',
+  scoringFallbackModel: modelEnv('AI_SCORING_FALLBACK_MODEL', 'openai/gpt-5.4-mini'),
   scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
   hhAreaId: process.env.HH_AREA_ID ?? '1',
   playwrightChromiumPath: process.env.PLAYWRIGHT_CHROMIUM_PATH,

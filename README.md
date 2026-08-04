@@ -11,9 +11,11 @@ The same codebase supports local and cloud execution:
 - `src/task-worker.ts` — authenticated Cloud Tasks worker.
 - `src/cycle.ts` — finite scheduled scrape cycle.
 - `src/profile-refresh.ts` — finite repair job for missing or invalid search profiles.
-- `src/vacancies/` — HH, Habr Career, Работа.ру, and HireHi adapters.
+- `src/vacancies/` — HH, Habr Career, Работа.ру, HireHi, GeekJob, Avito, Работа России, and company ATS adapters.
 - `src/database.ts` — repository for the seven-table PostgreSQL domain schema.
-- `src/ai.ts` / `src/workflows.ts` — direct typed Pi AI calls using Codex OAuth.
+- `src/ai.ts` / `src/workflows.ts` — direct typed Pi AI calls with schema validation and bounded retries.
+- `src/claude-cli.ts` — a Pi AI provider this project adds, bridging completions to the Claude Code CLI.
+- `docker/claude-cli/` — the sidecar that serves that bridge over HTTP when the CLI cannot ship in the image.
 
 Production domain tables:
 
@@ -56,6 +58,42 @@ RUN_JOBS=false
 
 Cloud Tasks concurrency and the scrape advisory lock provide bounded execution. Deployments leave Scheduler paused and do not configure the Telegram webhook automatically.
 
+## AI providers
+
+Inference goes through [Pi AI](https://github.com/earendil-works/pi-ai). Three providers are registered, and a
+model identifier of the form `provider/model` selects one:
+
+| Provider | Billing | Needs |
+|---|---|---|
+| `openai-codex` | ChatGPT subscription over OAuth | `OPENAI_CODEX_AUTH_FILE` or the encrypted cloud OAuth document |
+| `openai` | metered API | `OPENAI_API_KEY` |
+| `claude-cli` | Claude Code subscription | the `claude` CLI, or a sidecar at `CLAUDE_CLI_ENDPOINT` |
+
+`.env.example` ships every `AI_*_MODEL` blank so the choice is yours; blank falls back to the built-in default for
+that role. A provider is inert until a model names it, so registering all three costs nothing.
+
+### The `claude-cli` provider is ours, not upstream
+
+Pi AI has no Claude Code provider, so this repository adds one in `src/claude-cli.ts`. It is not the Anthropic
+provider with a different base URL — it does not speak the Anthropic HTTP API at all. It runs the CLI in print mode
+(locally, or remotely through the `docker/claude-cli/` sidecar which accepts the same argument list over HTTP and
+streams the CLI's NDJSON straight back). The consequences are worth knowing before selecting it:
+
+| | Anthropic provider | `claude-cli` provider |
+|---|---|---|
+| Transport | HTTPS to the Anthropic API | child process, or HTTP to the sidecar that spawns it |
+| Credential | `ANTHROPIC_API_KEY` | none in this process; the CLI resolves its own subscription OAuth |
+| Billing | metered per token | subscription quota; reported cost is notional |
+| Tools | caller tools forwarded | not forwarded, and the CLI's own tools are disabled |
+| Sessions | stateless per request | stateless; `--no-session-persistence`, no `--resume` |
+| Multi-turn | sent as messages | flattened into one labelled prompt |
+| Input | text and images | text only |
+| Latency floor | one HTTP round trip | ~1–2s of process startup per request |
+
+See [Claude CLI bridge](docs/claude-cli-bridge.md) for the mapping, the token-overhead measurements behind
+`--system-prompt`/`--tools ""`, and the remaining gaps. [VPS deployment](docs/vps-claude-bridge.md) covers running
+the sidecar.
+
 ## Development
 
 Requirements:
@@ -63,6 +101,10 @@ Requirements:
 - Bun 1.3.14+
 - PostgreSQL via `DATABASE_URL`
 - Chromium for HH browser search
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) — **only** when an `AI_*_MODEL` selects `claude-cli/*`.
+  Install it with `npm install -g @anthropic-ai/claude-code` and sign in (`claude setup-token` mints a long-lived
+  subscription token). Alternatively point `CLAUDE_CLI_ENDPOINT` at the sidecar and install nothing locally.
+  Nothing else in the project imports it, so leaving `claude-cli/*` unselected needs no Claude install at all.
 
 ```bash
 bun install --frozen-lockfile
@@ -91,9 +133,11 @@ Readiness endpoints:
 | `TELEGRAM_BOT_TOKEN` | Telegram bot credential |
 | `TELEGRAM_USER_ID` | Owner user ID |
 | `TELEGRAM_MODE` | `polling`, `webhook`, or `off` |
-| `SEARCH_PLATFORMS` | `hh,habr,rabota,hirehi` |
-| `AI_MODEL` | Profile and application model |
-| `AI_SCORING_MODEL` | Batched vacancy-scoring model |
+| `SEARCH_PLATFORMS` | Subset of `hh,habr,rabota,hirehi,geekjob,avito,trudvsem,ats` |
+| `AI_MODEL` | Profile and application model; blank uses the default |
+| `AI_SCORING_MODEL` | Batched vacancy-scoring model; blank uses the default |
+| `CLAUDE_CLI_PATH` / `CLAUDE_CLI_ENDPOINT` | Local `claude` binary, or the sidecar serving it |
+| `CLAUDE_CLI_TOKEN` | Bearer secret shared with that sidecar |
 | `SCORING_BATCH_TIMEOUT_SECONDS` | Abort deadline for each scoring worker attempt |
 | `SCORING_BATCH_MAX_ATTEMPTS` | Bounded scoring attempts after timeout or failure |
 | `SCRAPE_CONCURRENCY` | Bounded concurrent user/platform scrape operations; HH remains serialized |
