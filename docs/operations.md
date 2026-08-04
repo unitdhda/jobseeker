@@ -131,15 +131,29 @@ jj status
 
 All four validation commands must pass before deployment. The PostgreSQL integration test uses temporary rows and cleans them up.
 
-## Database migrations
+## Database schema
 
-1. Add a new timestamped SQL migration under `supabase/migrations/`.
-2. Never edit a migration already applied remotely.
+`supabase/schema.sql` is the schema of record: it describes the database the application expects, and applying it
+to an empty database produces a runnable environment. It is generated from the live database, so it reflects what is
+actually deployed rather than what a migration series intended.
+
+Incremental migration files under `supabase/migrations/` are **not** version controlled. They remain on the machine
+that applies them, because the Supabase CLI needs them to reconcile with the remote ledger, but they are working
+material rather than a published record.
+
+To change the schema:
+
+1. Write the change as a timestamped migration under `supabase/migrations/` locally.
+2. Never edit a migration already applied remotely; the remote ledger records it.
 3. Review destructive statements and constraints before applying.
-4. Apply the forward migration using the linked Supabase project and verify it before deploying dependent code.
-5. Run `bun run test:postgres` after application.
+4. Apply it to the linked Supabase project and verify before deploying dependent code.
+5. Regenerate `supabase/schema.sql` from the live database and commit that.
+6. Run `bun run test:postgres` after application.
 
 Use the project's existing Supabase linkage and local secret files. Do not place database passwords on command lines or in logs.
+
+Because the migration series is not published, the repository carries no upgrade path for an existing database —
+`schema.sql` builds a new one. A clone without the local migration files cannot run `supabase db push`.
 
 ## Release workflow
 

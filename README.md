@@ -17,6 +17,10 @@ The same codebase supports local and cloud execution:
 - `src/claude-cli.ts` — a Pi AI provider this project adds, bridging completions to the Claude Code CLI.
 - `docker/claude-cli/` — the sidecar that serves that bridge over HTTP when the CLI cannot ship in the image.
 
+`supabase/schema.sql` is the schema of record — apply it to an empty database to get a runnable environment.
+Incremental migration files are working material and stay out of version control; see
+[Operations](docs/operations.md).
+
 Production domain tables:
 
 - `users`
@@ -164,4 +168,4 @@ See `.env.example` for bounded limits and optional settings.
 - SQLite files are historical backups only.
 - OAuth and browser state are encrypted before storage.
 - Never commit `.env`, OAuth documents, database passwords, Telegram tokens, or encryption keys.
-- Historical Supabase migrations are immutable.
+- A migration already applied remotely is immutable; regenerate `supabase/schema.sql` instead of rewriting one.

@@ -10,3 +10,4 @@ fonts/
 SECURITY_AUDIT*.md
 /scripts/
 .pi/
+supabase/migrations/
