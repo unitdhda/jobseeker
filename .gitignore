@@ -11,3 +11,9 @@ SECURITY_AUDIT*.md
 /scripts/
 .pi/
 supabase/migrations/
+
+# layout workbench (dev-only, holds real CV data)
+corpus/
+out/
+probe/
+tools/

@@ -9,6 +9,7 @@ import {
 import { getSearchPlatform } from './vacancies/registry.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
+import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from './cv-document.ts';
 import { trace } from './observability.ts';
 import { prefilterVacancy } from './prefilter.ts';
 import { errorMessage } from './observability.ts';
@@ -17,7 +18,7 @@ import {
   careerProfilePlatformId, careerProfileSchema, normalizeCareerProfileJson, parseStoredCareerProfile, vacancyRecency,
   type CareerProfile, type StoredCareerProfile,
 } from './prefilter.ts';
-import { compilePlainTextCv } from './documents.ts';
+import { compileCvDocument } from './documents.ts';
 import { detectCvLanguage } from './cv.ts';
 
 const scoringPool = new AdaptiveTaskPool(config.scoreAgentConcurrencyMin, config.scoreAgentConcurrencyMax);
@@ -29,11 +30,19 @@ const vacancyScoresSchema=v.pipe(v.array(vacancyScoreSchema),v.minLength(1),v.ma
 const scoringResultSchema=v.union([v.object({scores:vacancyScoresSchema}),vacancyScoresSchema]);
 const tailoredCvTextSchema=v.pipe(v.string(),v.minLength(500),v.maxLength(30_000));
 const coverLetterSchema=v.pipe(v.string(),v.minLength(80),v.maxLength(3_500));
-export const applicationResultSchema=v.union([
-  v.object({tailoredCvText:tailoredCvTextSchema,coverLetter:coverLetterSchema}),
-  v.pipe(v.object({tailoredCvText:tailoredCvTextSchema,coverLetterText:coverLetterSchema}),
-    v.transform(result=>({tailoredCvText:result.tailoredCvText,coverLetter:result.coverLetterText}))),
-]);
+/**
+ * The CV is requested as structured blocks so the layout never has to infer what a line meant. `tailoredCvText`
+ * remains accepted because a model that regresses to prose should still produce a PDF; it is parsed back into the
+ * same document. `coverLetterText` is a long-standing alias the models keep reaching for.
+ */
+export const applicationResultSchema=v.pipe(
+  v.looseObject({cv:v.optional(cvDocumentSchema),tailoredCvText:v.optional(tailoredCvTextSchema),
+    coverLetter:v.optional(coverLetterSchema),coverLetterText:v.optional(coverLetterSchema)}),
+  v.transform(result=>({cv:result.cv??null,tailoredCvText:result.tailoredCvText??null,
+    coverLetter:result.coverLetter??result.coverLetterText??''})),
+  v.check(result=>result.cv!=null||result.tailoredCvText!=null,'Expected a cv object of structured blocks.'),
+  v.check(result=>result.coverLetter.length>=80,'Expected a coverLetter of at least 80 characters.'),
+);
 
 async function ensureCareerProfile(userId: string, cvText: string, cvHash: string, force: boolean): Promise<CareerProfile> {
   const existing = parseStoredCareerProfile(
@@ -308,6 +317,34 @@ export async function scorePendingVacancies(
   return {attempted:vacancies.length,completed};
 }
 
+/**
+ * The block vocabulary is described by what each block means rather than by how it will look, because the model is
+ * choosing structure and the template owns the typography. Anything the model puts in `meta` is set in the dates
+ * column, which is why repeating dates in the title has to be ruled out explicitly.
+ */
+export const tailorSystemPrompt=`Create a tailored CV and cover letter from authoritative evidence only. Preserve all employers,
+dates, titles, metrics, skills, degrees, languages and contacts without invention or inflation. Translate faithfully into the
+vacancy language when needed.
+
+Return exactly {"cv":{...},"coverLetter":"..."} using these exact field names.
+
+"cv" is {"name","headline","contacts":[...],"sections":[{"title","blocks":[...]}]}. "headline" is the target role in one
+line. "contacts" holds one item per contact (location, email, telegram, links) and is laid out as a single row.
+"title" is a short section label such as SUMMARY, EXPERIENCE, PROJECTS, SKILLS, EDUCATION, LANGUAGES.
+
+Each block is exactly one of:
+{"kind":"text","text":"..."} — a paragraph of prose.
+{"kind":"bullets","items":["..."]} — achievements or responsibilities, one per item, no leading bullet character.
+{"kind":"entry","title":"employer or institution","subtitle":"role or degree","meta":"dates, location","text":"optional
+introduction","bullets":["..."]} — a dated record. Put every date in "meta" and never repeat it in "title" or "subtitle".
+{"kind":"facts","items":[{"term":"group","detail":"comma-separated values"}]} — skills, tooling, languages.
+
+Use "entry" for every job, and one "facts" block per skills section rather than many "text" blocks. Inside any string,
+**bold** and *italic* are the only markup; no Markdown, HTML, Typst, code, headings or bullet characters. Do not style
+section labels or add separator lines — the template does that.
+
+The cover letter is concise plain text and mentions concrete overlap.`;
+
 export async function tailorApplication(userId: string, vacancyId: number): Promise<GeneratedApplication> {
   await requireApprovedUser(userId);
   if (await usageInLast24Hours(userId, 'application') >= config.userDailyApplicationLimit) {
@@ -320,13 +357,10 @@ export async function tailorApplication(userId: string, vacancyId: number): Prom
   try {
     const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
     const documents=await generateJson({userId,agent:'tailor-application',model:config.model,thinking:config.thinkingLevel,
-      schema:applicationResultSchema,system:`Create a tailored plain-text CV and cover letter from authoritative evidence only. Preserve all
-employers, dates, titles, metrics, skills, degrees, languages and contacts without invention or inflation. Translate faithfully
-into the vacancy language when needed. tailoredCvText starts with name, role and contacts, uses uppercase section headings and
-one bullet per line beginning with •; no Markdown, HTML, Typst or code. The cover letter is concise and mentions concrete overlap.
-Return exactly {"tailoredCvText":"...","coverLetter":"..."}. Use these exact field names.`,
+      schema:applicationResultSchema,repair:normalizeCvDocumentJson,system:tailorSystemPrompt,
       prompt:`CV DOCUMENT:\n${JSON.stringify(cv.document)}\n\nCV TEXT:\n${cv.cvText}\n\nVACANCY:\n${JSON.stringify(vacancy)}\n\nVACANCY LANGUAGE: ${detectCvLanguage(`${vacancy.name}\n${vacancy.description}`)}`});
-    const application={tailoredCvPdf:compilePlainTextCv(documents.tailoredCvText),coverLetter:documents.coverLetter};
+    const document=documents.cv??parseCvText(documents.tailoredCvText!);
+    const application={tailoredCvPdf:compileCvDocument(document),coverLetter:documents.coverLetter};
     stageApplicationArtifacts(userId,vacancyId,application);await markApplicationReady(userId,vacancyId);return application;
   } catch (error) {
     clearApplicationArtifacts(userId, vacancyId);

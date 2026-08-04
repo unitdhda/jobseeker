@@ -1,5 +1,7 @@
 import { delimiter } from 'node:path';
 import { NodeCompiler } from '@myriaddreamin/typst-ts-node-compiler';
+import { parseCvText, type CvBlock, type CvDocument } from './cv-document.ts';
+import { cvPreamble } from './cv-template.ts';
 
 const fontPaths = (process.env.TYPST_FONT_PATHS ?? '').split(delimiter).filter(Boolean);
 const compiler = NodeCompiler.create(fontPaths.length ? { fontArgs: [{ fontPaths }] } : undefined);
@@ -10,7 +12,12 @@ export function compileTypst(source: string): Buffer {
     throw new Error('Typst source must be self-contained; import, include, and read are forbidden.');
   }
   try {
-    const pdf = compiler.pdf({ mainFileContent: source });
+    const compiled = compiler.compile({ mainFileContent: source });
+    const error = compiled.takeError();
+    if (error) throw error;
+    const document = compiled.result;
+    if (!document) throw new Error('Compiler produced no document.');
+    const pdf = compiler.pdf(document);
     if (!pdf.length || pdf.subarray(0, 4).toString() !== '%PDF') throw new Error('Compiler returned an invalid PDF.');
     return pdf;
   } catch (error) {
@@ -23,56 +30,80 @@ export function compileTypst(source: string): Buffer {
   }
 }
 
+/**
+ * Escapes every character Typst treats as markup. The hyphen and tilde matter as much as the brackets: Typst rewrites
+ * `--` into an en dash and `~` into a non-breaking space, so a CV that mentioned `CI --- pipeline` used to come out
+ * with an em dash and a swallowed tilde. Escaping each one individually is harmless, since `\-` renders as `-`.
+ */
 function escapeTypst(value: string): string {
-  return value.replace(/[\\#\[\]$@<>*_`]/g, '\\$&');
+  return value.replace(/[\\#\[\]$@<>*_`~\-.]/g, '\\$&');
 }
 
-export function compilePlainTextCv(text: string): Buffer {
-  const lines = text.replaceAll('\r', '').split('\n').map((line) => line.trim()).filter(Boolean);
-  if (lines.length < 5) throw new Error('Tailored CV text contains too little content.');
+const emphasisPattern = /\*\*([^*]+)\*\*|\*([^*]+)\*/g;
 
-  const styledInline = (line: string): string => {
-    const separator = line.includes(' — ') ? ' — ' : line.includes(': ') ? ': ' : undefined;
-    if (!separator) return escapeTypst(line);
-    const index = line.indexOf(separator);
-    return `#text(weight: 700)[${escapeTypst(line.slice(0, index))}]${escapeTypst(line.slice(index))}`;
-  };
-  let currentSection = '';
-  let afterWorkHeader = false;
-  const body = lines.map((line, index) => {
-    const escaped = escapeTypst(line);
-    if (index === 0) {
-      return `#block(below: 30pt)[#text(font: "PragmataPro Liga", size: 21pt, fill: rgb(190, 94, 70), stroke: 0.22pt + rgb(190, 94, 70))[${escaped}]]`;
-    }
-    if (index === 1) return `#block(below: 14pt)[#text(size: 10.5pt)[${escaped}]]`;
-    if (index === 2) return `#block(below: 2pt)[#text(size: 9.2pt)[${escaped}]]`;
+/**
+ * Renders one run of text, honouring the only inline markup the contract allows. Emphasis is resolved before escaping
+ * so the markers themselves never reach the compiler as literal asterisks.
+ */
+function inlineContent(value: string): string {
+  let result = '';
+  let cursor = 0;
+  for (const match of value.matchAll(emphasisPattern)) {
+    result += escapeTypst(value.slice(cursor, match.index));
+    result += match[1] != null ? `#strong[${escapeTypst(match[1])}]` : `#emph[${escapeTypst(match[2]!)}]`;
+    cursor = match.index + match[0].length;
+  }
+  return result + escapeTypst(value.slice(cursor));
+}
 
-    const letters = line.match(/[A-Za-zА-Яа-яЁё]/g)?.length ?? 0;
-    const uppercase = line.match(/[A-ZА-ЯЁ]/g)?.length ?? 0;
-    if (letters >= 4 && uppercase / letters > 0.8 && line.length < 80) {
-      currentSection = line;
-      return `#block(above: 13pt, below: 7pt)[#text(font: "PragmataPro Liga", size: 10.5pt, fill: rgb(190, 94, 70), stroke: 0.12pt + rgb(190, 94, 70))[${escaped}]]`;
-    }
-    if (/^[•\-–—]/.test(line)) {
-      const bullet = escapeTypst(line.replace(/^[•\-–—]\s*/, ''));
-      const above = afterWorkHeader ? 5 : 0;
-      afterWorkHeader = false;
-      return `#block(inset: (left: 20pt), above: ${above}pt, below: 4.5pt)[#h(-8pt)• #h(2pt)${bullet}]`;
-    }
-    if (line.length < 120 && /\|/.test(line)) {
-      afterWorkHeader = true;
-      return `#block(above: 8pt, below: 1.5pt)[#text(weight: 700)[${escaped}]]`;
-    }
-    afterWorkHeader = false;
-    const below = /(?:ТЕХНИЧЕСКИЕ НАВЫКИ|TECHNICAL SKILLS)/.test(currentSection) ? 6
-      : /(?:ПРОЕКТЫ|PROJECTS)/.test(currentSection) ? 13 : 5;
-    return `#block(above: 0pt, below: ${below}pt)[${styledInline(line)}]`;
+const content = (value: string): string => `[${inlineContent(value)}]`;
+const optional = (value: string | undefined): string => value ? content(value) : 'none';
+/** Always trailing-comma: `(x)` is a parenthesised value in Typst and `(k: v)` a dictionary, only `(x,)` is an array. */
+const tuple = (items: readonly string[]): string => items.length ? `(${items.join(', ')},)` : '()';
+const array = (values: readonly string[]): string => tuple(values.map(content));
+
+function blockContent(block: CvBlock): string {
+  switch (block.kind) {
+    case 'text': return `#cv-text(${content(block.text)})`;
+    case 'bullets': return `#cv-bullets(${array(block.items)})`;
+    case 'facts':
+      // The template supplies the colon, so a term the model already punctuated must not end up with two.
+      return `#cv-facts(${tuple(block.items.map((item) =>
+        `(term: ${content(item.term.replace(/\s*:$/, ''))}, detail: ${content(item.detail)})`))})`;
+    case 'entry':
+      return `#cv-entry(${content(block.title)}, ${optional(block.subtitle)}, ${optional(block.meta)}, `
+        + `${optional(block.text)}, ${array(block.bullets ?? [])})`;
+  }
+}
+
+/** Cyrillic content needs its own quotation marks and hyphenation rules; anything else is treated as English. */
+function documentLanguage(document: CvDocument): string {
+  const sample = `${document.name} ${document.sections.map((section) => section.title).join(' ')}`;
+  return /[Ѐ-ӿ]/.test(sample) ? 'ru' : 'en';
+}
+
+function cvSource(document: CvDocument): string {
+  const sections = document.sections.map((section) => {
+    const blocks = section.blocks.map(blockContent).join('\n  #cv-gap\n  ');
+    return `#cv-section(${content(section.title)})[\n  ${blocks}\n]`;
   }).join('\n');
+  return `${cvPreamble(documentLanguage(document))}
+#cv-header(${content(document.name)}, ${optional(document.headline)}, ${array(document.contacts)})
+${sections}
+`;
+}
 
-  return compileTypst(`#set page(width: 612pt, height: 792pt, margin: (top: 31pt, bottom: 28pt, left: 48pt, right: 48pt))
-#set text(font: "Spectral", size: 9.5pt)
-#set par(justify: false, leading: 0.65em, spacing: 0em)
-${body}`);
+/**
+ * One compilation, one page. The page height follows the content, so there is no stranded trailing page to fit away
+ * and no reason to shrink the type: what used to be a density search is now the layout's own job.
+ */
+export function compileCvDocument(document: CvDocument): Buffer {
+  return compileTypst(cvSource(document));
+}
+
+/** Kept for callers that still hold plain text: it recovers the structure first, then takes the same path. */
+export function compilePlainTextCv(text: string): Buffer {
+  return compileCvDocument(parseCvText(text));
 }
 
 export interface GeneratedApplication {
