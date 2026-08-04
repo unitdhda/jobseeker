@@ -129,7 +129,8 @@ export interface ScrapeCycleResult {
   seen: number;
   discovered: number;
   newVacancies: number;
-  /** Searches the plan folded away: what the same profiles would have cost one fetch per user per query. */
+  /** Every search the profiles asked for, uncapped. It used to be clamped by the same per-cycle budget the plan
+   * spends, which forced it equal to `searches` and hid the clustering saving entirely. */
   searchesBeforePlanning: number;
   candidateQueue: Awaited<ReturnType<typeof processCandidateQueue>>;
   scoresAttempted: number;
@@ -183,7 +184,7 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
         if(!profile)throw new Error(`${platformId} search profile is unavailable`);
         const searches=platformSearches(platformId,profile);
         if(!searches.length)continue;
-        searchesBeforePlanning+=Math.min(searches.length,config.searchQueriesPerCycle);
+        searchesBeforePlanning+=searches.length;
         const platformDemands=demands.get(platformId)??[];platformDemands.push({userId:user.userId,searches});
         demands.set(platformId,platformDemands);
       }catch(error){

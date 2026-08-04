@@ -77,12 +77,39 @@ test('boards that list everything are planned once for every user at a time', ()
   assert.ok(rotated.searches.length < enumerated.searches.length, 'query-driven platforms still rotate');
 });
 
-test('rotation sweeps every cluster and never repeats within a sweep', () => {
-  const clusters = ['a', 'b', 'c', 'd', 'e', 'f'];
+const cluster = (id: string, ...userIds: string[]) =>
+  ({ search: id, recipients: userIds.map((userId) => ({ userId, searchName: id })) });
+
+test('rotation advances each user through their own clusters without repeats', () => {
+  const clusters = ['a', 'b', 'c', 'd', 'e', 'f'].map((id) => cluster(id, 'u1'));
   const interval = config.searchRotationMinutes * 60_000;
-  const sweep = [0, 1, 2].flatMap((bucket) => rotatedClusters(clusters, 'hh', 2, bucket * interval));
+  const sweep = [0, 1, 2, 3, 4, 5].flatMap((bucket) => rotatedClusters(clusters, 'hh', 1, bucket * interval));
   assert.equal(sweep.length, 6);
-  assert.equal(new Set(sweep).size, 6, 'a full sweep must cover every cluster exactly once');
+  assert.equal(new Set(sweep.map((picked) => picked.search)).size, 6,
+    'a full sweep must cover every cluster exactly once');
+});
+
+test('every user with a cluster is served every cycle, however lopsided the demand', () => {
+  // u1 owns four adjacent clusters; the old contiguous window spent the whole budget inside them.
+  const clusters = [cluster('a1', 'u1'), cluster('a2', 'u1'), cluster('a3', 'u1'), cluster('a4', 'u1'),
+    cluster('b', 'u2'), cluster('c', 'u3'), cluster('d', 'u4'), cluster('e', 'u5')];
+  const interval = config.searchRotationMinutes * 60_000;
+  for (const bucket of [0, 1, 2, 3, 4]) {
+    const served = new Set(rotatedClusters(clusters, 'hh', 5, bucket * interval)
+      .flatMap((picked) => picked.recipients.map((recipient) => recipient.userId)));
+    assert.equal(served.size, 5, `bucket ${bucket} must serve all five users`);
+  }
+});
+
+test('a user with many searches cannot crowd others out of a cycle', () => {
+  const plan = planPlatformSearches('habr', demands([
+    ['u1', [textSearch('a', 'Python Developer'), textSearch('b', 'Java Developer'),
+      textSearch('c', 'Data Scientist'), textSearch('d', 'QA Automation')]],
+    ['u2', [textSearch('e', 'Product Designer')]],
+    ['u3', [textSearch('f', 'Art Director')]],
+  ]), {}, 0);
+  const served = new Set(plan.searches.flatMap((search) => search.recipients.map((recipient) => recipient.userId)));
+  assert.deepEqual([...served].sort(), ['u1', 'u2', 'u3'], 'one search per user, not three from the largest profile');
 });
 
 test('the plan is stable regardless of the order users are prepared in', () => {

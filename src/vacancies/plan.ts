@@ -132,17 +132,41 @@ function mergeCluster<T>(members: Entry<T>[], options: PlanOptions): PlannedSear
 }
 
 /**
- * Rotation now walks one shared cluster list per platform rather than each user's own searches, so every user is
- * served by whichever clusters they belong to and the whole list is swept in `ceil(clusters / budget)` cycles —
- * never slower than the per-user rotation it replaces.
+ * Selects the cycle's clusters user by user instead of slicing the similarity-sorted list. Clusters sort next to
+ * their owner's other searches — one user's vocabulary — so a contiguous window used to land inside one or two
+ * users' runs and leave the rest with nothing for whole cycles. Each round gives every user their next cluster
+ * (advancing one step per rotation bucket, so successive cycles sweep each user's own list), and rounds repeat
+ * until the budget is spent. A shared cluster picked for one user covers its other recipients for free, which is
+ * the clustering economy paying out as spare budget rather than as lost coverage.
  */
-export function rotatedClusters<T>(clusters: readonly T[], platformId: string, budget: number, now: number): T[] {
-  if (clusters.length <= budget) return [...clusters];
+export function rotatedClusters<T>(merged: readonly PlannedSearch<T>[], platformId: string,
+  budget: number, now: number): PlannedSearch<T>[] {
+  if (merged.length <= budget) return [...merged];
   let seed = 0;
   for (const character of platformId) seed = (seed * 31 + character.charCodeAt(0)) >>> 0;
   const bucket = Math.floor(now / (config.searchRotationMinutes * 60_000));
-  const offset = (seed + bucket * budget) % clusters.length;
-  return Array.from({ length: budget }, (_unused, index) => clusters[(offset + index) % clusters.length]!);
+  const byUser = new Map<string, number[]>();
+  merged.forEach((search, index) => {
+    for (const { userId } of search.recipients) {
+      const list = byUser.get(userId) ?? [];
+      list.push(index);
+      byUser.set(userId, list);
+    }
+  });
+  const users = [...byUser.keys()].sort();
+  const picked = new Set<number>();
+  const target = Math.min(budget, merged.length);
+  for (let round = 0; picked.size < target; round++) {
+    const before = picked.size;
+    for (const userId of users) {
+      if (picked.size >= target) break;
+      const list = byUser.get(userId)!;
+      picked.add(list[(seed + bucket * config.searchQueriesPerCycle + round) % list.length]!);
+    }
+    // Every pointer has wrapped onto already-picked clusters; only possible once everything is picked.
+    if (picked.size === before) break;
+  }
+  return [...picked].sort((left, right) => left - right).map((index) => merged[index]!);
 }
 
 export function planPlatformSearches<T>(platformId: string, demands: readonly UserSearches<T>[],
@@ -156,6 +180,8 @@ export function planPlatformSearches<T>(platformId: string, demands: readonly Us
     .map((members) => mergeCluster(members, options));
   if (!merged.length) return { searches: [] };
   if (options.enumerates) return { searches: merged };
+  // At least one pick per user per cycle by construction: the budget scales with the users demanding, and the
+  // rotation serves users before it serves breadth.
   const budget = Math.max(1, demands.length * config.searchQueriesPerCycle);
   return { searches: rotatedClusters(merged, platformId, budget, now) };
 }
