@@ -380,6 +380,12 @@ export function stopSchedules(): void {
   cycleJob?.stop();
 }
 
+/** Cycle ownership as seen from inside this process: a cron job only exists here when RUN_JOBS is on. */
+export function cycleScheduleStatus(): { scheduled: boolean; cron: string; timezone: string; nextRunAt: string | null } {
+  return { scheduled: Boolean(cycleJob), cron: config.cycleCron, timezone: config.timezone,
+    nextRunAt: cycleJob?.nextRun()?.toISOString() ?? null };
+}
+
 import { getPostgresPool, transientPostgresError } from '../postgres.ts';
 
 export async function runSingletonScrapeCycle(runUserTask?: UserTaskRunner): Promise<ScrapeCycleResult | null> {

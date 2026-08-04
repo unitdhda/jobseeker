@@ -18,7 +18,7 @@ import { readResponseBytes } from './vacancies/http.ts';
 import { errorMessage } from './observability.ts';
 import { claimTelegramSession, deleteTelegramSession, getTelegramSession, setTelegramSession } from './telegram-state.ts';
 import {
-  deliverySettingsStatus, normalizeUtcOffset, parseClockMinutes, removeDeliveryWindow,
+  cycleScheduleStatus, deliverySettingsStatus, normalizeUtcOffset, parseClockMinutes, removeDeliveryWindow,
   updateDeliveryTimezone, updateDeliveryWindow, updateDigestTime,
 } from './vacancies/jobs.ts';
 
@@ -157,20 +157,40 @@ export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
 }
 function compactNumber(value:number):string{return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value);}
 function money(value:number):string{return `$${value<0.01?value.toFixed(6):value.toFixed(2)}`;}
-function runtimeUsageText():string{
-  const memory=process.memoryUsage(),cpu=process.cpuUsage(),worker=jobWorkerStatus();
+// The next cycle is announced in the schedule's own timezone, because a UTC instant says nothing about when the
+// owner should expect the run.
+function scheduleClock(timestamp:string,timezone:string):string{
+  try{
+    return new Intl.DateTimeFormat('ru-RU',{timeZone:timezone,hour:'2-digit',minute:'2-digit',hourCycle:'h23'})
+      .format(new Date(timestamp));
+  }catch{return timestamp;}
+}
+// Deployment answers "where and how is this running": which Cloud Run revision serves the command, what it is
+// allowed to consume, who owns the scheduled cycle and where background work is dispatched. Model spend lives in
+// /usage instead, so the two commands never repeat each other.
+function deploymentStatusText():string{
+  const memory=process.memoryUsage(),cpu=process.cpuUsage(),worker=jobWorkerStatus(),schedule=cycleScheduleStatus();
   const cloud=Boolean(process.env.K_SERVICE); const service=process.env.K_SERVICE??'локальный процесс';
   const runtimeHours=process.uptime()/3600,isTaskWorker=service.includes('worker');
   const allocatedCpu=isTaskWorker?2:1,allocatedMemoryGiB=isTaskWorker?2:0.5;
-  const runtime=cloud?`Cloud Run · ${service} · видимый экземпляр: 1`:'Cloud Run не активен · локальных процессов сервиса: 1';
+  const runtime=cloud?`Cloud Run · ${service} · ревизия ${process.env.K_REVISION??'неизвестна'} · видимый экземпляр: 1`
+    :'Cloud Run не активен · локальных процессов сервиса: 1';
   const allocation=cloud?`Текущий экземпляр: ${runtimeHours.toFixed(2)} instance-ч · `+
     `${(runtimeHours*allocatedCpu).toFixed(2)} vCPU-ч · ${(runtimeHours*allocatedMemoryGiB).toFixed(2)} GiB-ч`:
     'Cloud usage: 0 (локальный владелец исполнения)';
   const scaling=cloud?'web 0–2 × 20; task workers 0–3 × 1; cycle 0–1':'профиль при cutover: web 0–2 × 20; task workers 0–3 × 1; cycle 0–1';
+  const queue=process.env.CLOUD_TASKS_QUEUE
+    ?`${process.env.CLOUD_TASKS_LOCATION??'?'}/${process.env.CLOUD_TASKS_QUEUE}`:'не настроены (работа в процессе)';
+  const cycle=schedule.scheduled
+    ?`в этом процессе · ${schedule.cron} · ${schedule.timezone}`+
+      `${schedule.nextRunAt?` · следующий в ${scheduleClock(schedule.nextRunAt,schedule.timezone)}`:''}`
+    :`внешний планировщик · профиль ${schedule.cron} · ${schedule.timezone}`;
   return `${runtime}\n${allocation}\nПамять RSS: ${Math.round(memory.rss/1_048_576)} MiB · heap: ${Math.round(memory.heapUsed/1_048_576)} MiB\n`+
     `CPU процесса: ${((cpu.user+cpu.system)/1e6).toFixed(1)} c · uptime: ${runtimeHours.toFixed(1)} ч\n`+
     `Локальный job worker: ${worker.active}/1 · очередь: ${worker.pending}/${worker.capacity}\n`+
-    `AI workers: ${config.scoreAgentConcurrencyMin}–${config.scoreAgentConcurrencyMax} · масштаб: ${scaling}`;
+    `AI workers: ${config.scoreAgentConcurrencyMin}–${config.scoreAgentConcurrencyMax} · масштаб: ${scaling}\n`+
+    `Telegram: ${config.telegramMode} · Cloud Tasks: ${queue}\n`+
+    `Цикл: ${cycle}`;
 }
 function windowKeyboard():InlineKeyboard{return new InlineKeyboard()
   .text('🕒 Время уведомлений','window:time').row()
@@ -599,20 +619,26 @@ async function usersPage(pageInput: number): Promise<{ richMessage: InputRichMes
   const total = (await listTelegramUsers(1, 0)).total; const pages = Math.max(1, Math.ceil(total / usersPageSize));
   const page = Math.max(0, Math.min(pageInput, pages - 1)); const { users } = await listTelegramUsers(usersPageSize, page * usersPageSize);
   const ids = users.map((user) => user.userId);
+  // Per-user counts live next to the person they describe rather than in /usage, which now reports model spend only.
+  const activity = new Map((await userUsageSummaries()).map((row) => [row.userId, row]));
   const userRows = await Promise.all(users.map(async (user) => {
     const ref = user.isOwner ? '—' : userPrefix(user.userId, ids);
     const name = (user.username ? `@${user.username}` : user.displayName).replace(/\s+/g, ' ').slice(0, 24);
+    const counts = activity.get(user.userId);
     return [cell(ref), cell(`${name}\n${user.userId}`), cell(userStatusText(user.status)),
-      cell(await getCvSource(user.userId) ? 'да' : 'нет', 'center'), cell(await deliverySettingsStatus(user.userId))];
+      cell(await getCvSource(user.userId) ? 'да' : 'нет', 'center'),
+      cell(`${counts?.scores24h ?? 0}/${counts?.scoresTotal ?? 0}\n${counts?.applications24h ?? 0}/${counts?.applicationsTotal ?? 0}`, 'right'),
+      cell(await deliverySettingsStatus(user.userId))];
   }));
   const table: InputRichBlockTable = {
     type: 'table', is_bordered: true, is_striped: true,
     cells: [[headerCell('Ссылка', 'left'), headerCell('Пользователь', 'left'), headerCell('Статус', 'left'),
-      headerCell('CV', 'center'), headerCell('Доставка', 'left')], ...userRows],
+      headerCell('CV', 'center'), headerCell('Оценки\nОтклики', 'right'), headerCell('Доставка', 'left')], ...userRows],
   };
   const richMessage: InputRichMessage = { blocks: [
     { type: 'heading', size: 3, text: `Пользователи — страница ${page + 1}/${pages}` },
     table,
+    { type: 'paragraph', text: 'Оценки и отклики: за 24 часа / за всё время.' },
     { type: 'paragraph', text: 'Одобрить: /ok ID или @username. Отозвать: /revoke ССЫЛКА.' },
   ] };
   const keyboard = new InlineKeyboard();
@@ -678,7 +704,8 @@ async function deletePersonalData(ctx: Context, confirmation: string): Promise<v
 
 async function approvedStartText(user: TelegramUser): Promise<string> {
   const ownerCommands = user.isOwner
-    ? '\n\nКоманды владельца:\n/ok ID или @username — одобрить доступ\n/users — пользователи\n/revoke ССЫЛКА — отозвать доступ\n/usage — статистика использования'
+    ? '\n\nКоманды владельца:\n/ok ID или @username — одобрить доступ\n/users — пользователи и их активность\n'
+      + '/revoke ССЫЛКА — отозвать доступ\n/usage — токены и стоимость модели\n/status — развёртывание и облако'
     : '';
   return `Доступ открыт.\n\n1. Загрузите актуальное резюме командой /cv.\n` +
     `2. Настройте время уведомлений и дайджеста командой /window.\n` +
@@ -786,20 +813,23 @@ function configureTelegramBot(): Bot | null {
   });
   instance.command('usage', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
-    const [rows,llm,settings]=await Promise.all([userUsageSummaries(),llmUsageSummary(),getDeliverySettings(ownerUserId())]);
-    const lines = rows.map((row) => `${row.userId.padEnd(14)} ${String(row.scores24h).padStart(4)}/${String(row.scoresTotal).padEnd(5)} ` +
-      `${String(row.applications24h).padStart(3)}/${String(row.applicationsTotal).padEnd(4)} ${row.displayName.slice(0, 18)}`);
+    const [llm,settings]=await Promise.all([llmUsageSummary(),getDeliverySettings(ownerUserId())]);
     const chart=usageTimelineChart(llm.hourlyTimeline,settings?.timezone??config.timezone);
     await dropTrackedMessages(ownerUserId(), 'usage-messages');
     const sent = await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n`+
       `LLM-вызовы: <b>${llm.turns24h} / ${llm.turnsTotal}</b>\n`+
       `Токены: <b>${compactNumber(llm.tokens24h)} / ${compactNumber(llm.tokensTotal)}</b>\n`+
       `Стоимость модели: <b>${money(llm.cost24hUsd)} / ${money(llm.costTotalUsd)}</b>\n\n`+
-      `<b>Почасовая динамика за 24 часа</b>\n<pre>${escapeHtml(chart)}</pre>\n`+
-      `<b>Ресурсы и масштабирование</b>\n<pre>${escapeHtml(runtimeUsageText())}</pre>\n`+
-      `<b>Пользователи</b>\n<pre>${escapeHtml(['ID              Оценки      Отклики  Пользователь', ...lines].join('\n'))}</pre>`,
+      `<b>Почасовая динамика за 24 часа</b>\n<pre>${escapeHtml(chart)}</pre>`,
       { parse_mode: 'HTML' });
     await trackMessages(ownerUserId(), 'usage-messages', [ctx.message?.message_id, sent.message_id]);
+  });
+  instance.command('status', async (ctx) => {
+    if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
+    await dropTrackedMessages(ownerUserId(), 'status-messages');
+    const sent = await ctx.reply(`<b>Развёртывание и облако</b>\n<pre>${escapeHtml(deploymentStatusText())}</pre>`,
+      { parse_mode: 'HTML' });
+    await trackMessages(ownerUserId(), 'status-messages', [ctx.message?.message_id, sent.message_id]);
   });
   instance.command('search', async (ctx) => {
     const query = ctx.match.trim();
