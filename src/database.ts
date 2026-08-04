@@ -549,11 +549,17 @@ export async function searchScoredVacancies(userId:string,input:string,limit=10)
 }
 const currentDigest=`uv.decision='digested' and uv.updated_at=(select max(latest.updated_at) from user_vacancies latest
   where latest.user_id=uv.user_id and latest.decision='digested')`;
-export async function latestDigestVacanciesByApplyIdPrefix(userId:string,prefix:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
-  where uv.user_id=$1 and ${currentDigest} and v.apply_id like $2
-  order by uv.score desc,v.published_at desc limit 2`,[userId,`${prefix}%`])).map(rowToScoredVacancy);}
-export async function currentDigestVacancies(userId:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
-  where uv.user_id=$1 and ${currentDigest} order by uv.score desc,v.published_at desc`,[userId])).map(rowToScoredVacancy);}
+/**
+ * Vacancies a digest ID can still refer to: the last delivered snapshot plus everything queued since that scheduled
+ * run. `digestVacancies` lists only the queued half, but the delivered message stays in the user's chat, so its IDs
+ * have to keep resolving. Expects `$1` user, `$2` minimum score, `$3` alert score.
+ */
+const addressableDigest=`(${currentDigest} or (uv.decision='new' and uv.score>=$2 and uv.score<$3
+  and uv.score_updated_at is not null and ((select last_digest_at from users where user_id=$1) is null
+    or uv.score_updated_at>(select last_digest_at from users where user_id=$1))))`;
+export async function latestDigestVacanciesByApplyIdPrefix(userId:string,min:number,high:number,prefix:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
+  where uv.user_id=$1 and ${addressableDigest} and v.apply_id like $4
+  order by uv.score desc,v.published_at desc limit 2`,[userId,min,high,`${prefix}%`])).map(rowToScoredVacancy);}
 export async function digestVacancies(userId:string,min:number,high:number,since:string|null,until:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
   where uv.user_id=$1 and uv.score>=$2 and uv.score<$3 and uv.decision='new' and uv.score_updated_at is not null
   and ($4::timestamptz is null or uv.score_updated_at>$4::timestamptz) and uv.score_updated_at<=$5::timestamptz

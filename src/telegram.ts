@@ -2,7 +2,7 @@ import { Bot, InlineKeyboard, InputFile, type Context } from 'grammy';
 import type { InputRichBlockTable, InputRichMessage, RichBlockTableCell, RichText } from 'grammy/types';
 import { config } from './config.ts';
 import {
-  approvedUsers, currentDigestVacancies, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
+  approvedUsers, deleteUserData, digestVacancies, exportUserData, getCvHash, getCvSource, getDeliverySettings,
   getScoredVacancy, getScoredVacancyByApplyId, getSearchProfile, getTelegramUser, isApprovedUser, latestDigestVacanciesByApplyIdPrefix,
   listTelegramUsers, markAlerted, markApplicationDelivered, replaceDigestSnapshot, requestAccess, searchScoredVacancies, setUserStatus,
   skipVacancy, touchTelegramUser, unsentHighScoreVacancies, userUsageSummaries, llmUsageSummary,
@@ -238,13 +238,16 @@ function highlightedApplyId(applyId: string, allApplyIds: string[]): RichText {
   return [{ type: 'bold', text: applyId.slice(0, prefixLength) }, applyId.slice(prefixLength)];
 }
 export interface DigestDeliveryOptions { scheduled?: boolean; sendEmptyTable?: boolean }
+/**
+ * Both the scheduled run and the `/digest` command list what has been scored into digest range since the last
+ * scheduled run — never the snapshot that run already delivered. Only the scheduled run replaces the snapshot and
+ * moves `last_digest_at`, so asking on demand shows the queue without consuming it.
+ */
 export async function sendDailyDigest(userId:string,options:DigestDeliveryOptions={}):Promise<number>{
   if(!await isApprovedUser(userId))throw new Error('User access is not approved.');
   const scheduled=options.scheduled??false,snapshotAt=new Date().toISOString();
-  const settings=scheduled?await getDeliverySettings(userId):null;
-  const vacancies=scheduled
-    ?await digestVacancies(userId,config.digestMinScore,config.alertScore,settings?.lastDigestAt??null,snapshotAt)
-    :await currentDigestVacancies(userId);
+  const settings=await getDeliverySettings(userId);
+  const vacancies=await digestVacancies(userId,config.digestMinScore,config.alertScore,settings?.lastDigestAt??null,snapshotAt);
   if(!vacancies.length){
     if(options.sendEmptyTable){
       const table:InputRichBlockTable={type:'table',is_bordered:true,is_striped:true,cells:[
@@ -931,7 +934,7 @@ function configureTelegramBot(): Bot | null {
     const userId = String(ctx.from.id); const reference = ctx.match[1].toLowerCase();
     const exact = reference.length === 6 ? await getScoredVacancyByApplyId(userId, reference) : null;
     const matches: ScoredVacancy[] = reference.length === 6 ? (exact ? [exact] : [])
-      : await latestDigestVacanciesByApplyIdPrefix(userId, reference);
+      : await latestDigestVacanciesByApplyIdPrefix(userId, config.digestMinScore, config.alertScore, reference);
     if (!matches.length) { await ctx.reply(`В последней подборке нет вакансии с ID ${reference}.`); return; }
     if (matches.length > 1) { await ctx.reply(`Префикс ${reference} подходит к нескольким вакансиям. Пришлите больше букв.`); return; }
     const vacancy = matches[0]; const key = `${userId}:${vacancy.id}`;

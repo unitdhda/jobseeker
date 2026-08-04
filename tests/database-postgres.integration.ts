@@ -82,10 +82,18 @@ try {
   const snapshotAt=new Date().toISOString();
   assert.deepEqual((await d.digestVacancies(userId,50,80,null,snapshotAt)).map(vacancy=>vacancy.id),[normalizedCandidate.id]);
   await d.replaceDigestSnapshot(userId,[normalizedCandidate.id],snapshotAt);
-  assert.deepEqual((await d.currentDigestVacancies(userId)).map(vacancy=>vacancy.id),[normalizedCandidate.id]);
-  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,digestVacancy!.applyId.slice(0,2))).length,1);
-  await d.replaceDigestSnapshot(userId,[],new Date(Date.parse(snapshotAt)+1_000).toISOString());
-  assert.deepEqual(await d.currentDigestVacancies(userId),[]);
+  // Delivered rows leave the digest itself but stay addressable from the message that already carried them.
+  const afterSnapshot=new Date(Date.parse(snapshotAt)+1_000).toISOString();
+  assert.deepEqual(await d.digestVacancies(userId,50,80,snapshotAt,afterSnapshot),[]);
+  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,50,80,digestVacancy!.applyId.slice(0,2))).length,1);
+  await d.replaceDigestSnapshot(userId,[],afterSnapshot);
+  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,50,80,digestVacancy!.applyId.slice(0,2))).length,0);
+  // Scored after the last scheduled run: queued for the next digest and addressable straight away.
+  const beforeScore=new Date(Date.parse(snapshotAt)-60_000).toISOString();
+  await d.replaceDigestSnapshot(userId,[],beforeScore);
+  assert.deepEqual((await d.digestVacancies(userId,50,80,beforeScore,new Date(Date.now()+60_000).toISOString()))
+    .map(vacancy=>vacancy.id),[normalizedCandidate.id]);
+  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,50,80,digestVacancy!.applyId.slice(0,2))).length,1);
   assert.equal(await d.usageInLast24Hours(userId,'application'),0);
   await d.beginApplication(userId,vacancyId);await d.markApplicationReady(userId,vacancyId);
   assert.equal(await d.usageInLast24Hours(userId,'application'),0);
