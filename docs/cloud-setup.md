@@ -1,14 +1,18 @@
 # Cloud setup and manual control
 
-How the deployed system fits together, and how to turn it on, pause it, or stop it by hand.
+How the **cloud** deployment fits together, and how to turn it on, pause it, or stop it by hand.
+
+> Production currently runs on a VPS, not here — see [VPS deployment](vps-claude-bridge.md). Cloud Scheduler is
+> `PAUSED` and no Telegram webhook points at Cloud Run, so nothing in this file is running on a schedule today.
 
 For the full release, validation, triage, and rollback procedures, see `docs/operations.md`. This file covers only the
-shape of the running system and its three control surfaces.
+shape of the cloud system and its three control surfaces.
 
 ## Shell setup
 
+Run from the repository root.
+
 ```bash
-cd /Users/uf90/work/jobseeker
 export GCP_PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
 export GCP_REGION="${GCP_REGION:-europe-west1}"
 ```
@@ -70,11 +74,15 @@ WEB_URL="$(gcloud run services describe jobseeker-web \
 curl -fsS --max-time 30 "$WEB_URL/ready"
 ```
 
-Also confirm no local process is competing for the same Telegram token or schedule:
+Also confirm nothing else is competing for the same Telegram token or schedule — including the VPS, which owns
+production today:
 
 ```bash
-pgrep -afil '/Users/uf90/work/(jobseeker|jobseeker-testbot)/dist/(server|worker|run-cycle)\.mjs' || true
+pgrep -afil 'dist/(server|worker|run-cycle)\.mjs' || true
+vps 'docker ps --format "{{.Names}} {{.Status}}"'
 ```
+
+`vps` is the helper defined in `docs/operations.md`; host connection details live in local configuration only.
 
 ## Pause
 
@@ -97,7 +105,8 @@ gcloud tasks queues pause jobseeker \
 
 ## Enable
 
-Restore normal production ownership. Do this only after a controlled cycle has succeeded.
+Hand production ownership to Cloud Run. Do this only after a controlled cycle has succeeded, and only after the
+current owner — today the VPS bot — has been stopped. See the handoff sequence in `docs/operations.md`.
 
 ```bash
 gcloud tasks queues resume jobseeker \
@@ -116,7 +125,8 @@ TELEGRAM_WEBHOOK_URL="$WEB_URL/telegram/webhook" \
   bun --env-file=.env --env-file=.env.cloud src/scripts/set-telegram-webhook.ts
 ```
 
-Stop any local poller and wait longer than its polling timeout first. Two receivers on one token silently lose updates.
+Stop the VPS bot or any local poller and wait longer than its polling timeout first. Two receivers on one token
+silently lose updates.
 
 Then re-run the state checks above.
 
@@ -146,7 +156,9 @@ receive no traffic; they cost nothing at zero instances. Reverse with the Enable
 
 ## Run one cycle by hand
 
-Works whether Scheduler is enabled or paused, but keep Scheduler paused to guarantee a single producer:
+Keep Scheduler paused to guarantee a single producer — and stop the VPS bot first if it is running. The advisory
+lock keeps two cycles from scraping at once, but **delivery is not locked**, so a second producer sends real users
+duplicate alerts and digests:
 
 ```bash
 gcloud run jobs execute jobseeker-cycle \

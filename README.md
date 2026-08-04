@@ -70,7 +70,12 @@ rediscover, re-score and re-deliver them.
 
 Keep exactly one Telegram receiver and one scrape producer active.
 
-### Local
+Production is the VPS deployment: one container polling Telegram and running its own cycle schedule, scoring
+through the `claude-cli` sidecar. The Cloud Run surface is deployed and idle, with Cloud Scheduler paused and no
+webhook configured. See [VPS deployment](docs/vps-claude-bridge.md) for the live topology and
+[Operations](docs/operations.md) for releases and handoffs between the two.
+
+### VPS (production) and local
 
 ```env
 TELEGRAM_MODE=polling

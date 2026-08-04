@@ -1,5 +1,9 @@
 # Cloud Run staging and cutover
 
+> **This surface is deployed and idle.** Production runs on a VPS — see [VPS deployment](vps-claude-bridge.md).
+> Cloud Scheduler is `PAUSED` and no Telegram webhook points here. Everything below describes the staged
+> alternative and what a cutover back to it would involve.
+
 The cloud deployment uses separate web and worker images in five bounded roles:
 
 | Role | Runtime | Bounds |
@@ -85,8 +89,11 @@ Do not point Telegram at Cloud Run or run the cloud cycle while the local poller
 
 ## Cutover order
 
+This takes Telegram and the schedule away from whatever owns them now — today the VPS. See the handoff sequence in
+`docs/operations.md`.
+
 1. Keep Scheduler paused.
-2. Stop the local poller and verify that its process has exited.
+2. Stop the current receiver — the VPS bot, or a local poller — and verify that its process has exited.
 3. Confirm the seven-table PostgreSQL schema and row-count parity.
 4. Persist current OAuth and HH browser state.
 5. Configure Telegram to use the public `/telegram/webhook` URL with `drop_pending_updates=false`.
