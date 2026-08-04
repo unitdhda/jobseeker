@@ -252,23 +252,36 @@ export function hashedVacancy(base: Omit<VacancyInput, 'contentHash'>): VacancyI
 }
 
 import { recordVacancyCandidate, type VacancyCandidateInput } from '../database.ts';
+import type { SearchRecipient } from './plan.ts';
 
 export interface VacancySearchResult { seen: number; discovered: number }
 
-/** Records unique search results until the per-user/platform new-vacancy target is reached. */
+/**
+ * Records unique search results until the per-platform new-vacancy target is reached.
+ *
+ * One collector spans a whole platform plan, because a listing found by two clustered searches is one fetch and
+ * should count once. Each listing is written for every user the search was planned for, under that user's own
+ * search name, so the per-user candidate prefilter keeps scoring against the query that user actually asked for.
+ * `recordVacancyCandidate` reports newness against the shared store, so only the first recipient of a listing can
+ * make it count towards the limit.
+ */
 export class VacancySearchCollector {
   readonly #seen = new Set<string>();
   #discovered = 0;
 
-  constructor(readonly userId: string, readonly newVacancyLimit: number) {}
+  constructor(readonly newVacancyLimit: number) {}
 
   get complete(): boolean { return this.#discovered >= this.newVacancyLimit; }
 
-  async record(input: VacancyCandidateInput): Promise<boolean> {
+  async record(input: VacancyCandidateInput, recipients: readonly SearchRecipient[]): Promise<boolean> {
     const key = `${input.source}:${input.sourceId}`;
     if (this.complete || this.#seen.has(key)) return false;
     this.#seen.add(key);
-    if (await recordVacancyCandidate(this.userId, input)) this.#discovered++;
+    let fresh = false;
+    for (const recipient of recipients) {
+      if (await recordVacancyCandidate(recipient.userId, { ...input, searchName: recipient.searchName })) fresh = true;
+    }
+    if (fresh) this.#discovered++;
     return true;
   }
 

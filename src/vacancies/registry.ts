@@ -15,14 +15,20 @@ export interface SearchPlatform<S extends BaseSchema<unknown, unknown, BaseIssue
   name: string;
   schema: S;
   template(): PlatformValidationTemplate;
+  /** The platform lists everything it has whatever the query, so its plan is one job covering every cluster. */
+  enumerates?: boolean;
+  /** The platform accepts boolean text, so a cluster of equivalent queries becomes one OR search. */
+  mergeText?: 'or';
 }
 
 export type PlatformProfile<P extends SearchPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>> =
   InferOutput<P['schema']>;
 
-export interface PlatformDiscoveryResult { searches: number; seen: number; discovered: number }
+export interface PlatformDiscoveryResult { searches: number; users: number; seen: number; discovered: number }
+type PlatformSearch<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>> =
+  InferOutput<S> extends { searches: readonly (infer T)[] } ? T : never;
 export interface VacancyPlatform<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>> extends SearchPlatform<S> {
-  discover(userId: string, profile: InferOutput<S>): Promise<PlatformDiscoveryResult>;
+  discover(plan: SearchPlan<PlatformSearch<S>>): Promise<PlatformDiscoveryResult>;
   normalize(candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | null | Error>>;
 }
 
@@ -37,6 +43,7 @@ import { hireHiPlatform, normalizeHireHiCandidate, scrapeHireHi } from './hirehi
 import { atsPlatform, normalizeAtsCandidate, scrapeAts } from './ats.ts';
 import { boardPlatform, normalizeJsonLdCandidate, scrapeJsonLdBoard, type JsonLdBoardId } from './boards.ts';
 import { normalizeTrudvsemCandidate, scrapeTrudvsem, trudvsemPlatform } from './trudvsem.ts';
+import { planPlatformSearches, type SearchPlan, type UserSearches } from './plan.ts';
 
 export type AnyVacancyPlatform = VacancyPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>;
 const hhPool = new AdaptiveTaskPool(1, 1);
@@ -51,60 +58,50 @@ async function normalizeIndividually(candidates: VacancyCandidate[],
   return results;
 }
 
+/** Every adapter reports the plan it actually ran: fetched searches, and the users those fetches served. */
+function planned<T>(plan: SearchPlan<T>, result: { seen: number; discovered: number }): PlatformDiscoveryResult {
+  const users = new Set(plan.searches.flatMap((search) => search.recipients.map((recipient) => recipient.userId)));
+  return { searches: plan.searches.length, users: users.size, ...result };
+}
+
 const hhAdapter: VacancyPlatform<typeof hhPlatform.schema> = {
   ...hhPlatform,
-  async discover(userId, profile) {
-    const result = await hhPool.run(() => scrapeHh(userId, profile));
-    return { searches: profile.searches.length, ...result };
+  async discover(plan) {
+    return planned(plan, await hhPool.run(() => scrapeHh(plan)));
   },
   normalize: normalizeHhCandidates,
 };
 const habrAdapter: VacancyPlatform<typeof habrPlatform.schema> = {
   ...habrPlatform,
-  async discover(userId, profile) {
-    const result = await scrapeHabr(userId, profile);
-    return { searches: profile.searches.length, ...result };
-  },
+  async discover(plan) { return planned(plan, await scrapeHabr(plan)); },
   normalize: candidates=>normalizeIndividually(candidates,normalizeAdditionalCandidate),
 };
 const rabotaAdapter: VacancyPlatform<typeof rabotaPlatform.schema> = {
   ...rabotaPlatform,
-  async discover(userId, profile) {
-    const result = await scrapeRabota(userId, profile);
-    return { searches: profile.searches.length, ...result };
-  },
+  async discover(plan) { return planned(plan, await scrapeRabota(plan)); },
   normalize: candidates=>normalizeIndividually(candidates,normalizeAdditionalCandidate),
 };
 const hireHiAdapter:VacancyPlatform<typeof hireHiPlatform.schema>={
   ...hireHiPlatform,
-  async discover(userId,profile){const result=await scrapeHireHi(userId,profile);return{searches:profile.searches.length,...result};},
+  async discover(plan){return planned(plan,await scrapeHireHi(plan));},
   normalize:candidates=>normalizeIndividually(candidates,normalizeHireHiCandidate),
 };
 function jsonLdBoardAdapter(id: JsonLdBoardId): VacancyPlatform<ReturnType<typeof boardPlatform>['schema']> {
   const platform = boardPlatform(id);
   return {
     ...platform,
-    async discover(userId, profile) {
-      const result = await scrapeJsonLdBoard(id, userId, profile);
-      return { searches: profile.searches.length, ...result };
-    },
+    async discover(plan) { return planned(plan, await scrapeJsonLdBoard(id, plan)); },
     normalize: candidates => normalizeIndividually(candidates, normalizeJsonLdCandidate),
   };
 }
 const atsAdapter: VacancyPlatform<typeof atsPlatform.schema> = {
   ...atsPlatform,
-  async discover(userId, profile) {
-    const result = await scrapeAts(userId, profile);
-    return { searches: profile.searches.length, ...result };
-  },
+  async discover(plan) { return planned(plan, await scrapeAts(plan)); },
   normalize: candidates => normalizeIndividually(candidates, normalizeAtsCandidate),
 };
 const trudvsemAdapter: VacancyPlatform<typeof trudvsemPlatform.schema> = {
   ...trudvsemPlatform,
-  async discover(userId, profile) {
-    const result = await scrapeTrudvsem(userId, profile);
-    return { searches: profile.searches.length, ...result };
-  },
+  async discover(plan) { return planned(plan, await scrapeTrudvsem(plan)); },
   normalize: candidates => normalizeIndividually(candidates, normalizeTrudvsemCandidate),
 };
 const registeredPlatforms: AnyVacancyPlatform[] = [hhAdapter,habrAdapter,rabotaAdapter,hireHiAdapter,
@@ -119,21 +116,20 @@ export function getSearchPlatform(id: string): AnyVacancyPlatform {
   return platform;
 }
 
-export function rotatedSearches<T>(searches:readonly T[],platformId:string,userId:string,now=Date.now()):T[]{
-  if(searches.length<=config.searchQueriesPerCycle)return [...searches];
-  let seed=0;for(const character of `${platformId}:${userId}`)seed=(seed*31+character.charCodeAt(0))>>>0;
-  const bucket=Math.floor(now/(config.searchRotationMinutes*60_000));
-  const offset=(seed+bucket)%searches.length;
-  return Array.from({length:Math.min(config.searchQueriesPerCycle,searches.length)},
-    (_unused,index)=>searches[(offset+index)%searches.length]);
-}
-
-export async function discoverPlatformVacancies(id: string, userId: string, profile: unknown): Promise<PlatformDiscoveryResult> {
+/** Validates one user's stored profile and returns the searches it asks this platform for. */
+export function platformSearches(id: string, profile: unknown): unknown[] {
   const platform = getSearchPlatform(id);
   const parsed = v.safeParse(platform.schema, profile);
   if (!parsed.success) throw new Error(`${platform.name} search profile is invalid.`);
-  const output=parsed.output as {searches:unknown[]};
-  return platform.discover(userId,{...output,searches:rotatedSearches(output.searches,id,userId)});
+  return (parsed.output as { searches: unknown[] }).searches;
+}
+
+export async function discoverPlatformVacancies(id: string,
+  demands: readonly UserSearches<unknown>[], now = Date.now()): Promise<PlatformDiscoveryResult> {
+  const platform = getSearchPlatform(id);
+  const plan = planPlatformSearches(id, demands,
+    { enumerates: platform.enumerates, mergeText: platform.mergeText }, now);
+  return platform.discover(plan as SearchPlan<never>);
 }
 
 export function normalizePlatformCandidates(source: string,

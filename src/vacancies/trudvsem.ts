@@ -8,6 +8,7 @@ import type { VacancyCandidate, VacancyInput } from '../database.ts';
 import { errorMessage, trace } from '../observability.ts';
 import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
   VacancySearchCollector, type JsonObject } from './http.ts';
+import type { SearchPlan } from './plan.ts';
 import type { SearchPlatform } from './registry.ts';
 
 /** Federal region code; defaults to Москва, matching the default HH area. */
@@ -28,6 +29,7 @@ export const trudvsemSearchProfileSchema = v.strictObject({
   })), v.maxLength(8)),
 });
 export type TrudvsemSearchProfile = v.InferOutput<typeof trudvsemSearchProfileSchema>;
+export type TrudvsemSearch = TrudvsemSearchProfile['searches'][number];
 
 export const trudvsemPlatform: SearchPlatform<typeof trudvsemSearchProfileSchema> = {
   id: 'trudvsem', name: 'Работа России', schema: trudvsemSearchProfileSchema,
@@ -93,12 +95,12 @@ export function trudvsemVacancyInput(vacancy: JsonObject, sourceQuery: string): 
   });
 }
 
-export async function scrapeTrudvsem(userId: string,
-  profile: TrudvsemSearchProfile): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+export async function scrapeTrudvsem(
+  plan: SearchPlan<TrudvsemSearch>): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
   const pagesPerSearch = Math.max(1, Math.min(config.additionalMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform / Math.max(1, profile.searches.length))));
-  searches: for (const search of profile.searches) {
+    Math.floor(config.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
+  searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       const url = trudvsemSearchUrl(search.query, page);
       try {
@@ -114,7 +116,7 @@ export async function scrapeTrudvsem(userId: string,
             url: vacancyUrl ? safeVacancyUrl('trudvsem', vacancyUrl) : `https://trudvsem.ru/vacancy/card/${sourceId}`,
             searchName: search.name, title: name,
             summary: htmlText(plainText(vacancy.duty)).slice(0, 1_000),
-            publishedAt: plainText(vacancy['creation-date']), payload: vacancy });
+            publishedAt: plainText(vacancy['creation-date']), payload: vacancy }, recipients);
           if (collector.complete) break;
         }
         if (collector.complete) break searches;

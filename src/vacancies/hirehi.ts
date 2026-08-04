@@ -4,6 +4,7 @@ import { config } from '../config.ts';
 import type { VacancyCandidate, VacancyInput } from '../database.ts';
 import { errorMessage, trace } from '../observability.ts';
 import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, sourceUrl, type JsonObject, VacancySearchCollector } from './http.ts';
+import type { SearchPlan } from './plan.ts';
 import type { SearchPlatform } from './registry.ts';
 
 export const hireHiSpecializations=[
@@ -19,7 +20,7 @@ export const hireHiSearchProfileSchema=v.strictObject({version:v.literal(1),sear
   v.check(searches=>new Set(searches.map(search=>`${search.facet}:${search.specialization}`)).size===searches.length,
     'HireHi searches must use unique facet and specialization pairs'))});
 export type HireHiSearchProfile=v.InferOutput<typeof hireHiSearchProfileSchema>;
-type HireHiSearch=HireHiSearchProfile['searches'][number];
+export type HireHiSearch=HireHiSearchProfile['searches'][number];
 
 export const hireHiPlatform:SearchPlatform<typeof hireHiSearchProfileSchema>={
   id:'hirehi',name:'HireHi',schema:hireHiSearchProfileSchema,template:()=>({platform:'hirehi',version:1,
@@ -81,11 +82,11 @@ function workFormat(value:string):string{
 }
 function listingLocation(value:string):string{const format=workFormat(value);return format?value.slice(format.length).trim():'';}
 
-export async function scrapeHireHi(userId:string,profile:HireHiSearchProfile):Promise<{seen:number;discovered:number}>{
-  const collector=new VacancySearchCollector(userId,config.searchNewVacancyLimit);
+export async function scrapeHireHi(plan:SearchPlan<HireHiSearch>):Promise<{seen:number;discovered:number}>{
+  const collector=new VacancySearchCollector(config.searchNewVacancyLimit);
   const pagesPerSearch=Math.max(1,Math.min(config.hireHiMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
-  searches:for(const search of profile.searches)for(let page=1;page<=pagesPerSearch;page++){
+    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+  searches:for(const {search,recipients} of plan.searches)for(let page=1;page<=pagesPerSearch;page++){
     try{
       const url=hireHiSearchUrl(search,page);trace('scrape.search.request',{platform:'hirehi',search:search.name,page,url});
       const {html}=await fetchSourceHtml('hirehi',url),canonicalUrls=hireHiListingUrls(html);
@@ -94,7 +95,7 @@ export async function scrapeHireHi(userId:string,profile:HireHiSearchProfile):Pr
       for(const job of jobs){const id=integer(job.id),category=plainText(job.category);if(id&&category)await collector.record({source:'hirehi',sourceId:String(id),
         url:hireHiCandidateUrl(id,category,canonicalUrls),searchName:search.name,title:plainText(job.title)||search.name,
         summary:[plainText(job.company),plainText(job.format),plainText(job.salary_display)].filter(Boolean).join(' '),
-        publishedAt:plainText(job.created_at),payload:job});if(collector.complete)break;}
+        publishedAt:plainText(job.created_at),payload:job},recipients);if(collector.complete)break;}
       if(collector.complete)break searches;if(!jobs.length||listing?.has_more===false)break;await pause();
     }catch(error){console.error(`Failed to read HireHi search ${search.name} page ${page}: ${errorMessage(error)}`);break;}
   }

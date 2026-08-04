@@ -54,6 +54,8 @@ export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
   id: 'hh',
   name: 'hh.ru browser search',
   schema: hhSearchProfileSchema,
+  // hh's text field is boolean, so equivalent queries from several users become one OR search over one page load.
+  mergeText: 'or',
   template: () => ({
     platform: 'hh',
     version: 1,
@@ -127,6 +129,7 @@ import { type VacancyCandidate, type VacancyInput } from '../database.ts';
 import { trace } from '../observability.ts';
 import { VacancySearchCollector } from './http.ts';
 import { assertPublicAddress, sourceUrl } from './http.ts';
+import type { SearchPlan } from './plan.ts';
 
 async function pause(min = 350, max = 900): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, min + Math.random() * (max - min)));
@@ -259,13 +262,13 @@ async function withHhDeadline<T>(operationName:string,operation:(context:Browser
   }finally{if(deadline)clearTimeout(deadline);}
 }
 
-export async function scrapeHh(userId: string, profile: HhSearchProfile): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+export async function scrapeHh(plan: SearchPlan<HhSearch>): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
   try{await withHhDeadline('search',async context=>{
     const page = context.pages()[0] ?? await context.newPage();
     const pagesPerSearch=Math.max(1,Math.min(config.hhMaxPages,
-      Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
-    searches: for (const search of profile.searches) {
+      Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+    searches: for (const { search, recipients } of plan.searches) {
       for (let pageNumber = 0; pageNumber < pagesPerSearch; pageNumber++) {
         const safeSearchUrl = sourceUrl('hh', hhSearchUrl(search, pageNumber)); await assertPublicAddress(safeSearchUrl);
         const searchUrl = safeSearchUrl.toString();
@@ -279,7 +282,7 @@ export async function scrapeHh(userId: string, profile: HhSearchProfile): Promis
         for (const item of found) {
           const id = new URL(item.href).pathname.match(/\/vacancy\/(\d+)/)?.[1];
           if (id) await collector.record({ source: 'hh', sourceId: id, url: `https://hh.ru/vacancy/${id}`,
-            searchName: search.name, title: item.title, summary: search.name });
+            searchName: search.name, title: item.title, summary: search.name }, recipients);
           if (collector.complete) break;
         }
         if (collector.complete) break searches;

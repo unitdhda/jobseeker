@@ -2,9 +2,9 @@ import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import {
   approvedUsers, candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, getDeliverySettings, getSearchProfile,
-  markCandidateClosed, markCandidateFailed, markCandidateNormalized, rankedCandidateQueueForUsers,
+  linkStoreVacancies, markCandidateClosed, markCandidateFailed, markCandidateNormalized, rankedCandidateQueueForUsers,
   saveCandidatePrefilter, saveDeliverySettings, upsertVacancy,
-  type Vacancy, type VacancyCandidate, type VacancyInput,
+  type StoreLinkResult, type Vacancy, type VacancyCandidate, type VacancyInput,
 } from '../database.ts';
 import { prefilterVacancy } from '../prefilter.ts';
 import { normalizePlatformCandidates } from './registry.ts';
@@ -25,7 +25,9 @@ function candidateVacancy(candidate: VacancyCandidate): Vacancy {
 
 type QueueProgress = (phase: 'filtering' | 'normalization', current: number, total: number) => void;
 
-async function prefilterCandidates(userIds: string[], progress?: QueueProgress): Promise<{ evaluated: number; queued: number }> {
+async function prefilterCandidates(userIds: string[],
+  progress?: QueueProgress): Promise<{ evaluated: number; queued: number; storeLinked: StoreLinkResult }> {
+  const storeLinked: StoreLinkResult = { normalized: 0, candidates: 0 };
   const profiles = (await Promise.all(userIds.map(async (userId) => {
     const cv = await getCvSource(userId);
     if (!cv) return null;
@@ -33,6 +35,12 @@ async function prefilterCandidates(userIds: string[], progress?: QueueProgress):
       await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256,
     );
     if (!careerProfile) return null;
+    // Linking runs before this user's candidates are read, so anything the store hands over is prefiltered in
+    // the same cycle rather than waiting for the next one.
+    const linked = await linkStoreVacancies(userId, config.storeLinkLimitPerUser,
+      careerProfile.tracks.flatMap((track) => track.titleVariants));
+    storeLinked.normalized += linked.normalized; storeLinked.candidates += linked.candidates;
+    if (linked.normalized || linked.candidates) trace('store.linked', { userId, ...linked });
     const profileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
     const contextHash = createHash('sha256').update(['candidate-prefilter-v6-lexical-per-user', cv.cvSha256, profileHash,
       config.prefilterMinScore].join(':')).digest('hex');
@@ -40,7 +48,7 @@ async function prefilterCandidates(userIds: string[], progress?: QueueProgress):
     return { userId, cvText: cv.cvText, cvHash: cv.cvSha256, careerProfile, contextHash, candidates };
   }))).filter((profile) => profile !== null);
   const total = profiles.reduce((sum, profile) => sum + profile.candidates.length, 0);
-  if (!total) return { evaluated: 0, queued: 0 };
+  if (!total) return { evaluated: 0, queued: 0, storeLinked };
   let completed = 0; let queued = 0;
   progress?.('filtering', 0, total);
   for (const profile of profiles) {
@@ -54,10 +62,10 @@ async function prefilterCandidates(userIds: string[], progress?: QueueProgress):
       progress?.('filtering', ++completed, total);
     }
   }
-  return { evaluated: total, queued };
+  return { evaluated: total, queued, storeLinked };
 }
 
-export interface CandidateQueueResult { evaluated: number; queued: number; selected: number; refreshed: number; normalized: number; failed: number; closed: number; bySource: Record<string, number> }
+export interface CandidateQueueResult { evaluated: number; queued: number; storeLinked: StoreLinkResult; selected: number; refreshed: number; normalized: number; failed: number; closed: number; bySource: Record<string, number> }
 
 export async function processCandidateQueue(userIds: string[], progress?: QueueProgress): Promise<CandidateQueueResult> {
   const prefilter = await prefilterCandidates(userIds, progress);
@@ -100,7 +108,8 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
 
 import { startCycleStatus } from '../telegram.ts';
 import { ensureCvAndSearchProfiles, scorePendingVacancies } from '../workflows.ts';
-import { discoverPlatformVacancies } from './registry.ts';
+import { discoverPlatformVacancies, platformSearches } from './registry.ts';
+import type { UserSearches } from './plan.ts';
 import { aggregateOrderedProgress, mapConcurrent } from '../concurrency.ts';
 import { llmUsageSince, llmUsageSnapshot, type LlmUsageReport } from '../ai.ts';
 
@@ -108,7 +117,7 @@ let cycleRunning = false;
 export type UserTaskRunner = <T>(userId: string, task: () => Promise<T>) => Promise<T>;
 const runDirectly: UserTaskRunner = (_userId, task) => task();
 
-export interface PlatformScrapeResult { searches: number; seen: number; discovered: number; newVacancies: number }
+export interface PlatformScrapeResult { searches: number; users: number; seen: number; discovered: number; newVacancies: number }
 export interface ScrapeCycleResult {
   platforms: Record<string, PlatformScrapeResult>;
   users: number;
@@ -116,6 +125,8 @@ export interface ScrapeCycleResult {
   seen: number;
   discovered: number;
   newVacancies: number;
+  /** Searches the plan folded away: what the same profiles would have cost one fetch per user per query. */
+  searchesBeforePlanning: number;
   candidateQueue: Awaited<ReturnType<typeof processCandidateQueue>>;
   scoresAttempted: number;
   scoresCompleted: number;
@@ -134,8 +145,9 @@ async function retryTransientPostgres<T>(label:string,operation:()=>Promise<T>):
 
 function addPlatformResult(target: Record<string, PlatformScrapeResult>, platformId: string,
   result: Omit<PlatformScrapeResult, 'newVacancies'>): void {
-  const current = target[platformId] ?? { searches: 0, seen: 0, discovered: 0, newVacancies: 0 };
+  const current = target[platformId] ?? { searches: 0, users: 0, seen: 0, discovered: 0, newVacancies: 0 };
   target[platformId] = { ...current, searches: current.searches + result.searches,
+    users: Math.max(current.users, result.users),
     seen: current.seen + result.seen, discovered: current.discovered + result.discovered };
 }
 
@@ -150,26 +162,38 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
     trace('cycle.start', { users: users.map((user) => user.userId), platforms: config.searchPlatforms,
       scoreLimitPerUser: config.userScoreLimitPerCycle });
     const platforms: Record<string, PlatformScrapeResult> = {};
-    const scrapeTotal=users.length*config.searchPlatforms.length;let scrapeCompleted=0;
-    cycleStatus?.set('scraping',0,scrapeTotal);
     const prepared=await mapConcurrent(users,config.userWorkflowConcurrency,async user=>{
       try{return{user,profiles:await runUserTask(user.userId,()=>ensureCvAndSearchProfiles(user.userId))};}
       catch(error){
         console.error(`Scrape allocation failed for user ${user.userId}: ${errorMessage(error)}`);
-        scrapeCompleted+=config.searchPlatforms.length;cycleStatus?.set('scraping',scrapeCompleted,scrapeTotal);
         return null;
       }
     });
-    const scrapeJobs=prepared.filter(result=>result!==null).flatMap(({user,profiles})=>
-      config.searchPlatforms.map(platformId=>({user,profiles,platformId})));
-    await mapConcurrent(scrapeJobs,config.scrapeConcurrency,async({user,profiles,platformId})=>{
+    // Users are folded into one plan per platform: equivalent searches from different users are fetched once and
+    // recorded for all of them, so the cycle costs clusters rather than users times queries.
+    const demands=new Map<string,UserSearches<unknown>[]>();
+    let searchesBeforePlanning=0;
+    for(const {user,profiles} of prepared.filter(result=>result!==null))for(const platformId of config.searchPlatforms){
+      try{
+        const profile=profiles[platformId];
+        if(!profile)throw new Error(`${platformId} search profile is unavailable`);
+        const searches=platformSearches(platformId,profile);
+        if(!searches.length)continue;
+        searchesBeforePlanning+=Math.min(searches.length,config.searchQueriesPerCycle);
+        const platformDemands=demands.get(platformId)??[];platformDemands.push({userId:user.userId,searches});
+        demands.set(platformId,platformDemands);
+      }catch(error){
+        console.error(`Skipping ${platformId} for user ${user.userId}: ${errorMessage(error)}`);
+      }
+    }
+    const scrapeTotal=demands.size;let scrapeCompleted=0;
+    cycleStatus?.set('scraping',0,scrapeTotal);
+    await mapConcurrent([...demands],config.scrapeConcurrency,async([platformId,platformDemands])=>{
       try {
-        trace('scrape.platform.start', { userId: user.userId, platform: platformId, profile: profiles[platformId] });
-        const profile = profiles[platformId];
-        if (!profile) throw new Error(`${platformId} search profile is unavailable`);
-        addPlatformResult(platforms, platformId, await discoverPlatformVacancies(platformId,user.userId,profile));
+        trace('scrape.platform.start', { platform: platformId, users: platformDemands.length });
+        addPlatformResult(platforms, platformId, await discoverPlatformVacancies(platformId,platformDemands));
       } catch (error) {
-        console.error(`Failed to scrape ${platformId} for user ${user.userId}: ${errorMessage(error)}`);
+        console.error(`Failed to scrape ${platformId}: ${errorMessage(error)}`);
       } finally {
         scrapeCompleted++;cycleStatus?.set('scraping',scrapeCompleted,scrapeTotal);
         console.info(`Scrape progress ${scrapeCompleted}/${scrapeTotal} (${platformId})`);
@@ -198,8 +222,8 @@ export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly):
       searches: sum.searches + platform.searches, seen: sum.seen + platform.seen,
       discovered: sum.discovered + platform.discovered, newVacancies: sum.newVacancies + platform.newVacancies,
     }), { searches: 0, seen: 0, discovered: 0, newVacancies: 0 });
-    const result = { platforms, users: users.length, ...totals, candidateQueue: queue, scoresAttempted: attempted,
-      scoresCompleted, llmUsage: llmUsageSince(usageBefore) };
+    const result = { platforms, users: users.length, ...totals, searchesBeforePlanning, candidateQueue: queue,
+      scoresAttempted: attempted, scoresCompleted, llmUsage: llmUsageSince(usageBefore) };
     trace('cycle.completed', result);
     console.info(`LLM cycle usage ${JSON.stringify(result.llmUsage)}`);
     console.info('Vacancy cycle complete', result);

@@ -9,6 +9,7 @@ import type { VacancyCandidate, VacancyInput } from '../database.ts';
 import { errorMessage, trace } from '../observability.ts';
 import { fetchSourceHtml, htmlText, jobPostings, structuredVacancy, VacancySearchCollector } from './http.ts';
 import { postingMatchesQuery } from './ats.ts';
+import type { SearchPlan } from './plan.ts';
 import type { SearchPlatform } from './registry.ts';
 
 export type JsonLdBoardId = 'geekjob' | 'avito';
@@ -78,11 +79,14 @@ export const boardSearchProfileSchema = v.strictObject({
   })), v.maxLength(8)),
 });
 export type BoardSearchProfile = v.InferOutput<typeof boardSearchProfileSchema>;
+export type BoardSearch = BoardSearchProfile['searches'][number];
 
 export function boardPlatform(id: JsonLdBoardId): SearchPlatform<typeof boardSearchProfileSchema> {
   const board = jsonLdBoards[id];
   return {
     id, name: board.name, schema: boardSearchProfileSchema,
+    // The whole board is listed whatever the query, so one enumeration serves every user's searches at once.
+    enumerates: true,
     template: () => ({
       platform: id, version: 1,
       purpose: `Public ${board.name} board. The whole board is listed and matched against the query by title.`,
@@ -107,11 +111,11 @@ function pause(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 400));
 }
 
-export async function scrapeJsonLdBoard(id: JsonLdBoardId, userId: string,
-  profile: BoardSearchProfile): Promise<{ seen: number; discovered: number }> {
+export async function scrapeJsonLdBoard(id: JsonLdBoardId,
+  plan: SearchPlan<BoardSearch>): Promise<{ seen: number; discovered: number }> {
   const board = jsonLdBoards[id];
-  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
-  if (!profile.searches.length) return collector.result();
+  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
+  if (!plan.searches.length) return collector.result();
   const pages = Math.max(1, Math.min(config.additionalMaxPages, config.searchPageBudgetPerPlatform));
   const seenIds = new Set<string>();
   for (let page = 1; page <= pages; page++) {
@@ -124,10 +128,10 @@ export async function scrapeJsonLdBoard(id: JsonLdBoardId, userId: string,
       for (const [sourceId, entry] of entries) {
         if (seenIds.has(sourceId)) continue;
         seenIds.add(sourceId); fresh++;
-        const search = profile.searches.find((candidate) => postingMatchesQuery(entry.title, candidate.query));
-        if (!search) continue;
-        await collector.record({ source: id, sourceId, url: entry.url, searchName: search.name,
-          title: entry.title, summary: entry.title });
+        const planned = plan.searches.find((candidate) => postingMatchesQuery(entry.title, candidate.search.query));
+        if (!planned) continue;
+        await collector.record({ source: id, sourceId, url: entry.url, searchName: planned.search.name,
+          title: entry.title, summary: entry.title }, planned.recipients);
         if (collector.complete) break;
       }
       trace('scrape.search.result', { platform: id, page, found: entries.size, fresh, kept: collector.result().seen });

@@ -9,6 +9,7 @@ import type { VacancyCandidate, VacancyInput } from '../database.ts';
 import { errorMessage, trace } from '../observability.ts';
 import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
   VacancySearchCollector, type JsonObject } from './http.ts';
+import type { SearchPlan } from './plan.ts';
 import type { SearchPlatform } from './registry.ts';
 
 export const atsProviders = ['greenhouse', 'lever', 'ashby', 'smartrecruiters'] as const;
@@ -49,9 +50,12 @@ export const atsSearchProfileSchema = v.strictObject({
   })), v.maxLength(8)),
 });
 export type AtsSearchProfile = v.InferOutput<typeof atsSearchProfileSchema>;
+export type AtsSearch = AtsSearchProfile['searches'][number];
 
 export const atsPlatform: SearchPlatform<typeof atsSearchProfileSchema> = {
   id: 'ats', name: 'Company ATS boards', schema: atsSearchProfileSchema,
+  // A board is read whole and matched by title, so one read serves every user's searches at once.
+  enumerates: true,
   template: () => ({
     platform: 'ats', version: 1,
     purpose: 'Public applicant-tracking boards published by individual companies (Greenhouse, Lever, Ashby, SmartRecruiters).',
@@ -183,9 +187,9 @@ export function postingMatchesQuery(title: string, query: string): boolean {
   return words.every((word) => haystack.includes(word));
 }
 
-export async function scrapeAts(userId: string, profile: AtsSearchProfile): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
-  if (!profile.searches.length) return collector.result();
+export async function scrapeAts(plan: SearchPlan<AtsSearch>): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
+  if (!plan.searches.length) return collector.result();
   const boards = configuredBoards();
   for (const provider of atsProviders) {
     for (const slug of boards[provider]) {
@@ -199,16 +203,16 @@ export async function scrapeAts(userId: string, profile: AtsSearchProfile): Prom
         continue;
       }
       for (const posting of postings) {
-        const search = profile.searches.find((entry) => postingMatchesQuery(posting.title, entry.query));
-        if (!search || !posting.url || !posting.title) continue;
+        const planned = plan.searches.find((entry) => postingMatchesQuery(posting.title, entry.search.query));
+        if (!planned || !posting.url || !posting.title) continue;
         if (provider === 'smartrecruiters' && !posting.description) {
           const id = posting.sourceId.split(':').at(-1) ?? '';
           posting.description = await smartRecruitersDescription(slug, id)
             .catch((error) => { console.error(`Failed to read SmartRecruiters posting ${id}: ${errorMessage(error)}`); return ''; });
         }
         await collector.record({ source: 'ats', sourceId: posting.sourceId, url: safeVacancyUrl('ats', posting.url),
-          searchName: search.name, title: posting.title, summary: posting.description.slice(0, 1_000),
-          publishedAt: posting.publishedAt, payload: posting as unknown as JsonObject });
+          searchName: planned.search.name, title: posting.title, summary: posting.description.slice(0, 1_000),
+          publishedAt: posting.publishedAt, payload: posting as unknown as JsonObject }, planned.recipients);
         if (collector.complete) return collector.result();
       }
     }

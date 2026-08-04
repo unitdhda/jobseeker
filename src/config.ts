@@ -44,7 +44,10 @@ function telegramModeEnv(): TelegramMode {
 }
 
 const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi', 'geekjob', 'avito', 'trudvsem', 'ats'] as const;
-const defaultSearchPlatforms: SearchPlatformId[] = [...supportedSearchPlatforms];
+// geekjob, avito and ats are supported but off by default: measured over 24 hours they returned no listings at
+// all, geekjob and avito because their boards do not answer the production egress, ats because no board ships by
+// default. Name them in SEARCH_PLATFORMS once a probe from the scraping host shows they read something.
+const defaultSearchPlatforms: SearchPlatformId[] = ['hh', 'habr', 'rabota', 'hirehi', 'trudvsem'];
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
 
 function platformEnv(): SearchPlatformId[] {
@@ -85,6 +88,11 @@ export const config = {
   searchQueriesPerCycle: integerEnv('SEARCH_QUERIES_PER_CYCLE', 1, 1, 8),
   searchRotationMinutes: integerEnv('SEARCH_ROTATION_MINUTES', 30, 5, 1_440),
   searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
+  // Token overlap, as a percentage, at which two users' searches count as one query and are fetched once.
+  // Lower merges more aggressively and broadens each fetch; 100 merges only identical queries.
+  searchClusterSimilarity: integerEnv('SEARCH_CLUSTER_SIMILARITY', 60, 0, 100),
+  // Vacancies the shared store already holds that are linked to each user per cycle. Zero disables the store source.
+  storeLinkLimitPerUser: integerEnv('STORE_LINK_LIMIT_PER_USER', 50, 0, 1_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
   // Best candidates each source is guaranteed per user before leftover slots are filled by score alone.
   // Zero spreads the batch evenly across the configured platforms.

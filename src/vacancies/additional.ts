@@ -45,16 +45,19 @@ import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, structured
 import { trace } from '../observability.ts';
 import { errorMessage } from '../observability.ts';
 import { VacancySearchCollector } from './http.ts';
+import type { SearchPlan } from './plan.ts';
+
+type TextSearch = TextSearchProfile['searches'][number];
 
 function pause(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 400));
 }
 
-export async function scrapeHabr(userId: string, profile: TextSearchProfile): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
   const pagesPerSearch=Math.max(1,Math.min(config.additionalMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
-  searches: for (const search of profile.searches) {
+    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+  searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       const url = new URL('/vacancies', 'https://career.habr.com');
       url.searchParams.set('q', search.query);
@@ -70,7 +73,7 @@ export async function scrapeHabr(userId: string, profile: TextSearchProfile): Pr
           if (sourceId) {
             found++;
             await collector.record({ source: 'habr', sourceId, url: vacancyUrl, searchName: search.name,
-              title: htmlText(match[2]) || search.name, summary: search.name });
+              title: htmlText(match[2]) || search.name, summary: search.name }, recipients);
           }
           if (collector.complete) break;
         }
@@ -87,11 +90,11 @@ export async function scrapeHabr(userId: string, profile: TextSearchProfile): Pr
   return collector.result();
 }
 
-export async function scrapeRabota(userId: string, profile: TextSearchProfile): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(userId, config.searchNewVacancyLimit);
+export async function scrapeRabota(plan: SearchPlan<TextSearch>): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
   const pagesPerSearch=Math.max(1,Math.min(config.additionalMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,profile.searches.length))));
-  searches: for (const search of profile.searches) {
+    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+  searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       try {
         const url = new URL(`/vacancy/${encodeURIComponent(search.query)}/`, 'https://www.rabota.ru');
@@ -106,7 +109,7 @@ export async function scrapeRabota(userId: string, profile: TextSearchProfile): 
           if (sourceId) await collector.record({ source: 'rabota', sourceId,
             url: postingUrl || `https://www.rabota.ru/vacancy/${sourceId}/`, searchName: search.name,
             title: plainText(posting.title) || search.name, summary: plainText(posting.description).slice(0, 1_000),
-            publishedAt: plainText(posting.datePosted), payload: posting });
+            publishedAt: plainText(posting.datePosted), payload: posting }, recipients);
           if (collector.complete) break;
         }
         if (collector.complete) break searches;

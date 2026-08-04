@@ -368,6 +368,47 @@ export async function recordVacancyCandidate(userId: string, raw: VacancyCandida
     return discovered;
   });
 }
+/**
+ * The store read as a source of its own.
+ *
+ * Discovery is per user but `vacancies` is shared, so a user only ever meets the listings their own searches
+ * returned: everything another user's search already normalized stays invisible to them, which for an established
+ * store is by far the largest pool available and the only one that costs no request at all. Linking writes the
+ * `user_vacancies` row that discovery would have written, and the rest of the pipeline is unchanged — an
+ * already-normalized row goes straight to prefiltering and scoring, and a candidate that still needs fetching
+ * joins the ranked queue under its own source, so the per-source normalization quota keeps working.
+ *
+ * Ordering is by how many CV-derived role terms occur in the title, so the first cycles link the rows most likely
+ * to survive the prefilter rather than an arbitrary recent slice.
+ */
+export interface StoreLinkResult { normalized: number; candidates: number }
+export async function linkStoreVacancies(userId: string, limit: number, roleTerms: readonly string[]): Promise<StoreLinkResult> {
+  await ready();
+  if (limit <= 0) return { normalized: 0, candidates: 0 };
+  const timestamp = now();
+  const terms = [...new Set(roleTerms.map((term) => term.toLowerCase().trim()))]
+    .filter((term) => term.length > 2).slice(0, 32);
+  const relevance = `(select count(*) from unnest($4::text[]) term
+    where position(term in lower(coalesce(v.name,v.listing_title,''))) > 0)`;
+  const columns = `user_vacancies(user_id,vacancy_id,source,source_id,search_name,discovered_at,
+    last_discovered_at,first_relevant_at,updated_at)`;
+  const unlinked = `not exists(select 1 from user_vacancies uv
+    where uv.user_id=$1 and uv.source=v.source and uv.source_id=v.source_id)`;
+  const normalized = await q(`insert into ${columns}
+    select $1,v.id,v.source,v.source_id,coalesce(nullif(v.source_query,''),nullif(v.listing_search_name,''),'store'),
+      $2,$2,$2,$2 from vacancies v
+    where v.lifecycle_status='normalized' and v.normalized_vacancy_id=v.id and ${unlinked}
+      and not exists(select 1 from user_vacancies uv where uv.user_id=$1 and uv.vacancy_id=v.id)
+    order by ${relevance} desc,v.published_at desc nulls last limit $3
+    on conflict do nothing returning source_id`, [userId, timestamp, limit, terms]);
+  const candidates = await q(`insert into ${columns}
+    select $1,null,v.source,v.source_id,coalesce(nullif(v.listing_search_name,''),'store'),$2,$2,$2,$2 from vacancies v
+    where v.lifecycle_status in ('discovered','queued','filtered','failed') and v.apply_id is null
+      and v.source=any($5::text[]) and ${unlinked}
+    order by ${relevance} desc,v.published_at desc nulls last limit $3
+    on conflict do nothing returning source_id`, [userId, timestamp, limit, terms, config.searchPlatforms]);
+  return { normalized: normalized.length, candidates: candidates.length };
+}
 export async function candidatesNeedingPrefilter(userId: string, contextHash: string, limit: number): Promise<VacancyCandidate[]> {
   await ready(); return (await q(`select c.*,d.search_name discovery_search_name from vacancies c join user_vacancies d
     on d.source=c.source and d.source_id=c.source_id and d.user_id=$1 where c.lifecycle_status in ('discovered','queued','filtered','failed') and

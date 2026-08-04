@@ -12,6 +12,7 @@ The same codebase supports local and cloud execution:
 - `src/cycle.ts` — finite scheduled scrape cycle.
 - `src/profile-refresh.ts` — finite repair job for missing or invalid search profiles.
 - `src/vacancies/` — HH, Habr Career, Работа.ру, HireHi, GeekJob, Avito, Работа России, and company ATS adapters.
+- `src/vacancies/plan.ts` — folds every user's searches into one shared plan per platform before scraping.
 - `src/database.ts` — repository for the seven-table PostgreSQL domain schema.
 - `src/ai.ts` / `src/workflows.ts` — direct typed Pi AI calls with schema validation and bounded retries.
 - `src/claude-cli.ts` — a Pi AI provider this project adds, bridging completions to the Claude Code CLI.
@@ -32,6 +33,20 @@ Production domain tables:
 - `usage_events`
 
 There is no SQLite, Flue, Redis, local embedding model, or generic background-task database.
+
+## Discovery plan
+
+Search profiles belong to users, but `vacancies` is shared, so discovery is planned per platform rather than per
+user. Equivalent searches from different users are clustered by role vocabulary — across languages, ignoring
+grade words, and only where the non-text filters agree — and each cluster is fetched once and recorded for every
+user in it, under that user's own search name. Boards that publish their whole listing whatever the query are
+enumerated once for everyone rather than once per user. Rotation then walks the shared cluster list, so each
+platform costs `users × SEARCH_QUERIES_PER_CYCLE` fetches per cycle while covering more of every profile.
+
+The store is read as a source of its own. A user only ever meets the listings their own searches returned, so
+`STORE_LINK_LIMIT_PER_USER` vacancies another user already found are linked to them each cycle, best CV-title
+matches first. This costs no request: an already-normalized row goes straight to prefiltering and scoring, and a
+candidate that still needs fetching joins the ranked queue under its own source and its normalization quota.
 
 ## Runtime ownership
 
@@ -138,6 +153,8 @@ Readiness endpoints:
 | `TELEGRAM_USER_ID` | Owner user ID |
 | `TELEGRAM_MODE` | `polling`, `webhook`, or `off` |
 | `SEARCH_PLATFORMS` | Subset of `hh,habr,rabota,hirehi,geekjob,avito,trudvsem,ats` |
+| `SEARCH_CLUSTER_SIMILARITY` | Token overlap at which two users' searches are fetched as one |
+| `STORE_LINK_LIMIT_PER_USER` | Vacancies the shared store hands to each user per cycle; `0` disables |
 | `AI_MODEL` | Profile and application model; blank uses the default |
 | `AI_SCORING_MODEL` | Batched vacancy-scoring model; blank uses the default |
 | `CLAUDE_CLI_PATH` / `CLAUDE_CLI_ENDPOINT` | Local `claude` binary, or the sidecar serving it |
