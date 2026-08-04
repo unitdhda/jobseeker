@@ -16,13 +16,14 @@ export type AtsProvider = typeof atsProviders[number];
 
 /**
  * Boards are configured rather than discovered: an ATS exposes no directory of its customers, and an unknown slug
- * is indistinguishable from a private board. `ATS_BOARDS` overrides this list as `provider:slug` entries.
+ * is indistinguishable from a private board. Name boards through `ATS_BOARDS` as `provider:slug` entries.
+ *
+ * No board ships by default. The list used to carry US tech companies (stripe, databricks, netflix and the like),
+ * which matched nothing this bot searches for and produced repeated 404s as those companies left their ATS. Until
+ * boards worth reading are named, ATS discovery reads nothing and the Russian-market sources cover the search.
  */
 const defaultBoards: Record<AtsProvider, string[]> = {
-  greenhouse: ['stripe', 'figma', 'databricks', 'gitlab', 'doordash'],
-  lever: ['netflix', 'spotify', 'plaid'],
-  ashby: ['ramp', 'linear', 'vanta'],
-  smartrecruiters: ['Visa', 'Bosch'],
+  greenhouse: [], lever: [], ashby: [], smartrecruiters: [],
 };
 
 export function configuredBoards(): Record<AtsProvider, string[]> {
