@@ -92,7 +92,8 @@ export function refreshUserInWorker(userId: string, cvHash: string): Promise<Ref
 }
 export async function tailorApplicationInWorker(userId: string, vacancyId: number): Promise<GeneratedApplication> {
   const result = await request<SerializedApplication>({ type: 'tailor-application', userId, vacancyId });
-  return { tailoredCvPdf: Buffer.from(result.tailoredCvPdfBase64, 'base64'), coverLetter: result.coverLetter };
+  return { tailoredCvPdf: result.tailoredCvPdfBase64 ? Buffer.from(result.tailoredCvPdfBase64, 'base64') : null,
+    coverLetter: result.coverLetter };
 }
 
 export type JobWorkerRequest =
@@ -106,7 +107,7 @@ export interface RefreshUserResult {
   cycle: ScrapeCycleResult | null;
 }
 export interface SerializedApplication extends Omit<GeneratedApplication, 'tailoredCvPdf'> {
-  tailoredCvPdfBase64: string;
+  tailoredCvPdfBase64: string | null;
 }
 
 export type JobWorkerSuccess = { kind: 'result'; id: number; ok: true; result: unknown };

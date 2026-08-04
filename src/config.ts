@@ -62,6 +62,14 @@ function platformEnv(): SearchPlatformId[] {
 const digestMinScore = integerEnv('DIGEST_MIN_SCORE', 50, 0, 99);
 const alertScore = integerEnv('ALERT_SCORE', 80, 1, 100);
 if (digestMinScore >= alertScore) throw new Error('DIGEST_MIN_SCORE must be lower than ALERT_SCORE.');
+// One counter, two thresholds: the first N deliveries of the day carry a tailored CV, and up to the second limit
+// a cover letter is still written on its own. The letter is the part a person actually sends, and the PDF is the
+// expensive half, so running out of documents should not mean running out of applications.
+const userDailyApplicationLimit = integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100);
+const userDailyCoverLetterLimit = integerEnv('USER_DAILY_COVER_LETTER_LIMIT', 20, 1, 500);
+if (userDailyCoverLetterLimit < userDailyApplicationLimit) {
+  throw new Error('USER_DAILY_COVER_LETTER_LIMIT must not be lower than USER_DAILY_APPLICATION_LIMIT.');
+}
 const scoreAgentConcurrencyMin = integerEnv('SCORE_AGENT_CONCURRENCY_MIN', 5, 1, 10);
 const scoreAgentConcurrencyMax = integerEnv('SCORE_AGENT_CONCURRENCY_MAX', 10, 1, 20);
 if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
@@ -120,7 +128,8 @@ export const config = {
   scoringBatchTimeoutSeconds: integerEnv('SCORING_BATCH_TIMEOUT_SECONDS', 180, 30, 1_800),
   claudeCliTimeoutSeconds: integerEnv('CLAUDE_CLI_TIMEOUT_SECONDS', 300, 30, 1_800),
   scoringBatchMaxAttempts: integerEnv('SCORING_BATCH_MAX_ATTEMPTS', 3, 1, 5),
-  userDailyApplicationLimit: integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100),
+  userDailyApplicationLimit,
+  userDailyCoverLetterLimit,
   // Counted per platform, so three refreshes of the eight default platforms.
   userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 24, 1, 100),
   maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),

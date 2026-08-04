@@ -29,7 +29,9 @@ const vacancyScoreSchema=v.object({vacancyId:v.pipe(v.number(),v.integer(),v.min
 const vacancyScoresSchema=v.pipe(v.array(vacancyScoreSchema),v.minLength(1),v.maxLength(20));
 const scoringResultSchema=v.union([v.object({scores:vacancyScoresSchema}),vacancyScoresSchema]);
 const tailoredCvTextSchema=v.pipe(v.string(),v.minLength(500),v.maxLength(30_000));
-const coverLetterSchema=v.pipe(v.string(),v.minLength(80),v.maxLength(3_500));
+// Three short paragraphs land well under this; the cap is what stops a model that ignored the instruction, since
+// the letters were arriving far too long to read.
+const coverLetterSchema=v.pipe(v.string(),v.minLength(80),v.maxLength(2_000));
 /**
  * The CV is requested as structured blocks so the layout never has to infer what a line meant. `tailoredCvText`
  * remains accepted because a model that regresses to prose should still produce a PDF; it is parsed back into the
@@ -41,6 +43,13 @@ export const applicationResultSchema=v.pipe(
   v.transform(result=>({cv:result.cv??null,tailoredCvText:result.tailoredCvText??null,
     coverLetter:result.coverLetter??result.coverLetterText??''})),
   v.check(result=>result.cv!=null||result.tailoredCvText!=null,'Expected a cv object of structured blocks.'),
+  v.check(result=>result.coverLetter.length>=80,'Expected a coverLetter of at least 80 characters.'),
+);
+
+/** The same letter contract without the CV, for the calls made once the day's document quota is spent. */
+export const coverLetterResultSchema=v.pipe(
+  v.looseObject({coverLetter:v.optional(coverLetterSchema),coverLetterText:v.optional(coverLetterSchema)}),
+  v.transform(result=>({coverLetter:result.coverLetter??result.coverLetterText??''})),
   v.check(result=>result.coverLetter.length>=80,'Expected a coverLetter of at least 80 characters.'),
 );
 
@@ -322,6 +331,11 @@ export async function scorePendingVacancies(
  * choosing structure and the template owns the typography. Anything the model puts in `meta` is set in the dates
  * column, which is why repeating dates in the title has to be ruled out explicitly.
  */
+/** Shared by both contracts so the letter reads the same whether or not a CV was generated with it. */
+const coverLetterRules=`The cover letter is plain text of at most three short paragraphs separated by blank lines: why this
+role, the concrete overlap with evidenced experience, and a brief close. Keep it under 1500 characters. No Markdown,
+headings, bullet points, salutation block or signature block. Name specific evidence rather than describing enthusiasm.`;
+
 export const tailorSystemPrompt=`Create a tailored CV and cover letter from authoritative evidence only. Preserve all employers,
 dates, titles, metrics, skills, degrees, languages and contacts without invention or inflation. Translate faithfully into the
 vacancy language when needed.
@@ -343,24 +357,46 @@ Use "entry" for every job, and one "facts" block per skills section rather than 
 **bold** and *italic* are the only markup; no Markdown, HTML, Typst, code, headings or bullet characters. Do not style
 section labels or add separator lines — the template does that.
 
-The cover letter is concise plain text and mentions concrete overlap.`;
+${coverLetterRules}`;
+
+/**
+ * The letter-only contract, used once the day's document quota is spent. It repeats none of the CV block vocabulary
+ * above, so the call that still has to happen is the cheap one.
+ */
+export const coverLetterSystemPrompt=`Write a cover letter for this vacancy from authoritative CV evidence only. Preserve
+employers, dates, titles and metrics without invention or inflation. Write in the vacancy language.
+
+Return exactly {"coverLetter":"..."} using that exact field name.
+
+${coverLetterRules}`;
 
 export async function tailorApplication(userId: string, vacancyId: number): Promise<GeneratedApplication> {
   await requireApprovedUser(userId);
-  if (await usageInLast24Hours(userId, 'application') >= config.userDailyApplicationLimit) {
-    throw new Error(`Daily application-generation limit (${config.userDailyApplicationLimit}) reached.`);
+  // Usage is recorded on delivery, so this counts what the user actually received in the window.
+  const delivered = await usageInLast24Hours(userId, 'application');
+  if (delivered >= config.userDailyCoverLetterLimit) {
+    throw new Error(`Daily application limit (${config.userDailyCoverLetterLimit}) reached.`);
   }
+  const withDocument = delivered < config.userDailyApplicationLimit;
   const vacancy = await getScoredVacancy(userId, vacancyId);
   if (!vacancy) throw new Error(`Scored vacancy ${vacancyId} was not found for this user.`);
   clearApplicationArtifacts(userId, vacancyId);
   await beginApplication(userId, vacancyId);
   try {
     const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
-    const documents=await generateJson({userId,agent:'tailor-application',model:config.model,thinking:config.thinkingLevel,
-      schema:applicationResultSchema,repair:normalizeCvDocumentJson,system:tailorSystemPrompt,
-      prompt:`CV DOCUMENT:\n${JSON.stringify(cv.document)}\n\nCV TEXT:\n${cv.cvText}\n\nVACANCY:\n${JSON.stringify(vacancy)}\n\nVACANCY LANGUAGE: ${detectCvLanguage(`${vacancy.name}\n${vacancy.description}`)}`});
-    const document=documents.cv??parseCvText(documents.tailoredCvText!);
-    const application={tailoredCvPdf:compileCvDocument(document),coverLetter:documents.coverLetter};
+    const prompt=`CV DOCUMENT:\n${JSON.stringify(cv.document)}\n\nCV TEXT:\n${cv.cvText}\n\nVACANCY:\n${JSON.stringify(vacancy)}\n\nVACANCY LANGUAGE: ${detectCvLanguage(`${vacancy.name}\n${vacancy.description}`)}`;
+    trace('application.start',{userId,vacancyId,delivered,withDocument});
+    let application:GeneratedApplication;
+    if(withDocument){
+      const documents=await generateJson({userId,agent:'tailor-application',model:config.model,thinking:config.thinkingLevel,
+        schema:applicationResultSchema,repair:normalizeCvDocumentJson,system:tailorSystemPrompt,prompt});
+      const document=documents.cv??parseCvText(documents.tailoredCvText!);
+      application={tailoredCvPdf:compileCvDocument(document),coverLetter:documents.coverLetter};
+    }else{
+      const letter=await generateJson({userId,agent:'tailor-cover-letter',model:config.model,thinking:config.thinkingLevel,
+        schema:coverLetterResultSchema,system:coverLetterSystemPrompt,prompt});
+      application={tailoredCvPdf:null,coverLetter:letter.coverLetter};
+    }
     stageApplicationArtifacts(userId,vacancyId,application);await markApplicationReady(userId,vacancyId);return application;
   } catch (error) {
     clearApplicationArtifacts(userId, vacancyId);

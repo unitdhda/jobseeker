@@ -34,7 +34,7 @@ async function execute(request: JobWorkerRequest): Promise<unknown> {
     }
     await requireApprovedUser(request.userId);
     const application = await tailorApplication(request.userId, request.vacancyId);
-    return { tailoredCvPdfBase64: application.tailoredCvPdf.toString('base64'),
+    return { tailoredCvPdfBase64: application.tailoredCvPdf?.toString('base64') ?? null,
       coverLetter: application.coverLetter } satisfies SerializedApplication;
   });
 }

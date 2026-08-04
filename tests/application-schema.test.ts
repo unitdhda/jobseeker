@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
-import { applicationResultSchema } from '../src/workflows.ts';
+import { applicationResultSchema, coverLetterResultSchema } from '../src/workflows.ts';
 
 const coverLetter='Concrete overlap with the vacancy and an evidence-based application. '.repeat(2);
 const tailoredCvText='Tailored CV evidence. '.repeat(30);
@@ -38,4 +38,20 @@ test('a response carrying neither a cv nor cv text is rejected',()=>{
 
 test('a cv without a cover letter is rejected',()=>{
   assert.equal(v.safeParse(applicationResultSchema,{cv}).success,false);
+});
+
+test('past the document quota the letter alone is a complete result', () => {
+  // The CV contract still refuses a letter on its own; the letter-only contract is what the quota falls back to.
+  assert.equal(v.safeParse(applicationResultSchema, { coverLetter }).success, false);
+  const result = v.parse(coverLetterResultSchema, { coverLetter });
+  assert.equal(result.coverLetter, coverLetter);
+  assert.equal(v.parse(coverLetterResultSchema, { coverLetterText: coverLetter }).coverLetter, coverLetter);
+  assert.equal(v.safeParse(coverLetterResultSchema, { coverLetter: 'too short' }).success, false);
+});
+
+test('a cover letter that ignores the length instruction is rejected rather than sent', () => {
+  const overlong = 'Evidence-based paragraph about the concrete overlap with this vacancy. '.repeat(40);
+  assert.ok(overlong.length > 2_000);
+  assert.equal(v.safeParse(coverLetterResultSchema, { coverLetter: overlong }).success, false);
+  assert.equal(v.safeParse(applicationResultSchema, { cv, coverLetter: overlong }).success, false);
 });

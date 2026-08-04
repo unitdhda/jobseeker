@@ -429,13 +429,20 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
     const documents = await tailorApplicationInWorker(userId, vacancyId);
     if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
     const api = getBot().api;
-    loader?.setTask('Отправляю резюме');
-    await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
-      caption: `Адаптированное резюме — ${vacancy.name}`.slice(0, 1024),
-    });
-    if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application delivery.');
+    if (documents.tailoredCvPdf) {
+      loader?.setTask('Отправляю резюме');
+      await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
+        caption: `Адаптированное резюме — ${vacancy.name}`.slice(0, 1024),
+      });
+      if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application delivery.');
+    }
     loader?.setTask('Готовлю письмо');
     await api.sendMessage(chat, documents.coverLetter, { link_preview_options: { is_disabled: true } });
+    // The letter still goes out past the document quota, so say why no PDF came with it.
+    if (!documents.tailoredCvPdf) {
+      await api.sendMessage(chat, `Дневной лимит адаптированных резюме (${config.userDailyApplicationLimit}) исчерпан — `
+        + `отправлено только сопроводительное письмо. Резюме снова будут доступны в течение суток.`);
+    }
     await markApplicationDelivered(userId, vacancyId); await loader?.stop();
   } catch (error) {
     await loader?.stop().catch((stopError)=>console.warn(`Could not stop application indicator: ${errorMessage(stopError)}`));

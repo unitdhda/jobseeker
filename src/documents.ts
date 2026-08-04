@@ -107,7 +107,8 @@ export function compilePlainTextCv(text: string): Buffer {
 }
 
 export interface GeneratedApplication {
-  tailoredCvPdf: Buffer;
+  /** Null once the day's document quota is spent: the letter is still written, the tailored CV is not. */
+  tailoredCvPdf: Buffer | null;
   coverLetter: string;
 }
 

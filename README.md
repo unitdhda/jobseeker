@@ -174,6 +174,8 @@ Readiness endpoints:
 | `SEARCH_CLUSTER_SIMILARITY` | Token overlap at which two users' searches are fetched as one |
 | `STORE_LINK_LIMIT_PER_USER` | Vacancies the shared store hands to each user per cycle; `0` disables |
 | `PREFILTER_MAX_AGE_DAYS` | Advert age past which a vacancy is rejected however well it matches |
+| `USER_DAILY_APPLICATION_LIMIT` | Tailored CVs per user per 24h |
+| `USER_DAILY_COVER_LETTER_LIMIT` | Deliveries per user per 24h; past the CV limit these are letter-only |
 | `VACANCY_RETENTION_DAYS` | How long a vacancy no source still lists is kept |
 | `AI_MODEL` | Profile and application model; blank uses the default |
 | `AI_SCORING_MODEL` | Batched vacancy-scoring model; blank uses the default |
