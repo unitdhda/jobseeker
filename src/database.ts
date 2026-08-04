@@ -446,6 +446,19 @@ export async function savePrefilterScore(userId:string,vacancyId:number,contextH
         score.combinedScore,Number(score.filtered),Number(score.auditSelected),JSON.stringify(score.reasons),now(),userId,vacancyId]); });
 }
 function rowsToPrefiltered(rows:Row[]):PrefilteredVacancy[]{return rows.map(row=>({...rowToVacancy(row),prefilterScore:Number(row.prefilter_score),auditSelected:Boolean(row.audit_selected)}));}
+/**
+ * Vacancies already accepted by the prefilter that still have no score: the ones a scoring batch was supposed to
+ * cover but never completed. Unlike `rankedPendingVacancies` this ignores the prefilter context hash, so a repair
+ * pass can reach rows admitted under an earlier CV/profile revision.
+ */
+export async function markedUnscoredVacancies(userId:string,limit:number):Promise<Vacancy[]>{
+  await ready();
+  return (await q(`select v.*,uv.decision user_decision from vacancies v
+    join user_vacancies uv on uv.user_id=$1 and uv.vacancy_id=v.id
+    where uv.score is null and uv.decision not in ('skipped','applied')
+      and uv.prefilter_scored_at is not null and uv.prefilter_filtered=0
+    order by uv.prefilter_score desc,v.published_at desc limit $2`,[userId,limit])).map(rowToVacancy);
+}
 export async function rankedPendingVacancies(userId:string,contextHash:string,limit:number,auditSlots=0):Promise<PrefilteredVacancy[]>{
   await ready(); const query=async(filtered:boolean,queryLimit:number)=>rowsToPrefiltered(await q(`select v.*,uv.decision user_decision,
     uv.prefilter_score,uv.prefilter_audit_selected audit_selected from vacancies v

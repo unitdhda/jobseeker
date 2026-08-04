@@ -80,13 +80,14 @@ function placeLabel(target:string[],center:number,label:string):void{
   const start=Math.max(0,Math.min(target.length-label.length,center-Math.floor(label.length/2)));
   for(let index=0;index<label.length;index++)target[start+index]=label[index]!;
 }
-function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'●'|'○',foreground=false):void{
+const boldUsageStroke:Record<string,string>={'─':'━','│':'┃','╭':'┏','╮':'┓','╯':'┛','╰':'┗'};
+function drawUsageSeries(values:number[],maximum:number,marker:'●'|'○'):string[][]{
+  const grid=Array.from({length:usagePlotHeight},()=>Array<string>(usagePlotWidth).fill(' '));
   const rows=values.map(value=>maximum<=0?usagePlotHeight-1:
     Math.round((1-Math.max(0,Math.min(value/maximum,1)))*(usagePlotHeight-1)));
   const put=(row:number,column:number,symbol:string,force=false):void=>{
     const current=grid[row]![column]!;
-    if(foreground){grid[row]![column]=symbol;return;}
-    if(force){if(current!=='●'||marker==='●')grid[row]![column]=symbol;return;}
+    if(force){grid[row]![column]=symbol;return;}
     if(current===' '||('╭╮╯╰'.includes(symbol)&&current!=='●'&&current!=='○'))grid[row]![column]=symbol;
   };
   for(let hour=0;hour<usagePlotHours;hour++){
@@ -97,24 +98,40 @@ function drawUsageSeries(grid:string[][],values:number[],maximum:number,marker:'
       for(let vertical=nextRow+1;vertical<row;vertical++)put(vertical,column+1,'│');
       put(nextRow,column+1,'╭');put(nextRow,nextColumn,'─');continue;
     }
-    put(row,column,'─');put(row,column+1,'╮');
-    for(let vertical=row+1;vertical<nextRow;vertical++)put(vertical,column+1,'│');
-    put(nextRow,column+1,'╰');put(nextRow,nextColumn,'─');
+    // A fall holds its row across the connector and turns down over the landing point, so the point
+    // itself closes the drop; a rise instead turns up in the connector right after the point.
+    put(row,column,'─');put(row,column+1,'─');put(row,nextColumn,'╮');
+    for(let vertical=row+1;vertical<nextRow;vertical++)put(vertical,nextColumn,'│');
+    put(nextRow,nextColumn,'╰');
   }
   for(let hour=0;hour<=usagePlotHours;hour+=4)put(rows[hour]!,hour*2,marker,true);
+  return grid;
+}
+// Both series share one grid, so cells claimed by both are drawn with the heavy stroke instead of
+// letting the money series silently erase the token line underneath it. The shape that carries more
+// information wins the cell, otherwise a corner flattened into a straight run would break the line.
+const usageShapeRank=(cell:string):number=>'●○'.includes(cell)?3:'╭╮╯╰'.includes(cell)?2:cell==='│'?1:0;
+function mergeUsageSeries(tokens:string[][],money:string[][]):string[][]{
+  return tokens.map((row,rowIndex)=>row.map((tokenCell,column)=>{
+    const moneyCell=money[rowIndex]![column]!;
+    if(moneyCell===' ')return tokenCell;
+    if(tokenCell===' ')return moneyCell;
+    if(tokenCell==='●'&&moneyCell==='○')return '◐';
+    const shape=usageShapeRank(tokenCell)>usageShapeRank(moneyCell)?tokenCell:moneyCell;
+    return boldUsageStroke[shape]??shape;
+  }));
 }
 export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
   if(hours.length!==usagePlotHours+1)throw new Error('Usage timeline must contain 25 hourly points.');
   const tokenStep=niceUsageStep(Math.max(...hours.map(hour=>hour.tokens),0));
   const moneyStep=niceUsageStep(Math.max(...hours.map(hour=>hour.costUsd),0));
   const tokenMaximum=tokenStep*usagePlotHeight,moneyMaximum=moneyStep*usagePlotHeight;
-  const grid=Array.from({length:usagePlotHeight},()=>Array<string>(usagePlotWidth).fill(' '));
-  drawUsageSeries(grid,hours.map(hour=>hour.tokens),tokenMaximum,'●');
-  drawUsageSeries(grid,hours.map(hour=>hour.costUsd),moneyMaximum,'○',true);
+  const grid=mergeUsageSeries(drawUsageSeries(hours.map(hour=>hour.tokens),tokenMaximum,'●'),
+    drawUsageSeries(hours.map(hour=>hour.costUsd),moneyMaximum,'○'));
   const leftLabels=Array.from({length:usagePlotHeight},(_,row)=>axisInteger(tokenStep*(usagePlotHeight-row)));
   const leftWidth=Math.max(1,...leftLabels.map(label=>label.length));
   const lines=[`● Токены — левая ось             ○ Деньги — правая ось`,
-    '2 символа на час · точки каждые 4 часа',`${' '.repeat(leftWidth+1)}┌${'─'.repeat(usagePlotWidth)}┐`];
+    '2 символа на час · точки каждые 4 часа · ━ и ◐ — серии совпадают',`${' '.repeat(leftWidth+1)}┌${'─'.repeat(usagePlotWidth)}┐`];
   for(let row=0;row<usagePlotHeight;row++)lines.push(`${leftLabels[row]!.padStart(leftWidth)} │${grid[row]!.join('')}│ `+
     axisMoney(moneyStep*(usagePlotHeight-row),moneyMaximum));
   lines.push(`${'0'.padStart(leftWidth)} └${'─'.repeat(usagePlotWidth)}┘ ${axisMoney(0,moneyMaximum)}`);
@@ -265,13 +282,19 @@ function isMissingTelegramMessageError(error:unknown):boolean{
   return /message to edit not found|message to delete not found|message can't be edited|message_id_invalid/i
     .test(error instanceof Error?error.message:String(error));
 }
+/**
+ * Progress indicators are transient status, not something to be woken up for: cycles run around the clock and CV
+ * tailoring is already in the foreground for the user who asked. They are sent without a notification and are not
+ * gated by the delivery window, which applies only to alerts and digests.
+ */
 async function startEditableIndicator(userId: string, initialLabel: string): Promise<EditableIndicator | null> {
   const api = getBot().api; const chat = await targetChat(userId);
   try {
     let label = initialLabel; let frame = 0; let sentText = `${loaderFrames[frame]} ${label}`;
     let updating: Promise<void> | null = null; let blockedUntil = 0; let stopped = false;let messageMissing=false;
     let timer:ReturnType<typeof setInterval>|undefined;
-    const message = await api.sendMessage(chat, `<code>${sentText}</code>`, { parse_mode: 'HTML' });
+    const message = await api.sendMessage(chat, `<code>${sentText}</code>`,
+      { parse_mode: 'HTML', disable_notification: true });
     const update = (): void => {
       const next = `${loaderFrames[frame]} ${label}`;
       if (stopped || updating || next === sentText || Date.now() < blockedUntil) return;
@@ -448,11 +471,30 @@ async function usersPage(pageInput: number): Promise<{ richMessage: InputRichMes
   if (page + 1 < pages) keyboard.text('Далее ›', `users-page:${page + 1}`);
   return { richMessage, keyboard, ids, page };
 }
-async function showUsers(ctx: Context, page: number, edit = false): Promise<void> {
+/**
+ * Repeatable owner commands replace their own previous output instead of stacking: the old command message and its
+ * answer are removed before the new answer is sent. Telegram refuses to delete messages older than about 48 hours,
+ * so the record is kept only that long and failures are ignored.
+ */
+const transientMessageTtlMs = 47 * 60 * 60 * 1_000;
+async function dropTrackedMessages(userId: string, kind: string): Promise<void> {
+  const stored = await getTelegramSession<{ ids: number[] }>(userId, kind);
+  if (!stored?.ids?.length) return;
+  const chat = await targetChat(userId);
+  for (const id of stored.ids) await getBot().api.deleteMessage(chat, id).catch(() => undefined);
+  await deleteTelegramSession(userId, kind).catch(() => undefined);
+}
+async function trackMessages(userId: string, kind: string, ids: (number | undefined)[]): Promise<void> {
+  const present = ids.filter((id): id is number => typeof id === 'number');
+  if (present.length) await setTelegramSession(userId, kind, { ids: present }, transientMessageTtlMs);
+}
+
+async function showUsers(ctx: Context, page: number, edit = false): Promise<number | undefined> {
   const view = await usersPage(page); latestUserPages.set(ownerUserId(), view.ids);
   const options = { reply_markup: view.keyboard };
-  if (edit) await ctx.editMessageText(view.richMessage, options);
-  else await ctx.replyWithRichMessage(view.richMessage, options);
+  // Paging edits the existing message, so its id stays valid and stays tracked.
+  if (edit) { await ctx.editMessageText(view.richMessage, options); return undefined; }
+  return (await ctx.replyWithRichMessage(view.richMessage, options)).message_id;
 }
 async function resolveUserReference(reference: string): Promise<TelegramUser | null> {
   const pageIds = latestUserPages.get(ownerUserId()) ?? [];
@@ -542,13 +584,14 @@ function configureTelegramBot(): Bot | null {
     if (!current) { await ctx.answerCallbackQuery({ text: 'Пользователь не найден' }); return; }
     if (current.status !== 'pending') {
       await ctx.answerCallbackQuery({ text: `Заявка уже обработана: ${userStatusText(current.status)}` });
-      await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+      await ctx.deleteMessage().catch(() => undefined);
       return;
     }
     const user = await setUserStatus(userId, action === 'approve' ? 'approved' : 'rejected');
     if (!user) throw new Error('Telegram user disappeared during access update.');
     await ctx.answerCallbackQuery({ text: action === 'approve' ? 'Доступ одобрен' : 'Заявка отклонена' });
-    await ctx.editMessageReplyMarkup({ reply_markup: undefined });
+    // The decision is confirmed by the callback toast, so the spent request card is removed rather than left behind.
+    await ctx.deleteMessage().catch(() => undefined);
     await getBot().api.sendMessage(user.chatId, action === 'approve'
       ? 'Доступ одобрен. Отправьте /start, чтобы начать настройку.'
       : 'Заявка отклонена. Позже вы сможете снова отправить /request.');
@@ -570,7 +613,10 @@ function configureTelegramBot(): Bot | null {
   });
   instance.command('users', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
-    const page = Math.max(0, Number.parseInt(ctx.match.trim(), 10) - 1 || 0); await showUsers(ctx, page);
+    await dropTrackedMessages(ownerUserId(), 'users-messages');
+    const page = Math.max(0, Number.parseInt(ctx.match.trim(), 10) - 1 || 0);
+    const sent = await showUsers(ctx, page);
+    await trackMessages(ownerUserId(), 'users-messages', [ctx.message?.message_id, sent]);
   });
   instance.callbackQuery(/^users-page:(\d+)$/, async (ctx) => {
     if (String(ctx.from.id) !== ownerUserId()) { await ctx.answerCallbackQuery({ text: 'Только для владельца' }); return; }
@@ -595,7 +641,8 @@ function configureTelegramBot(): Bot | null {
     const lines = rows.map((row) => `${row.userId.padEnd(14)} ${String(row.scores24h).padStart(4)}/${String(row.scoresTotal).padEnd(5)} ` +
       `${String(row.applications24h).padStart(3)}/${String(row.applicationsTotal).padEnd(4)} ${row.displayName.slice(0, 18)}`);
     const chart=usageTimelineChart(llm.hourlyTimeline,settings?.timezone??config.timezone);
-    await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n`+
+    await dropTrackedMessages(ownerUserId(), 'usage-messages');
+    const sent = await ctx.reply(`<b>Использование — 24 часа / всё время</b>\n`+
       `LLM-вызовы: <b>${llm.turns24h} / ${llm.turnsTotal}</b>\n`+
       `Токены: <b>${compactNumber(llm.tokens24h)} / ${compactNumber(llm.tokensTotal)}</b>\n`+
       `Стоимость модели: <b>${money(llm.cost24hUsd)} / ${money(llm.costTotalUsd)}</b>\n\n`+
@@ -603,6 +650,7 @@ function configureTelegramBot(): Bot | null {
       `<b>Ресурсы и масштабирование</b>\n<pre>${escapeHtml(runtimeUsageText())}</pre>\n`+
       `<b>Пользователи</b>\n<pre>${escapeHtml(['ID              Оценки      Отклики  Пользователь', ...lines].join('\n'))}</pre>`,
       { parse_mode: 'HTML' });
+    await trackMessages(ownerUserId(), 'usage-messages', [ctx.message?.message_id, sent.message_id]);
   });
   instance.command('search', async (ctx) => {
     const query = ctx.match.trim();

@@ -194,7 +194,7 @@ async function scoreBatchAttempt(userId:string,vacancies:Vacancy[],signal:AbortS
   }
 }
 
-async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
+export async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
   await requireApprovedUser(userId);
   if (!vacancies.length) return;
   const vacancyIds=vacancies.map(vacancy=>vacancy.id),batch=`[${vacancyIds.join(',')}]`;
