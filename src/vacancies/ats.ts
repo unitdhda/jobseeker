@@ -91,7 +91,9 @@ function greenhousePostings(slug: string, payload: JsonObject): BoardPosting[] {
       sourceId: `greenhouse:${slug}:${id}`, url: `https://job-boards.greenhouse.io/${encodeURIComponent(slug)}/jobs/${id}`,
       title: plainText(job.title), description: textOf(job.content),
       employer: plainText(asObject(job.company)?.name) || slug,
-      location: plainText(asObject(job.location)?.name), publishedAt: plainText(job.updated_at) || plainText(job.first_published),
+      location: plainText(asObject(job.location)?.name),
+      // `updated_at` moves whenever the advert is edited, so the first publication is the age that matters.
+      publishedAt: plainText(job.first_published) || plainText(job.updated_at),
       employment: '', remote: /remote/i.test(plainText(asObject(job.location)?.name)),
     }];
   });

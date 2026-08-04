@@ -128,11 +128,8 @@ import { chromium, type BrowserContext, type Page } from 'playwright';
 import { type VacancyCandidate, type VacancyInput } from '../database.ts';
 import { trace } from '../observability.ts';
 import { VacancySearchCollector } from './http.ts';
-import { assertPublicAddress, jobPostings, plainText, sourceUrl } from './http.ts';
+import { assertPublicAddress, jobPostings, plainText, russianDate, sourceUrl } from './http.ts';
 import type { SearchPlan } from './plan.ts';
-
-const russianMonths = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
-  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
 
 /**
  * The advert's own publication date.
@@ -145,11 +142,8 @@ const russianMonths = ['января', 'февраля', 'марта', 'апре
 export function hhPublishedAt(html: string, bodyText: string): string | null {
   const posted = plainText(jobPostings(html)[0]?.datePosted);
   if (posted && Number.isFinite(Date.parse(posted))) return new Date(posted).toISOString();
-  const match = /Вакансия опубликована\s+(\d{1,2})\s+(\p{L}+)\s+(\d{4})/u.exec(bodyText);
-  if (!match) return null;
-  const month = russianMonths.indexOf(match[2]!.toLowerCase());
-  if (month < 0) return null;
-  return new Date(Date.UTC(Number(match[3]), month, Number(match[1]))).toISOString();
+  const match = /Вакансия опубликована\s+(\d{1,2}\s+\p{L}+(?:\s+\d{4})?)/u.exec(bodyText);
+  return match ? russianDate(match[1]!) : null;
 }
 
 async function pause(min = 350, max = 900): Promise<void> {

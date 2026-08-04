@@ -41,7 +41,7 @@ export const rabotaPlatform = textPlatform('rabota', 'Работа.ру', [
 
 import { config } from '../config.ts';
 import type { VacancyCandidate, VacancyInput } from '../database.ts';
-import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, structuredVacancy, type JsonObject } from './http.ts';
+import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, russianDate, structuredVacancy, type JsonObject } from './http.ts';
 import { trace } from '../observability.ts';
 import { errorMessage } from '../observability.ts';
 import { VacancySearchCollector } from './http.ts';
@@ -51,6 +51,43 @@ type TextSearch = TextSearchProfile['searches'][number];
 
 function pause(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 400));
+}
+
+export interface HabrListing { sourceId: string; url: string; title: string; publishedAt?: string }
+
+/**
+ * Habr renders each result as a card that carries the posting date in a `datetime` attribute and the real title in
+ * a `vacancy-card__title-link`. The card is parsed as a unit because the first `/vacancies/<id>` link inside it is
+ * an empty backdrop anchor: scanning links alone took that anchor's empty text, which left 703 of 708 stored habr
+ * listings titled with the search query and the candidate prefilter comparing a query against itself.
+ *
+ * A markup change falls back to the old link scan, so discovery degrades to titles-from-query rather than to
+ * nothing at all.
+ */
+export function habrListings(html: string, base: string): HabrListing[] {
+  const listings = new Map<string, HabrListing>();
+  // The class token must end at a space or quote, so the card's own `vacancy-card__date` and `__inner` children
+  // cannot be mistaken for the start of the next card and cut it short before its date and title.
+  for (const card of html.matchAll(/<div class="vacancy-card(?:\s[^"]*)?">[\s\S]*?(?=<div class="vacancy-card(?:\s[^"]*)?">|<\/body|$)/gi)) {
+    const block = card[0]!;
+    const title = /<a[^>]*class="vacancy-card__title-link"[^>]*href="\/vacancies\/(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/i.exec(block);
+    if (!title) continue;
+    const attribute = /<time[^>]*datetime="([^"]+)"/i.exec(block)?.[1];
+    const printed = /<time[^>]*>([\s\S]*?)<\/time>/i.exec(block)?.[1];
+    const publishedAt = attribute && Number.isFinite(Date.parse(attribute)) ? new Date(attribute).toISOString()
+      : printed ? russianDate(htmlText(printed)) ?? undefined : undefined;
+    const sourceId = title[1]!;
+    listings.set(sourceId, { sourceId, url: new URL(`/vacancies/${sourceId}`, base).toString(),
+      title: htmlText(title[2]!), publishedAt });
+  }
+  if (listings.size) return [...listings.values()];
+  for (const match of html.matchAll(/href=["'](\/vacancies\/(\d+))(?:\?[^"']*)?["'][^>]*>([\s\S]*?)<\/a>/gi)) {
+    const sourceId = match[2]!;
+    if (!listings.has(sourceId)) {
+      listings.set(sourceId, { sourceId, url: new URL(match[1]!, base).toString().split('?')[0]!, title: htmlText(match[3]!) });
+    }
+  }
+  return [...listings.values()];
 }
 
 export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: number; discovered: number }> {
@@ -66,18 +103,16 @@ export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: 
       try {
         trace('scrape.search.request', { platform: 'habr', search: search.name, query: search.query, page, url: url.toString() });
         const { html } = await fetchSourceHtml('habr', url.toString());
-        let found = 0;
-        for (const match of html.matchAll(/href=["'](\/vacancies\/\d+)(?:\?[^"']*)?["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-          const vacancyUrl = new URL(match[1], url).toString().split('?')[0];
-          const sourceId = vacancyUrl.match(/\/vacancies\/(\d+)/)?.[1];
-          if (sourceId) {
-            found++;
-            await collector.record({ source: 'habr', sourceId, url: vacancyUrl, searchName: search.name,
-              title: htmlText(match[2]) || search.name, summary: search.name }, recipients);
-          }
+        const listings = habrListings(html, url.toString());
+        for (const listing of listings) {
+          await collector.record({ source: 'habr', sourceId: listing.sourceId, url: listing.url,
+            searchName: search.name, title: listing.title || search.name, summary: search.name,
+            publishedAt: listing.publishedAt }, recipients);
           if (collector.complete) break;
         }
-        trace('scrape.search.result', { platform: 'habr', search: search.name, page, found });
+        const found = listings.length;
+        trace('scrape.search.result', { platform: 'habr', search: search.name, page, found,
+          dated: listings.filter((listing) => listing.publishedAt).length });
         if (collector.complete) break searches;
         if (!found) break;
         await pause();

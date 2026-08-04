@@ -149,6 +149,25 @@ export function plainText(value: unknown): string {
   return typeof value === 'string' || typeof value === 'number' ? String(value).trim() : '';
 }
 
+const russianMonths = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+  'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+
+/**
+ * A Russian listing date such as "3 августа" or "29 июля 2026", which several boards print instead of a machine
+ * readable attribute. Without a year the most recent occurrence is meant, so a date that would land in the future
+ * belongs to the previous year. Returns null on anything it cannot read, so a caller never invents a date.
+ */
+export function russianDate(text: string, now = new Date()): string | null {
+  const match = /(\d{1,2})\s+(\p{L}+)(?:\s+(\d{4}))?/u.exec(text);
+  if (!match) return null;
+  const month = russianMonths.indexOf(match[2]!.toLowerCase());
+  if (month < 0) return null;
+  const year = match[3] ? Number(match[3]) : now.getUTCFullYear();
+  const parsed = new Date(Date.UTC(year, month, Number(match[1])));
+  if (!match[3] && parsed.getTime() > now.getTime() + 86_400_000) parsed.setUTCFullYear(year - 1);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
 export function htmlText(value: string): string {
   return value
     .replace(/<script\b[\s\S]*?<\/script>/gi, ' ')

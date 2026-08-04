@@ -7,14 +7,14 @@ import * as v from 'valibot';
 import { config } from '../config.ts';
 import type { VacancyCandidate, VacancyInput } from '../database.ts';
 import { errorMessage, trace } from '../observability.ts';
-import { fetchSourceHtml, htmlText, jobPostings, structuredVacancy, VacancySearchCollector } from './http.ts';
+import { fetchSourceHtml, htmlText, jobPostings, russianDate, structuredVacancy, VacancySearchCollector } from './http.ts';
 import { postingMatchesQuery } from './ats.ts';
 import type { SearchPlan } from './plan.ts';
 import type { SearchPlatform } from './registry.ts';
 
 export type JsonLdBoardId = 'geekjob' | 'avito';
 
-export interface BoardEntry { url: string; title: string }
+export interface BoardEntry { url: string; title: string; publishedAt?: string }
 
 interface JsonLdBoard {
   id: JsonLdBoardId;
@@ -39,11 +39,19 @@ export const jsonLdBoards: Record<JsonLdBoardId, JsonLdBoard> = {
       return url.toString();
     },
     entries(html, base) {
+      // The row prints its date as Russian text in a trailing <time>, with no machine-readable attribute.
+      const dates = new Map<string, string>();
+      for (const match of html.matchAll(
+        /<time[^>]*datetime-info[^>]*>[\s\S]*?href="\/vacancy\/([a-f0-9]{12,})"[^>]*>([^<]*)<\/a>/gi)) {
+        const posted = russianDate(htmlText(match[2]!));
+        if (posted) dates.set(match[1]!, posted);
+      }
       const found = new Map<string, BoardEntry>();
       for (const match of html.matchAll(
         /class="truncate vacancy-name">\s*<a href="(\/vacancy\/([a-f0-9]{12,}))"[^>]*>([\s\S]*?)<\/a>/gi)) {
         const title = htmlText(match[3]!);
-        if (title) found.set(match[2]!, { url: absolute(base, match[1]!), title });
+        const publishedAt = dates.get(match[2]!);
+        if (title) found.set(match[2]!, { url: absolute(base, match[1]!), title, ...publishedAt ? { publishedAt } : {} });
       }
       return found;
     },
@@ -58,6 +66,7 @@ export const jsonLdBoards: Record<JsonLdBoardId, JsonLdBoard> = {
     },
     entries(html, base) {
       const found = new Map<string, BoardEntry>();
+      // Avito's listing prints no date anywhere, so its candidates carry none until they are normalized.
       for (const match of html.matchAll(
         /href="(\/vacancies\/[a-z0-9_-]+\/(\d+)\/?)"\s+class="vacancies-section__item-name"[^>]*>([\s\S]*?)<\/a>/gi)) {
         const title = htmlText(match[3]!);
@@ -131,7 +140,7 @@ export async function scrapeJsonLdBoard(id: JsonLdBoardId,
         const planned = plan.searches.find((candidate) => postingMatchesQuery(entry.title, candidate.search.query));
         if (!planned) continue;
         await collector.record({ source: id, sourceId, url: entry.url, searchName: planned.search.name,
-          title: entry.title, summary: entry.title }, planned.recipients);
+          title: entry.title, summary: entry.title, publishedAt: entry.publishedAt }, planned.recipients);
         if (collector.complete) break;
       }
       trace('scrape.search.result', { platform: id, page, found: entries.size, fresh, kept: collector.result().seen });

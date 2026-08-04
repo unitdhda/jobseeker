@@ -80,9 +80,12 @@ function jsonValue<T>(value: unknown): T { return (typeof value === 'string' ? J
 function isoTimestamp(value: unknown): string { return value instanceof Date ? value.toISOString() : String(value); }
 function optionalIsoTimestamp(value: unknown): string | null { return value == null ? null : isoTimestamp(value); }
 function validTimestamp(value: unknown, fallback: string): string {
+  return optionalTimestamp(value) ?? fallback;
+}
+function optionalTimestamp(value: unknown): string | null {
   const raw = typeof value === 'string' ? value.trim() : '';
   const timestamp = raw ? new Date(raw) : null;
-  return timestamp && !Number.isNaN(timestamp.getTime()) ? timestamp.toISOString() : fallback;
+  return timestamp && !Number.isNaN(timestamp.getTime()) ? timestamp.toISOString() : null;
 }
 
 function rowToUser(row: Row): TelegramUser {
@@ -338,7 +341,9 @@ function rowToCandidate(row: Row): VacancyCandidate {
 }
 export async function recordVacancyCandidate(userId: string, raw: VacancyCandidateInput): Promise<boolean> {
   await ready(); const input = { ...raw, url: safeVacancyUrl(raw.source, raw.url) }; const timestamp = now(), summary = input.summary ?? '';
-  const publishedAt = validTimestamp(input.publishedAt,timestamp), payload = JSON.stringify(input.payload ?? null);
+  // Null when the listing carries no date. A source that publishes none must not have its vacancies re-dated to
+  // the present every time a search returns them again, or they can never age out of the prefilter's limit.
+  const publishedAt = optionalTimestamp(input.publishedAt), payload = JSON.stringify(input.payload ?? null);
   const hash = createHash('sha256').update(JSON.stringify([input.title, summary, input.url, payload])).digest('hex');
   return withPostgresTransaction(async (client) => {
     const existing=(await txq(client,'select id,apply_id,lifecycle_status,listing_hash,normalized_vacancy_id from vacancies where source=$1 and source_id=$2 for update',
@@ -346,8 +351,9 @@ export async function recordVacancyCandidate(userId: string, raw: VacancyCandida
     const discovered=!existing, changed=Boolean(existing&&String(existing.listing_hash)!==hash);
     if(!existing) await client.query(`insert into vacancies(source,source_id,url,published_at,first_seen_at,updated_at,listing_search_name,
       listing_title,listing_summary,listing_payload,listing_hash,lifecycle_status,last_seen_at) values($1,$2,$3,$4,$5,$5,$6,$7,$8,$9::jsonb,$10,'discovered',$5)`,
-      [input.source,input.sourceId,input.url,publishedAt,timestamp,input.searchName,input.title,summary,payload,hash]);
-    else await client.query(`update vacancies set url=$1,listing_search_name=$2,listing_title=$3,listing_summary=$4,published_at=$5,
+      [input.source,input.sourceId,input.url,publishedAt??timestamp,timestamp,input.searchName,input.title,summary,payload,hash]);
+    else await client.query(`update vacancies set url=$1,listing_search_name=$2,listing_title=$3,listing_summary=$4,
+      published_at=coalesce($5::timestamptz,published_at),
       listing_payload=$6::jsonb,listing_hash=$7,last_seen_at=$8,updated_at=$8,lifecycle_status=case when $9 and apply_id is null
       and lifecycle_status in ('filtered','failed','queued','discovered') then 'discovered' else lifecycle_status end where id=$10`,
       [input.url,input.searchName,input.title,summary,publishedAt,payload,hash,timestamp,changed,existing.id]);

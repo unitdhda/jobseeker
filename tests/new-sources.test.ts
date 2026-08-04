@@ -56,10 +56,12 @@ test('JSON-LD board listings yield source ids, canonical urls, and real titles',
   // prefilter scores on it and because neither board honours a text query.
   const geekjob = jsonLdBoards.geekjob.entries(
     '<p class="truncate vacancy-name"> <a href="/vacancy/6a70c39772d7eac1dc0fd403" target="_blank">Frontend-разработчик</a></p>'
+    + '<time class="truncate datetime-info"><a href="/vacancy/6a70c39772d7eac1dc0fd403" target="_blank">4 августа</a> </time>'
     + '<a href="/vacancy/6a70c39772d7eac1dc0fd404">untitled link is ignored</a>',
     'https://geekjob.ru/vacancies');
-  assert.deepEqual([...geekjob], [['6a70c39772d7eac1dc0fd403',
-    { url: 'https://geekjob.ru/vacancy/6a70c39772d7eac1dc0fd403', title: 'Frontend-разработчик' }]]);
+  // GeekJob prints the date as Russian text with no year, so it is read back onto the most recent occurrence.
+  assert.deepEqual([...geekjob].map(([id, entry]) => [id, entry.url, entry.title, entry.publishedAt?.slice(5, 10)]),
+    [['6a70c39772d7eac1dc0fd403', 'https://geekjob.ru/vacancy/6a70c39772d7eac1dc0fd403', 'Frontend-разработчик', '08-04']]);
   const avito = jsonLdBoards.avito.entries(
     '<a href="/vacancies/prodazhi/19963/" class="vacancies-section__item-link"></a>'
     + '<a href="/vacancies/prodazhi/19963/" class="vacancies-section__item-name">Территориальный менеджер</a>',
