@@ -106,10 +106,10 @@ export function compilePlainTextCv(text: string): Buffer {
   return compileCvDocument(parseCvText(text));
 }
 
+/** Exactly one side is populated: a request asks for the tailored CV or for the cover letter, never both. */
 export interface GeneratedApplication {
-  /** Null once the day's document quota is spent: the letter is still written, the tailored CV is not. */
   tailoredCvPdf: Buffer | null;
-  coverLetter: string;
+  coverLetter: string | null;
 }
 
 const staged = new Map<string, GeneratedApplication>();

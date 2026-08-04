@@ -12,6 +12,7 @@ import { importCvSource } from './cv.ts';
 import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from './prefilter.ts';
 import { getSearchPlatform } from './vacancies/registry.ts';
 import { jobWorkerStatus, refreshUserInWorker, tailorApplicationInWorker } from './worker-client.ts';
+import type { ApplicationArtifact } from './database.ts';
 import { clearApplicationArtifacts } from './documents.ts';
 import { maximumCvBytes } from './cv.ts';
 import { readResponseBytes } from './vacancies/http.ts';
@@ -220,10 +221,9 @@ export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy):
     `\n<b>Комментарий к оценке</b>\n${escapeHtml(vacancy.summary)}`,
     reasons ? `\n<b>Почему подходит</b>\n${reasons}` : '', gaps ? `\n<b>На что обратить внимание</b>\n${gaps}` : '',
   ].filter(Boolean).join('\n');
-  const keyboard = new InlineKeyboard().text('Пропустить', `skip:${vacancy.id}`).text('Откликнуться', `apply:${vacancy.id}`)
-    .url(`Открыть ${sourceLabel(vacancy.source)}`, vacancy.url);
   await getBot().api.sendMessage(await targetChat(userId), text, {
-    parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: true },
+    reply_markup: applicationKeyboard(vacancy, true),
+    parse_mode: 'HTML', link_preview_options: { is_disabled: true },
   });
   await markAlerted(userId, vacancy.id);
 }
@@ -299,7 +299,7 @@ export async function sendDailyDigest(userId:string,options:DigestDeliveryOption
 
 const loaderFrames = ['⋆', '✦', '✧', '✶', '✷'] as const;
 const loaderEditIntervalMs = 1_000;
-type LoaderTask = 'Адаптирую резюме' | 'Отправляю резюме' | 'Готовлю письмо';
+type LoaderTask = 'Адаптирую резюме' | 'Отправляю резюме' | 'Пишу письмо' | 'Отправляю письмо';
 interface ApplicationLoader { setTask(task: LoaderTask): void; stop(): Promise<void> }
 interface EditableIndicator {
   setLabel(label: string): void;
@@ -405,60 +405,75 @@ export async function startCycleStatus(): Promise<CycleStatus | null> {
     stop: () => indicator.stop(),
   };
 }
-async function startApplicationLoader(userId: string, applyId: string): Promise<ApplicationLoader | null> {
-  const indicator = await startEditableIndicator(userId, `Адаптирую резюме · ${applyId}`);
+const artifactLabels = {
+  cv: { button: '📄 Резюме', loader: 'Адаптирую резюме', sending: 'Отправляю резюме', noun: 'резюме' },
+  letter: { button: '✉️ Письмо', loader: 'Пишу письмо', sending: 'Отправляю письмо', noun: 'сопроводительное письмо' },
+} as const satisfies Record<ApplicationArtifact, { button: string; loader: string; sending: string; noun: string }>;
+
+/**
+ * The CV and the letter are separate asks: a vacancy may not be worth a fresh CV, or may not take a letter at all,
+ * and each has its own daily budget. Offering one button per deliverable keeps the choice with the user.
+ */
+function applicationKeyboard(vacancy: Pick<ScoredVacancy, 'id' | 'source' | 'url'>, withSkip: boolean): InlineKeyboard {
+  const keyboard = new InlineKeyboard();
+  if (withSkip) keyboard.text('Пропустить', `skip:${vacancy.id}`);
+  return keyboard.text(artifactLabels.cv.button, `cv:${vacancy.id}`)
+    .text(artifactLabels.letter.button, `letter:${vacancy.id}`).row()
+    .url(`Открыть ${sourceLabel(vacancy.source)}`, vacancy.url);
+}
+
+async function startApplicationLoader(userId: string, applyId: string,
+  artifact: ApplicationArtifact): Promise<ApplicationLoader | null> {
+  const indicator = await startEditableIndicator(userId, `${artifactLabels[artifact].loader} · ${applyId}`);
   return indicator ? { setTask: (task) => indicator.setLabel(task), stop: () => indicator.stop() } : null;
 }
 
-function applicationFailureMessage(error:unknown,retryId:string):string{
+function applicationFailureMessage(error:unknown,retryId:string,artifact:ApplicationArtifact):string{
   const message=error instanceof Error?error.message:String(error);
-  if(/daily application-generation limit/i.test(message))return `Дневной лимит подготовки документов исчерпан. ID: ${retryId}.`;
+  const noun=artifactLabels[artifact].noun;
+  if(/daily tailored-cv limit/i.test(message))return `Дневной лимит адаптированных резюме (${config.userDailyApplicationLimit}) исчерпан. Письмо всё ещё можно подготовить. ID: ${retryId}.`;
+  if(/daily cover-letter limit/i.test(message))return `Дневной лимит сопроводительных писем (${config.userDailyCoverLetterLimit}) исчерпан. ID: ${retryId}.`;
   if(/vacancy not found|scored vacancy .* was not found/i.test(message))return `Вакансия ${retryId} больше недоступна для подготовки документов.`;
   if(/connection terminated|connection timeout|server closed the connection|socket hang up/i.test(message))
     return `Временная ошибка базы данных для вакансии ${retryId}. Пришлите ID ещё раз.`;
-  return `Не удалось подготовить документы для вакансии ${retryId}. Пришлите ID ещё раз или нажмите кнопку.`;
+  return `Не удалось подготовить ${noun} для вакансии ${retryId}. Пришлите ID ещё раз или нажмите кнопку.`;
 }
-async function generateAndSendApplication(userId: string, vacancyId: number, chat: string): Promise<void> {
-  const jobKey = `${userId}:${vacancyId}`;
+async function generateAndSendApplication(userId: string, vacancyId: number, chat: string,
+  artifact: ApplicationArtifact): Promise<void> {
+  const jobKey = `${userId}:${vacancyId}:${artifact}`;
   if (applicationJobs.has(jobKey)) return;
   applicationJobs.add(jobKey); let loader: ApplicationLoader | null = null; let vacancy: ScoredVacancy | null = null;
   try {
     vacancy = await getScoredVacancy(userId, vacancyId);
     if (!vacancy) throw new Error('Vacancy not found.');
-    loader = await startApplicationLoader(userId,vacancy.applyId);
-    const documents = await tailorApplicationInWorker(userId, vacancyId);
+    loader = await startApplicationLoader(userId,vacancy.applyId,artifact);
+    const documents = await tailorApplicationInWorker(userId, vacancyId, artifact);
     if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
     const api = getBot().api;
+    loader?.setTask(artifactLabels[artifact].sending);
     if (documents.tailoredCvPdf) {
-      loader?.setTask('Отправляю резюме');
       await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
         caption: `Адаптированное резюме — ${vacancy.name}`.slice(0, 1024),
       });
-      if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application delivery.');
-    }
-    loader?.setTask('Готовлю письмо');
-    await api.sendMessage(chat, documents.coverLetter, { link_preview_options: { is_disabled: true } });
-    // The letter still goes out past the document quota, so say why no PDF came with it.
-    if (!documents.tailoredCvPdf) {
-      await api.sendMessage(chat, `Дневной лимит адаптированных резюме (${config.userDailyApplicationLimit}) исчерпан — `
-        + `отправлено только сопроводительное письмо. Резюме снова будут доступны в течение суток.`);
-    }
-    await markApplicationDelivered(userId, vacancyId); await loader?.stop();
+    } else if (documents.coverLetter) {
+      await api.sendMessage(chat, documents.coverLetter, { link_preview_options: { is_disabled: true } });
+    } else throw new Error(`Application worker returned no ${artifact}.`);
+    await markApplicationDelivered(userId, vacancyId, artifact); await loader?.stop();
   } catch (error) {
     await loader?.stop().catch((stopError)=>console.warn(`Could not stop application indicator: ${errorMessage(stopError)}`));
     console.error(`Application generation failed: ${errorMessage(error)}`);
-    const keyboard = new InlineKeyboard().text('Попробовать снова', `apply:${vacancyId}`)
+    const keyboard = new InlineKeyboard().text('Попробовать снова', `${artifact}:${vacancyId}`)
       .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru');
     const retryId=vacancy?.applyId??String(vacancyId);
-    await getBot().api.sendMessage(chat, applicationFailureMessage(error,retryId),
+    await getBot().api.sendMessage(chat, applicationFailureMessage(error,retryId,artifact),
       { reply_markup: keyboard }).catch((notificationError)=>
       console.error(`Could not send application failure notice: ${errorMessage(notificationError)}`));
   } finally {
     applicationJobs.delete(jobKey); clearApplicationArtifacts(userId, vacancyId);
   }
 }
-async function runApplication(userId:string,vacancyId:number,chat:string):Promise<void>{
-  const task=generateAndSendApplication(userId,vacancyId,chat);
+async function runApplication(userId:string,vacancyId:number,chat:string,artifact:ApplicationArtifact):Promise<void>{
+  const task=generateAndSendApplication(userId,vacancyId,chat,artifact);
   if(config.telegramMode==='webhook'){await task;return;}
   void task.catch((error)=>console.error(`Detached application task failed: ${errorMessage(error)}`));
 }
@@ -974,21 +989,26 @@ function configureTelegramBot(): Bot | null {
       : await latestDigestVacanciesByApplyIdPrefix(userId, config.digestMinScore, config.alertScore, reference);
     if (!matches.length) { await ctx.reply(`В последней подборке нет вакансии с ID ${reference}.`); return; }
     if (matches.length > 1) { await ctx.reply(`Префикс ${reference} подходит к нескольким вакансиям. Пришлите больше букв.`); return; }
-    const vacancy = matches[0]; const key = `${userId}:${vacancy.id}`;
-    if (applicationJobs.has(key)) { await ctx.reply(`Документы для ${vacancy.applyId} уже готовятся.`); return; }
-    await runApplication(userId,vacancy.id,String(ctx.chat?.id??ctx.from.id));
+    const vacancy = matches[0];
+    if ([...applicationJobs].some((key) => key.startsWith(`${userId}:${vacancy.id}:`))) {
+      await ctx.reply(`Документы для ${vacancy.applyId} уже готовятся.`); return;
+    }
+    // An ID no longer starts a generation on its own: the user picks which deliverable they want.
+    await ctx.reply(`<b>${escapeHtml(vacancy.name)}</b>\n${escapeHtml(vacancy.employer)} · <code>${vacancy.applyId}</code>`,
+      { parse_mode: 'HTML', reply_markup: applicationKeyboard(vacancy, false), link_preview_options: { is_disabled: true } });
   });
   instance.callbackQuery(/^skip:(\d+)$/, async (ctx) => {
     const userId = String(ctx.from.id); const id = Number(ctx.match[1]); await skipVacancy(userId, id);
     await ctx.answerCallbackQuery({ text: 'Вакансия пропущена' }); await ctx.deleteMessage();
   });
-  instance.callbackQuery(/^apply:(\d+)$/, async (ctx) => {
-    const userId = String(ctx.from.id); const id = Number(ctx.match[1]);
-    await ctx.answerCallbackQuery({ text: 'Готовлю резюме и письмо…' });
+  instance.callbackQuery(/^(cv|letter):(\d+)$/, async (ctx) => {
+    const userId = String(ctx.from.id); const artifact = ctx.match[1] as ApplicationArtifact;
+    const id = Number(ctx.match[2]);
+    await ctx.answerCallbackQuery({ text: `${artifactLabels[artifact].loader}…` });
     const vacancy = await getScoredVacancy(userId, id);
-    await ctx.editMessageReplyMarkup({ reply_markup: new InlineKeyboard()
-      .url(`Открыть ${sourceLabel(vacancy?.source ?? '')}`, vacancy?.url ?? 'https://hh.ru') });
-    await runApplication(userId,id,String(ctx.chat?.id??ctx.from.id));
+    // The other deliverable stays on offer, so asking for a CV does not take the letter away.
+    if (vacancy) await ctx.editMessageReplyMarkup({ reply_markup: applicationKeyboard(vacancy, false) });
+    await runApplication(userId,id,String(ctx.chat?.id??ctx.from.id),artifact);
   });
   instance.catch((error) => console.error(`Telegram bot error: ${errorMessage(error.error)}`));
   botConfigured = true;

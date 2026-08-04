@@ -2,13 +2,14 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { GeneratedApplication } from './documents.ts';
+import type { ApplicationArtifact } from './database.ts';
 import type { ScrapeCycleResult } from './vacancies/jobs.ts';
 import { config } from './config.ts';
 
 type JobPayload =
   | { type: 'run-cycle' }
   | { type: 'refresh-user'; userId: string; cvHash: string }
-  | { type: 'tailor-application'; userId: string; vacancyId: number };
+  | { type: 'tailor-application'; userId: string; vacancyId: number; artifact: ApplicationArtifact };
 
 let child: ChildProcess | undefined;
 let nextId = 1;
@@ -90,8 +91,9 @@ export function runCycleInWorker(): Promise<ScrapeCycleResult | null> {
 export function refreshUserInWorker(userId: string, cvHash: string): Promise<RefreshUserResult> {
   return request({ type: 'refresh-user', userId, cvHash });
 }
-export async function tailorApplicationInWorker(userId: string, vacancyId: number): Promise<GeneratedApplication> {
-  const result = await request<SerializedApplication>({ type: 'tailor-application', userId, vacancyId });
+export async function tailorApplicationInWorker(userId: string, vacancyId: number,
+  artifact: ApplicationArtifact): Promise<GeneratedApplication> {
+  const result = await request<SerializedApplication>({ type: 'tailor-application', userId, vacancyId, artifact });
   return { tailoredCvPdf: result.tailoredCvPdfBase64 ? Buffer.from(result.tailoredCvPdfBase64, 'base64') : null,
     coverLetter: result.coverLetter };
 }
@@ -99,7 +101,7 @@ export async function tailorApplicationInWorker(userId: string, vacancyId: numbe
 export type JobWorkerRequest =
   | { id: number; type: 'run-cycle' }
   | { id: number; type: 'refresh-user'; userId: string; cvHash: string }
-  | { id: number; type: 'tailor-application'; userId: string; vacancyId: number };
+  | { id: number; type: 'tailor-application'; userId: string; vacancyId: number; artifact: ApplicationArtifact };
 
 export interface RefreshUserResult {
   searchCount: number;

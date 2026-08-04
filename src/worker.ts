@@ -33,7 +33,7 @@ async function execute(request: JobWorkerRequest): Promise<unknown> {
       return { searchCount, platformCount: Object.keys(profiles).length, cycle: null } satisfies RefreshUserResult;
     }
     await requireApprovedUser(request.userId);
-    const application = await tailorApplication(request.userId, request.vacancyId);
+    const application = await tailorApplication(request.userId, request.vacancyId, request.artifact);
     return { tailoredCvPdfBase64: application.tailoredCvPdf?.toString('base64') ?? null,
       coverLetter: application.coverLetter } satisfies SerializedApplication;
   });

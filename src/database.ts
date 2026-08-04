@@ -156,9 +156,18 @@ export async function recordUsage(userId: string, kind: UsageKind): Promise<void
   await ready(); if (!await hasCv(userId)) throw new Error('An authoritative CV source is required.');
   await q('insert into usage_events(user_id,kind,occurred_at) values ($1,$2,$3)', [userId, kind, now()]);
 }
-export async function usageInLast24Hours(userId: string, kind: UsageKind): Promise<number> {
+/**
+ * The tailored CV and the cover letter are separate deliverables with separate daily budgets. They are told apart
+ * by the agent that produced them rather than by a new usage kind, so the `usage_events` kind constraint and every
+ * existing report over `kind='application'` keep working unchanged.
+ */
+export const applicationAgents = { cv: 'tailor-application', letter: 'tailor-cover-letter' } as const;
+export type ApplicationArtifact = keyof typeof applicationAgents;
+
+export async function usageInLast24Hours(userId: string, kind: UsageKind, agent?: string): Promise<number> {
   await ready(); const row = await one(`select count(*) count from usage_events where user_id=$1 and kind=$2
-    and occurred_at>=now()-interval '1 day'`, [userId, kind]); return Number(row?.count ?? 0);
+    and occurred_at>=now()-interval '1 day' and ($3::text is null or agent=$3)`, [userId, kind, agent ?? null]);
+  return Number(row?.count ?? 0);
 }
 export async function userUsageSummaries(): Promise<UserUsageSummary[]> {
   await ready(); const rows = await q(`select u.user_id,u.display_name,
@@ -683,10 +692,12 @@ export async function beginApplication(userId:string,id:number):Promise<void>{aw
     [timestamp,userId,id]);});}
 export async function markApplicationReady(userId:string,id:number):Promise<void>{await ready();await q(`update user_vacancies set application_status='ready',
   application_updated_at=$1 where user_id=$2 and vacancy_id=$3`,[now(),userId,id]);}
-export async function markApplicationDelivered(userId:string,id:number):Promise<void>{await ready();await withPostgresTransaction(async client=>{
+export async function markApplicationDelivered(userId:string,id:number,artifact:ApplicationArtifact):Promise<void>{
+  await ready();await withPostgresTransaction(async client=>{
   const timestamp=now();await client.query(`update user_vacancies set decision='applied',application_updated_at=$1,updated_at=$1
     where user_id=$2 and vacancy_id=$3`,[timestamp,userId,id]);
-  await client.query(`insert into usage_events(user_id,kind,occurred_at) values($1,'application',$2)`,[userId,timestamp]);
+  await client.query(`insert into usage_events(user_id,kind,occurred_at,agent) values($1,'application',$2,$3)`,
+    [userId,timestamp,applicationAgents[artifact]]);
 });}
 export async function failApplication(userId:string,id:number,error:string):Promise<void>{await ready();const timestamp=now();await q(`update user_vacancies
   set decision='alerted',application_status='failed',application_error=$1,application_updated_at=$2,updated_at=$2
