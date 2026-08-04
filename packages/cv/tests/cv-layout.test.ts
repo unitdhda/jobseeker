@@ -1,14 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { extractText, getDocumentProxy } from '../src/cv.ts';
-import type { CvDocument } from '../src/cv-document.ts';
-import { compileCvDocument } from '../src/documents.ts';
+import { extractText, getDocumentProxy } from '../src/extract.ts';
+import { createCvPdf, type CvDocument } from '../src/pdf.ts';
+
+const renderer = createCvPdf();
 
 const document = (...sections: CvDocument['sections']): CvDocument =>
   ({ name: 'Ivan Petrov', headline: 'Backend Engineer', contacts: ['Remote', 'first.last@example.com'], sections });
 
 async function render(cv: CvDocument): Promise<{ text: string; pages: number; height: number }> {
-  const pdf = compileCvDocument(cv);
+  const pdf = renderer.compileCvDocument(cv);
   assert.equal(pdf.subarray(0, 4).toString(), '%PDF');
   const proxy = await getDocumentProxy(Uint8Array.from(pdf));
   const { text } = await extractText(proxy, { mergePages: true });

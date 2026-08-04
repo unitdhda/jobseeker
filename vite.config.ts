@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // Workspace packages are bundled so dist/ stays a self-contained deploy artifact.
+  ssr:{noExternal:[/^@jobseeker\//]},
   build:{ssr:true,rolldownOptions:{input:{
     server:resolve('src/web.ts'),worker:resolve('src/worker.ts'),'cv-worker':resolve('src/cv-worker.ts'),
     'run-cycle':resolve('src/cycle.ts'),'refresh-profiles':resolve('src/profile-refresh.ts'),

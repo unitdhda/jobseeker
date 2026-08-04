@@ -10,7 +10,7 @@ import {
 import { getSearchPlatform } from './vacancies/registry.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
-import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from './cv-document.ts';
+import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '@jobseeker/cv/pdf';
 import { trace } from './observability.ts';
 import { prefilterVacancy } from './prefilter.ts';
 import { errorMessage } from './observability.ts';

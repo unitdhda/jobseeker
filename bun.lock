@@ -8,16 +8,13 @@
         "@earendil-works/pi-ai": "0.81.1",
         "@google-cloud/tasks": "^6.3.0",
         "@hono/node-server": "^2.0.12",
-        "@myriaddreamin/typst-ts-node-compiler": "0.7.0",
+        "@jobseeker/cv": "workspace:*",
         "croner": "10.0.1",
         "grammy": "1.45.1",
         "hono": "4.12.32",
-        "mammoth": "1.12.0",
-        "node-html-parser": "9.0.1",
         "pdfjs-dist": "6.2.108",
         "pg": "^8.22.0",
         "playwright": "1.62.0",
-        "unpdf": "1.8.0",
         "valibot": "1.4.2",
       },
       "devDependencies": {
@@ -26,6 +23,17 @@
         "adm-zip": "0.6.0",
         "typescript": "7.0.2",
         "vite": "8.1.5",
+      },
+    },
+    "packages/cv": {
+      "name": "@jobseeker/cv",
+      "dependencies": {
+        "@myriaddreamin/typst-ts-node-compiler": "0.7.0",
+        "mammoth": "1.12.0",
+        "node-html-parser": "9.0.1",
+        "pdfjs-dist": "6.2.108",
+        "unpdf": "1.8.0",
+        "valibot": "1.4.2",
       },
     },
   },
@@ -159,6 +167,8 @@
     "@hono/node-server": ["@hono/node-server@2.0.12", "", { "peerDependencies": { "hono": "^4" } }, "sha512-eWpQYr67tqJLeaSUl0Q+TquuYfUdTibpOJlUMV2FfUP7+KqCC5TufnwnlXL6mobZBJbGAYRd7ZvEBDCbLInjhg=="],
 
     "@isaacs/cliui": ["@isaacs/cliui@8.0.2", "", { "dependencies": { "string-width": "^5.1.2", "string-width-cjs": "npm:string-width@^4.2.0", "strip-ansi": "^7.0.1", "strip-ansi-cjs": "npm:strip-ansi@^6.0.1", "wrap-ansi": "^8.1.0", "wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0" } }, "sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA=="],
+
+    "@jobseeker/cv": ["@jobseeker/cv@workspace:packages/cv"],
 
     "@js-sdsl/ordered-map": ["@js-sdsl/ordered-map@4.4.2", "", {}, "sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw=="],
 

@@ -2,6 +2,7 @@
   "name": "hh-jobseeker",
   "private": true,
   "type": "module",
+  "workspaces": ["packages/*"],
   "packageManager": "bun@1.3.14",
   "engines": {
     "bun": ">=1.3.14"
@@ -12,7 +13,7 @@
     "start": "bun dist/server.mjs",
     "start:task-worker": "bun dist/task-worker.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts",
+    "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts",
     "test:postgres": "bun --env-file=.env.cloud tests/database-postgres.integration.ts",
     "cv:prepare": "bun src/scripts/prepare-cv.ts",
     "run:cycle": "bun src/cycle.ts"
@@ -21,16 +22,13 @@
     "@earendil-works/pi-ai": "0.81.1",
     "@google-cloud/tasks": "^6.3.0",
     "@hono/node-server": "^2.0.12",
-    "@myriaddreamin/typst-ts-node-compiler": "0.7.0",
+    "@jobseeker/cv": "workspace:*",
     "croner": "10.0.1",
     "grammy": "1.45.1",
     "hono": "4.12.32",
-    "mammoth": "1.12.0",
-    "node-html-parser": "9.0.1",
     "pdfjs-dist": "6.2.108",
     "pg": "^8.22.0",
     "playwright": "1.62.0",
-    "unpdf": "1.8.0",
     "valibot": "1.4.2"
   },
   "devDependencies": {

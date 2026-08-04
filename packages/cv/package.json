@@ -1,0 +1,17 @@
+{
+  "name": "@jobseeker/cv",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./extract": "./src/extract.ts",
+    "./pdf": "./src/pdf.ts"
+  },
+  "dependencies": {
+    "@myriaddreamin/typst-ts-node-compiler": "0.7.0",
+    "mammoth": "1.12.0",
+    "node-html-parser": "9.0.1",
+    "pdfjs-dist": "6.2.108",
+    "unpdf": "1.8.0",
+    "valibot": "1.4.2"
+  }
+}
