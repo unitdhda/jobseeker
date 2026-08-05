@@ -486,8 +486,10 @@ function configureTelegramBot(): Bot | null {
     const id = Number(ctx.match[2]);
     await ctx.answerCallbackQuery({ text: `${artifactLabels[artifact].loader}…` });
     const vacancy = await getScoredVacancy(userId, id);
-    // The other deliverable stays on offer, so asking for a CV does not take the letter away.
-    if (vacancy) await ctx.editMessageReplyMarkup({ reply_markup: applicationKeyboard(vacancy, false) });
+    // The other deliverable stays on offer, so asking for a CV does not take the letter away. The second artifact
+    // request finds the markup already in that state, and an unchanged-markup error must not cost the generation.
+    if (vacancy) await ctx.editMessageReplyMarkup({ reply_markup: applicationKeyboard(vacancy, false) })
+      .catch((error) => { if (!isUnchangedMessageError(error)) throw error; });
     await runApplication(userId,id,String(ctx.chat?.id??ctx.from.id),artifact);
   });
   instance.catch((error) => console.error(`Telegram bot error: ${errorMessage(error.error)}`));
