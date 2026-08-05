@@ -21,6 +21,7 @@ import {
   llmUsageSummary, scraperSummary,
   type ScoredVacancy,
   type TelegramUser,
+  addressableDigestPage,
 } from '@jobseeker/store';
 import { importCvSource } from '../cv.ts';
 import { type ApplicationArtifact } from '@jobseeker/store';
@@ -36,7 +37,7 @@ import {
   updateDeliveryWindow,
   updateDigestTime,
 } from '../vacancies/jobs.ts';
-import { currentBot, getBot, identity, isBotConfigured, markBotConfigured, ownerUserId, targetChat } from './api.ts';
+import { currentBot, getBot, identity, isBotConfigured, isUnchangedMessageError, markBotConfigured, ownerUserId, targetChat } from './api.ts';
 import {
   applicationKeyboard,
   artifactLabels,
@@ -49,6 +50,7 @@ import {
   scraperTimelineChart, scraperStatusMessage,
   usageTimelineChart,
   userStatusText,
+  digestPageMessage, digestPageSize,
 } from './format.ts';
 import { sendDailyDigest } from './delivery.ts';
 import { startEditableIndicator, type EditableIndicator } from './indicators.ts';
@@ -454,6 +456,26 @@ function configureTelegramBot(): Bot | null {
     // An ID no longer starts a generation on its own: the user picks which deliverable they want.
     await ctx.reply(`<b>${escapeHtml(vacancy.name)}</b>\n${escapeHtml(vacancy.employer)} · <code>${vacancy.applyId}</code>`,
       { parse_mode: 'HTML', reply_markup: applicationKeyboard(vacancy, false), link_preview_options: { is_disabled: true } });
+  });
+  instance.callbackQuery('digest:noop', (ctx) => ctx.answerCallbackQuery());
+  instance.callbackQuery(/^digest:page:(\d+)$/, async (ctx) => {
+    const userId = String(ctx.from.id);
+    const requested = Number(ctx.match[1]);
+    let page = requested;
+    let result = await addressableDigestPage(userId, config.digestMinScore, config.alertScore, digestPageSize, page);
+    const pageCount = Math.max(1, Math.ceil(result.total / digestPageSize));
+    if (page >= pageCount) { // the set shrank since the message was sent; show the last page that still exists
+      page = pageCount - 1;
+      result = await addressableDigestPage(userId, config.digestMinScore, config.alertScore, digestPageSize, page);
+    }
+    const { text, keyboard } = digestPageMessage(result.vacancies, result.allApplyIds, page, pageCount);
+    try {
+      await ctx.editMessageText(text, { parse_mode: 'HTML', reply_markup: keyboard,
+        link_preview_options: { is_disabled: true } });
+    } catch (error) {
+      if (!isUnchangedMessageError(error)) throw error;
+    }
+    await ctx.answerCallbackQuery();
   });
   instance.callbackQuery(/^skip:(\d+)$/, async (ctx) => {
     const userId = String(ctx.from.id); const id = Number(ctx.match[1]); await skipVacancy(userId, id);

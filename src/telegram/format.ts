@@ -186,6 +186,35 @@ export function deploymentStatusText():string{
     `Telegram: ${config.telegramMode} · Cloud Tasks: ${queue}\n`+
     `Цикл: ${cycle}`;
 }
+export const digestPageSize = 10;
+/** One vacancy's bold unique-prefix apply id: the shortest reply that still resolves it across the whole set. */
+function digestApplyId(applyId: string, allApplyIds: readonly string[]): string {
+  let prefixLength = 1;
+  while (prefixLength < applyId.length && allApplyIds.some((other) =>
+    other !== applyId && other.startsWith(applyId.slice(0, prefixLength)))) prefixLength++;
+  return `<b>${escapeHtml(applyId.slice(0, prefixLength))}</b>${escapeHtml(applyId.slice(prefixLength))}`;
+}
+/**
+ * One digest page as a plain formatted message: ten linked vacancies, score first, the reply prefix bold. The
+ * prefix is computed against every apply id in the digest, not the page, because the user replies from anywhere.
+ */
+export function digestPageMessage(vacancies: readonly ScoredVacancy[], allApplyIds: readonly string[],
+  page: number, pageCount: number): { text: string; keyboard?: InlineKeyboard } {
+  const pages = pageCount > 1 ? ` · стр. ${page + 1}/${pageCount}` : '';
+  const lines = [`<b>Ежедневная подборка вакансий${pages}</b>`, ''];
+  for (const vacancy of vacancies.slice(0, digestPageSize)) {
+    lines.push(`${digestApplyId(vacancy.applyId, allApplyIds)} · <b>${vacancy.score}</b> · `
+      + `<a href="${escapeHtml(vacancy.url)}">${escapeHtml(clip(vacancy.name, 60))}</a>`);
+  }
+  lines.push('', 'Пришлите выделенный префикс или полный ID, чтобы получить адаптированное резюме и сопроводительное письмо.');
+  if (pageCount <= 1) return { text: lines.join('\n') };
+  const keyboard = new InlineKeyboard()
+    .text('‹', page > 0 ? `digest:page:${page - 1}` : 'digest:noop')
+    .text(`${page + 1}/${pageCount}`, 'digest:noop')
+    .text('›', page < pageCount - 1 ? `digest:page:${page + 1}` : 'digest:noop');
+  return { text: lines.join('\n'), keyboard };
+}
+
 export function salary(vacancy: ScoredVacancy): string {
   if (vacancy.salaryFrom == null && vacancy.salaryTo == null) return 'не указана';
   const range = vacancy.salaryFrom != null && vacancy.salaryTo != null

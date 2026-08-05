@@ -538,6 +538,16 @@ export async function digestVacancies(userId:string,min:number,high:number,since
   where m.user_id=$1 and m.llm_score>=$2 and m.llm_score<$3 and m.state='scored' and m.score_updated_at is not null
   and ($4::timestamptz is null or m.score_updated_at>$4::timestamptz) and m.score_updated_at<=$5::timestamptz
   order by m.llm_score desc,v.published_at desc`,[userId,min,high,since,until])).map(rowToScoredVacancy);}
+export interface DigestPage { vacancies: ScoredVacancy[]; allApplyIds: string[]; total: number }
+/** One page of everything a digest ID can still refer to — the set the pagination buttons walk. */
+export async function addressableDigestPage(userId:string,min:number,high:number,pageSize:number,page:number):Promise<DigestPage>{
+  await ready();
+  const ids=await q(`select v.apply_id from vacancies v join matches m on m.vacancy_id=v.id and m.llm_score is not null
+    where m.user_id=$1 and ${addressableDigest} order by m.llm_score desc,v.published_at desc`,[userId,min,high]);
+  const rows=await q(`${scoredSelect} where m.user_id=$1 and ${addressableDigest}
+    order by m.llm_score desc,v.published_at desc limit $4 offset $5`,[userId,min,high,pageSize,page*pageSize]);
+  return {vacancies:rows.map(rowToScoredVacancy),allApplyIds:ids.map(row=>String(row.apply_id)),total:ids.length};
+}
 export async function replaceDigestSnapshot(userId:string,ids:number[],deliveredAt:string):Promise<void>{
   await ready();const timestamp=new Date(deliveredAt);if(Number.isNaN(timestamp.getTime()))throw new Error('Digest delivery timestamp is invalid.');
   const vacancyIds=[...new Set(ids.filter(Number.isSafeInteger))];await withPostgresTransaction(async client=>{
