@@ -5,7 +5,8 @@
  */
 import { Pool } from 'pg';
 import { nextCadence, pickDueUnits } from '@jobseeker/engine';
-import { configureStore, claimForScoring, createMatches, dueUnits, recordUnitRun, transitionMatch } from '@jobseeker/store';
+import { configureStore, claimForScoring, createMatches, digestVacancies, dueUnits, recordUnitRun,
+  transitionMatch, unsentHighScoreVacancies } from '@jobseeker/store';
 
 const url = process.env.SCRATCH_DATABASE_URL;
 if (!url) throw new Error('SCRATCH_DATABASE_URL is required.');
@@ -63,6 +64,40 @@ for (const row of delivered) {
   if (moved) resurrected++;
 }
 check(resurrected === 0, 'no re-delivery', `delivered matches that ingest or delivery could touch: ${resurrected}`);
+
+// -- Delivery reads agree with the legacy queries they replaced --------------------------------------------------
+// The digest and alert repositories were rewritten from user_vacancies.decision to matches.state. On a migrated
+// snapshot both worlds hold the same facts, so for every user the rewritten selection must return exactly the
+// vacancies the legacy conditions describe — a translation error here would silently change what users receive.
+{
+  const digestMin = 50, alertMin = 80;
+  const users = (await pool.query(`select user_id from users where status = 'approved'`)).rows;
+  const until = new Date().toISOString();
+  let digestDrift = 0; let alertDrift = 0; let digestRows = 0; let alertRows = 0;
+  for (const user of users) {
+    const userId = String(user.user_id);
+    const legacyDigest = (await pool.query(`select uv.vacancy_id from legacy.user_vacancies uv
+      where uv.user_id = $1 and uv.vacancy_id is not null and uv.decision = 'new' and uv.score >= $2
+        and uv.score < $3 and uv.score_updated_at is not null and uv.score_updated_at <= $4::timestamptz
+        and exists (select 1 from vacancies v where v.id = uv.vacancy_id)`,
+      [userId, digestMin, alertMin, until])).rows.map((row) => Number(row.vacancy_id)).sort((a, b) => a - b);
+    const newDigest = (await digestVacancies(userId, digestMin, alertMin, null, until))
+      .map((vacancy) => vacancy.id).sort((a, b) => a - b);
+    if (JSON.stringify(legacyDigest) !== JSON.stringify(newDigest)) digestDrift++;
+    digestRows += newDigest.length;
+    const legacyAlerts = (await pool.query(`select uv.vacancy_id from legacy.user_vacancies uv
+      where uv.user_id = $1 and uv.vacancy_id is not null and uv.decision = 'new' and uv.score >= $2
+        and uv.alert_primary_track is not null
+        and exists (select 1 from vacancies v where v.id = uv.vacancy_id)`,
+      [userId, alertMin])).rows.map((row) => Number(row.vacancy_id)).sort((a, b) => a - b);
+    const newAlerts = (await unsentHighScoreVacancies(userId, alertMin))
+      .map((vacancy) => vacancy.id).sort((a, b) => a - b);
+    if (JSON.stringify(legacyAlerts) !== JSON.stringify(newAlerts)) alertDrift++;
+    alertRows += newAlerts.length;
+  }
+  check(digestDrift === 0, 'digest equivalence', `users drifted: ${digestDrift}, rows: ${digestRows}`);
+  check(alertDrift === 0, 'alert equivalence', `users drifted: ${alertDrift}, rows: ${alertRows}`);
+}
 
 // -- Scoring claims respect state and budget ---------------------------------------------------------------------
 const someUser = (await pool.query(`select user_id from matches where state = 'matched' limit 1`)).rows[0];
