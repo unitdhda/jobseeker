@@ -352,6 +352,27 @@ function rowToCandidate(row: Row): VacancyCandidate {
     listingHash: String(row.listing_hash), status: String(row.lifecycle_status), attempts: Number(row.normalization_attempts),
     combinedScore: row.combined_score == null ? null : Number(row.combined_score) };
 }
+/**
+ * Engine-world discovery: the listing lands in the shared store and nothing else. Who sees it is decided at match
+ * time by every user's own vocabulary, not by whose search fetched it. Returns whether the listing is new here.
+ */
+export async function recordListingCandidate(raw: VacancyCandidateInput): Promise<boolean> {
+  await ready(); const input = { ...raw, url: safeVacancyUrl(raw.source, raw.url) }; const timestamp = now(), summary = input.summary ?? '';
+  const publishedAt = optionalTimestamp(input.publishedAt), payload = JSON.stringify(input.payload ?? null);
+  const hash = createHash('sha256').update(JSON.stringify([input.title, summary, input.url, payload])).digest('hex');
+  return withPostgresTransaction(async (client) => {
+    const existing=(await txq(client,'select id,listing_hash from vacancies where source=$1 and source_id=$2 for update',
+      [input.source,input.sourceId]))[0];
+    if(!existing) await client.query(`insert into vacancies(source,source_id,url,published_at,first_seen_at,updated_at,listing_search_name,
+      listing_title,listing_summary,listing_payload,listing_hash,lifecycle_status,last_seen_at) values($1,$2,$3,$4,$5,$5,$6,$7,$8,$9::jsonb,$10,'discovered',$5)`,
+      [input.source,input.sourceId,input.url,publishedAt??timestamp,timestamp,input.searchName,input.title,summary,payload,hash]);
+    else await client.query(`update vacancies set url=$1,listing_title=$2,listing_summary=$3,
+      published_at=coalesce($4::timestamptz,published_at),listing_payload=$5::jsonb,listing_hash=$6,last_seen_at=$7,updated_at=$7 where id=$8`,
+      [input.url,input.title,summary,publishedAt,payload,hash,timestamp,existing.id]);
+    return !existing;
+  });
+}
+
 export async function recordVacancyCandidate(userId: string, raw: VacancyCandidateInput): Promise<boolean> {
   await ready(); const input = { ...raw, url: safeVacancyUrl(raw.source, raw.url) }; const timestamp = now(), summary = input.summary ?? '';
   // Null when the listing carries no date. A source that publishes none must not have its vacancies re-dated to

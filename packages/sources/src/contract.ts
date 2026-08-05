@@ -41,7 +41,8 @@ export interface SearchPlatform<S extends BaseSchema<unknown, unknown, BaseIssue
 export type PlatformProfile<P extends SearchPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>> =
   InferOutput<P['schema']>;
 
-export interface PlatformDiscoveryResult { searches: number; users: number; seen: number; discovered: number }
+export interface PlatformDiscoveryResult { searches: number; users: number; seen: number; discovered: number;
+  discoveredBySearch?: Record<string, number> }
 export type PlatformSearch<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>> =
   InferOutput<S> extends { searches: readonly (infer T)[] } ? T : never;
 export interface VacancyPlatform<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>> extends SearchPlatform<S> {

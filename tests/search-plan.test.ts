@@ -130,8 +130,9 @@ test('only the boards that list everything are planned as enumerations', () => {
 
 test('a platform nobody asked for is never fetched', async () => {
   for (const id of searchPlatformIds) {
-    const result = await discoverPlatformVacancies(id, []);
-    assert.deepEqual(result, { searches: 0, users: 0, seen: 0, discovered: 0 }, `${id} fetched on an empty plan`);
+    const { searches, users, seen, discovered } = await discoverPlatformVacancies(id, []);
+    assert.deepEqual({ searches, users, seen, discovered }, { searches: 0, users: 0, seen: 0, discovered: 0 },
+      `${id} fetched on an empty plan`);
   }
 });
 

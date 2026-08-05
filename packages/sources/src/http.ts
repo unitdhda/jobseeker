@@ -260,10 +260,10 @@ export function hashedVacancy(base: Omit<VacancyInput, 'contentHash'>): VacancyI
   return { ...base, contentHash: createHash('sha256').update(JSON.stringify(base)).digest('hex') };
 }
 
-import { recordVacancyCandidate, type VacancyCandidateInput } from '@jobseeker/store';
+import { recordListingCandidate, type VacancyCandidateInput } from '@jobseeker/store';
 import type { SearchRecipient } from './contract.ts';
 
-export interface VacancySearchResult { seen: number; discovered: number }
+export interface VacancySearchResult { seen: number; discovered: number; discoveredBySearch?: Record<string, number> }
 
 /**
  * Records unique search results until the per-platform new-vacancy target is reached.
@@ -276,25 +276,28 @@ export interface VacancySearchResult { seen: number; discovered: number }
  */
 export class VacancySearchCollector {
   readonly #seen = new Set<string>();
+  readonly #bySearch = new Map<string, number>();
   #discovered = 0;
 
   constructor(readonly newVacancyLimit: number) {}
 
   get complete(): boolean { return this.#discovered >= this.newVacancyLimit; }
 
+  /** Records the listing once, shared; who sees it is decided at match time, not by who searched. */
   async record(input: VacancyCandidateInput, recipients: readonly SearchRecipient[]): Promise<boolean> {
     const key = `${input.source}:${input.sourceId}`;
     if (this.complete || this.#seen.has(key)) return false;
     this.#seen.add(key);
-    let fresh = false;
-    for (const recipient of recipients) {
-      if (await recordVacancyCandidate(recipient.userId, { ...input, searchName: recipient.searchName })) fresh = true;
+    void recipients;
+    if (await recordListingCandidate(input)) {
+      this.#discovered++;
+      this.#bySearch.set(input.searchName, (this.#bySearch.get(input.searchName) ?? 0) + 1);
     }
-    if (fresh) this.#discovered++;
     return true;
   }
 
   result(): VacancySearchResult {
-    return { seen: this.#seen.size, discovered: this.#discovered };
+    return { seen: this.#seen.size, discovered: this.#discovered,
+      discoveredBySearch: Object.fromEntries(this.#bySearch) };
   }
 }
