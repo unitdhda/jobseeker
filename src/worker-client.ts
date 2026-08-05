@@ -3,11 +3,9 @@ import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { GeneratedApplication } from './documents.ts';
 import type { ApplicationArtifact } from './database.ts';
-import type { ScrapeCycleResult } from './vacancies/jobs.ts';
 import { config } from './config.ts';
 
 type JobPayload =
-  | { type: 'run-cycle' }
   | { type: 'refresh-user'; userId: string; cvHash: string }
   | { type: 'tailor-application'; userId: string; vacancyId: number; artifact: ApplicationArtifact };
 
@@ -85,9 +83,6 @@ export async function stopJobWorker():Promise<void>{
     new Promise<void>(resolve=>setTimeout(()=>{running.kill('SIGKILL');resolve();},3_000))]);
 }
 
-export function runCycleInWorker(): Promise<ScrapeCycleResult | null> {
-  return request({ type: 'run-cycle' });
-}
 export function refreshUserInWorker(userId: string, cvHash: string): Promise<RefreshUserResult> {
   return request({ type: 'refresh-user', userId, cvHash });
 }
@@ -99,14 +94,12 @@ export async function tailorApplicationInWorker(userId: string, vacancyId: numbe
 }
 
 export type JobWorkerRequest =
-  | { id: number; type: 'run-cycle' }
   | { id: number; type: 'refresh-user'; userId: string; cvHash: string }
   | { id: number; type: 'tailor-application'; userId: string; vacancyId: number; artifact: ApplicationArtifact };
 
 export interface RefreshUserResult {
   searchCount: number;
   platformCount: number;
-  cycle: ScrapeCycleResult | null;
 }
 export interface SerializedApplication extends Omit<GeneratedApplication, 'tailoredCvPdf'> {
   tailoredCvPdfBase64: string | null;

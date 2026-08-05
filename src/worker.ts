@@ -1,4 +1,3 @@
-import { runSingletonScrapeCycle } from './vacancies/jobs.ts';
 import { ensureCvAndSearchProfiles, tailorApplication } from './workflows.ts';
 import { config } from './config.ts';
 import { getCvHash, requireApprovedUser, usageInLast24Hours } from './database.ts';
@@ -14,9 +13,6 @@ function send(message: JobWorkerMessage): void {
 }
 
 async function execute(request: JobWorkerRequest): Promise<unknown> {
-  if (request.type === 'run-cycle') {
-    return runSingletonScrapeCycle((userId, task) => userScheduler.run(userId, task));
-  }
   return userScheduler.run(request.userId, async () => {
     if (request.type === 'refresh-user') {
       await requireApprovedUser(request.userId);
@@ -30,7 +26,7 @@ async function execute(request: JobWorkerRequest): Promise<unknown> {
         const searches = (profile as { searches?: unknown[] }).searches;
         return total + (Array.isArray(searches) ? searches.length : 0);
       }, 0);
-      return { searchCount, platformCount: Object.keys(profiles).length, cycle: null } satisfies RefreshUserResult;
+      return { searchCount, platformCount: Object.keys(profiles).length } satisfies RefreshUserResult;
     }
     await requireApprovedUser(request.userId);
     const application = await tailorApplication(request.userId, request.vacancyId, request.artifact);

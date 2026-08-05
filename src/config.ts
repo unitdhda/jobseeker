@@ -124,6 +124,10 @@ export const config = {
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
+  // The scoring drain stops claiming for a user once the day's LLM spend from `accounts` reaches this ceiling.
+  userDailyLlmBudgetUsd: integerEnv('USER_DAILY_LLM_BUDGET_CENTS', 200, 0, 100_000) / 100,
+  unitCadenceFloorMinutes: integerEnv('UNIT_CADENCE_FLOOR_MINUTES', 30, 5, 1_440),
+  unitCadenceCeilingMinutes: integerEnv('UNIT_CADENCE_CEILING_MINUTES', 720, 30, 10_080),
   scoreBatchSize: integerEnv('SCORE_BATCH_SIZE', 3, 1, 20),
   scoringBatchTimeoutSeconds: integerEnv('SCORING_BATCH_TIMEOUT_SECONDS', 180, 30, 1_800),
   claudeCliTimeoutSeconds: integerEnv('CLAUDE_CLI_TIMEOUT_SECONDS', 300, 30, 1_800),

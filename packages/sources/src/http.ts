@@ -271,7 +271,7 @@ export interface VacancySearchResult { seen: number; discovered: number; discove
  * One collector spans a whole platform plan, because a listing found by two clustered searches is one fetch and
  * should count once. Each listing is written for every user the search was planned for, under that user's own
  * search name, so the per-user candidate prefilter keeps scoring against the query that user actually asked for.
- * `recordVacancyCandidate` reports newness against the shared store, so only the first recipient of a listing can
+ * `recordListingCandidate` reports newness against the shared store, so only the first recipient of a listing can
  * make it count towards the limit.
  */
 export class VacancySearchCollector {

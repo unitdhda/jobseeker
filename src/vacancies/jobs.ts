@@ -1,103 +1,50 @@
-import { createHash } from 'node:crypto';
 import { config } from '../config.ts';
 import {
-  approvedUsers, candidatesDueForRefresh, candidatesNeedingPrefilter, getCvSource, getDeliverySettings, getSearchProfile,
-  linkStoreVacancies, markCandidateClosed, markCandidateFailed, markCandidateNormalized, purgeExpiredVacancies,
-  rankedCandidateQueueForUsers, saveCandidatePrefilter, saveDeliverySettings, upsertVacancy,
-  type StoreLinkResult, type Vacancy, type VacancyCandidate, type VacancyInput,
+  approvedUsers, candidatesDueForRefresh, getDeliverySettings, markCandidateClosed, markCandidateFailed,
+  markCandidateNormalized, purgeExpiredVacancies, queuedListings, saveDeliverySettings, upsertVacancy,
+  type VacancyInput,
 } from '../database.ts';
-import { prefilterVacancy } from '../prefilter.ts';
 import { normalizePlatformCandidates } from './registry.ts';
 import { trace } from '../observability.ts';
 import { errorMessage } from '../observability.ts';
-import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from '../prefilter.ts';
+import { mapConcurrent } from '../concurrency.ts';
+import type { DeliverySettings } from '../database.ts';
 
-function candidateVacancy(candidate: VacancyCandidate): Vacancy {
-  return {
-    id: 0, source: candidate.source, sourceId: candidate.sourceId, applyId: 'aaaaaa',
-    name: candidate.title || candidate.searchName, employer: '', area: '', salaryFrom: null, salaryTo: null,
-    salaryCurrency: null, salaryGross: null, experience: '', employment: '', schedule: '', workFormat: '',
-    // Listing summaries vary wildly by source, so regex/lexical ranking is deliberately title/query based.
-    description: candidate.searchName, keySkills: [], url: candidate.url,
-    publishedAt: candidate.publishedAt, sourceQuery: candidate.searchName, contentHash: candidate.listingHash, decision: 'new',
-  };
-}
+export interface NormalizeListingsResult { expired: number; selected: number; refreshed: number; normalized: number;
+  failed: number; closed: number; vacancyIds: number[]; bySource: Record<string, number> }
 
-type QueueProgress = (phase: 'filtering' | 'normalization', current: number, total: number) => void;
-
-async function prefilterCandidates(userIds: string[],
-  progress?: QueueProgress): Promise<{ evaluated: number; queued: number; storeLinked: StoreLinkResult }> {
-  const storeLinked: StoreLinkResult = { normalized: 0, candidates: 0 };
-  const profiles = (await Promise.all(userIds.map(async (userId) => {
-    const cv = await getCvSource(userId);
-    if (!cv) return null;
-    const careerProfile = parseStoredCareerProfile(
-      await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256,
-    );
-    if (!careerProfile) return null;
-    // Linking runs before this user's candidates are read, so anything the store hands over is prefiltered in
-    // the same cycle rather than waiting for the next one.
-    const linked = await linkStoreVacancies(userId, config.storeLinkLimitPerUser,
-      careerProfile.tracks.flatMap((track) => track.titleVariants));
-    storeLinked.normalized += linked.normalized; storeLinked.candidates += linked.candidates;
-    if (linked.normalized || linked.candidates) trace('store.linked', { userId, ...linked });
-    const profileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
-    const contextHash = createHash('sha256').update(['candidate-prefilter-v7-lexical-recency-per-user', cv.cvSha256,
-      profileHash, config.prefilterMinScore].join(':')).digest('hex');
-    const candidates = await candidatesNeedingPrefilter(userId, contextHash, config.candidatePrefilterBatchSize);
-    return { userId, cvText: cv.cvText, cvHash: cv.cvSha256, careerProfile, contextHash, candidates };
-  }))).filter((profile) => profile !== null);
-  const total = profiles.reduce((sum, profile) => sum + profile.candidates.length, 0);
-  if (!total) return { evaluated: 0, queued: 0, storeLinked };
-  let completed = 0; let queued = 0;
-  progress?.('filtering', 0, total);
-  for (const profile of profiles) {
-    for (const candidate of profile.candidates) {
-      const vacancy = candidateVacancy(candidate);
-      const result = prefilterVacancy(profile.cvText, vacancy, config.prefilterMinScore, profile.careerProfile);
-      await saveCandidatePrefilter(profile.userId, candidate, profile.contextHash, { ...result, auditSelected: false });
-      if (!result.filtered) queued++;
-      trace('candidate.prefilter.scored', { userId: profile.userId, source: candidate.source,
-        sourceId: candidate.sourceId, title: candidate.title, ...result });
-      progress?.('filtering', ++completed, total);
-    }
-  }
-  return { evaluated: total, queued, storeLinked };
-}
-
-export interface CandidateQueueResult { evaluated: number; queued: number; storeLinked: StoreLinkResult; expired: number; selected: number; refreshed: number; normalized: number; failed: number; closed: number; bySource: Record<string, number> }
-
-export async function processCandidateQueue(userIds: string[], progress?: QueueProgress): Promise<CandidateQueueResult> {
-  // Retention runs before linking so a listing about to expire is never handed to a user first.
+/**
+ * Turns queued listings into full vacancies. Global, not per-user: who sees a listing is decided by matching after
+ * normalization, so the queue no longer needs a user's prefilter to earn a slot — recency orders it.
+ */
+export async function normalizeListings(limit: number): Promise<NormalizeListingsResult> {
+  // Retention runs before selection so a listing about to expire is never normalized first.
   const expired = await purgeExpiredVacancies(config.vacancyRetentionDays, config.vacancyPurgeBatchSize)
     .catch((error) => { console.error(`Vacancy retention pass failed: ${errorMessage(error)}`); return 0; });
   if (expired) trace('vacancy.expired', { expired, retentionDays: config.vacancyRetentionDays });
-  const prefilter = await prefilterCandidates(userIds, progress);
-  const capacity = config.normalizationBatchSizePerUser * userIds.length;
-  const ranked = await rankedCandidateQueueForUsers(userIds, config.normalizationBatchSizePerUser);
+  const ranked = await queuedListings(limit);
   const refresh = await candidatesDueForRefresh(
-    Math.min(config.candidateRefreshBatchSize, Math.max(0, capacity - ranked.length)), config.candidateRefreshDays);
+    Math.min(config.candidateRefreshBatchSize, Math.max(0, limit - ranked.length)), config.candidateRefreshDays);
   const selected = [...ranked, ...refresh];
-  trace('candidate.queue.ranked', { perUserBatchSize: config.normalizationBatchSizePerUser, capacity,
-    selected: selected.map((candidate) => ({ source: candidate.source, sourceId: candidate.sourceId,
-      title: candidate.title, score: candidate.combinedScore })) });
+  trace('listing.queue.selected', { limit, selected: selected.map((candidate) => ({ source: candidate.source,
+    sourceId: candidate.sourceId, title: candidate.title })) });
   const normalizationResults = new Map<string, VacancyInput | null | Error>();
-  progress?.('normalization', 0, selected.length);
   for (const source of new Set(selected.map((candidate) => candidate.source))) {
     const candidates = selected.filter((candidate) => candidate.source === source);
-    const results = await normalizePlatformCandidates(source,candidates);
-    for (const [sourceId,result] of results) normalizationResults.set(`${source}:${sourceId}`,result);
+    const results = await normalizePlatformCandidates(source, candidates);
+    for (const [sourceId, result] of results) normalizationResults.set(`${source}:${sourceId}`, result);
   }
   let normalized = 0; let failed = 0; let closed = 0;
+  const vacancyIds: number[] = [];
   const bySource: Record<string, number> = {};
-  for (const [index, candidate] of selected.entries()) {
+  for (const candidate of selected) {
     try {
       const result = normalizationResults.get(`${candidate.source}:${candidate.sourceId}`);
       if (result instanceof Error) throw result;
       if (!result) { await markCandidateClosed(candidate); closed++; continue; }
       const saved = await upsertVacancy(result);
       await markCandidateNormalized(candidate, saved.id, Boolean(saved.duplicate));
-      if (saved.needsScore) { normalized++; bySource[candidate.source] = (bySource[candidate.source] ?? 0) + 1; }
+      if (saved.needsScore) { normalized++; vacancyIds.push(saved.id); bySource[candidate.source] = (bySource[candidate.source] ?? 0) + 1; }
       trace('candidate.normalized', { source: candidate.source, sourceId: candidate.sourceId, saved, vacancy: result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -105,160 +52,14 @@ export async function processCandidateQueue(userIds: string[], progress?: QueueP
       else { failed++; await markCandidateFailed(candidate, message); }
       console.error(`Failed to normalize queued candidate ${candidate.source}:${candidate.sourceId}: ${errorMessage(error)}`);
     }
-    progress?.('normalization', index + 1, selected.length);
   }
-  return { ...prefilter, expired, selected: selected.length, refreshed: refresh.length, normalized, failed, closed, bySource };
+  return { expired, selected: selected.length, refreshed: refresh.length, normalized, failed, closed, vacancyIds, bySource };
 }
 
-import { startCycleStatus } from '../telegram.ts';
-import { ensureCvAndSearchProfiles, scorePendingVacancies } from '../workflows.ts';
-import { discoverPlatformVacancies, platformSearches } from './registry.ts';
-import type { UserSearches } from './plan.ts';
-import { aggregateOrderedProgress, mapConcurrent } from '../concurrency.ts';
-import { llmUsageSince, llmUsageSnapshot, type LlmUsageReport } from '../ai.ts';
 
-let cycleRunning = false;
-export type UserTaskRunner = <T>(userId: string, task: () => Promise<T>) => Promise<T>;
-const runDirectly: UserTaskRunner = (_userId, task) => task();
-
-export interface PlatformScrapeResult { searches: number; users: number; seen: number; discovered: number; newVacancies: number }
-export interface ScrapeCycleResult {
-  platforms: Record<string, PlatformScrapeResult>;
-  users: number;
-  searches: number;
-  seen: number;
-  discovered: number;
-  newVacancies: number;
-  /** Every search the profiles asked for, uncapped. It used to be clamped by the same per-cycle budget the plan
-   * spends, which forced it equal to `searches` and hid the clustering saving entirely. */
-  searchesBeforePlanning: number;
-  candidateQueue: Awaited<ReturnType<typeof processCandidateQueue>>;
-  scoresAttempted: number;
-  scoresCompleted: number;
-  llmUsage: LlmUsageReport;
-}
-
-async function retryTransientPostgres<T>(label:string,operation:()=>Promise<T>):Promise<T>{
-  for(let attempt=0;;attempt++){
-    try{return await operation();}catch(error){
-      if(attempt>=2||!transientPostgresError(error))throw error;
-      console.warn(`${label} hit a transient PostgreSQL failure; retrying (${attempt+1}/2).`);
-      await new Promise(resolve=>setTimeout(resolve,1_000*2**attempt));
-    }
-  }
-}
-
-function addPlatformResult(target: Record<string, PlatformScrapeResult>, platformId: string,
-  result: Omit<PlatformScrapeResult, 'newVacancies'>): void {
-  const current = target[platformId] ?? { searches: 0, users: 0, seen: 0, discovered: 0, newVacancies: 0 };
-  target[platformId] = { ...current, searches: current.searches + result.searches,
-    users: Math.max(current.users, result.users),
-    seen: current.seen + result.seen, discovered: current.discovered + result.discovered };
-}
-
-export async function runScrapeCycle(runUserTask: UserTaskRunner = runDirectly): Promise<ScrapeCycleResult | null> {
-  if (cycleRunning) return null;
-  cycleRunning = true;
-  const usageBefore = llmUsageSnapshot();
-  const cycleStatus = await startCycleStatus();
-  cycleStatus?.set('scraping');
-  try {
-    const users = await approvedUsers(true);
-    trace('cycle.start', { users: users.map((user) => user.userId), platforms: config.searchPlatforms,
-      scoreLimitPerUser: config.userScoreLimitPerCycle });
-    const platforms: Record<string, PlatformScrapeResult> = {};
-    const prepared=await mapConcurrent(users,config.userWorkflowConcurrency,async user=>{
-      try{return{user,profiles:await runUserTask(user.userId,()=>ensureCvAndSearchProfiles(user.userId))};}
-      catch(error){
-        console.error(`Scrape allocation failed for user ${user.userId}: ${errorMessage(error)}`);
-        return null;
-      }
-    });
-    // Users are folded into one plan per platform: equivalent searches from different users are fetched once and
-    // recorded for all of them, so the cycle costs clusters rather than users times queries.
-    const demands=new Map<string,UserSearches<unknown>[]>();
-    let searchesBeforePlanning=0;
-    for(const {user,profiles} of prepared.filter(result=>result!==null))for(const platformId of config.searchPlatforms){
-      try{
-        const profile=profiles[platformId];
-        if(!profile)throw new Error(`${platformId} search profile is unavailable`);
-        const searches=platformSearches(platformId,profile);
-        if(!searches.length)continue;
-        searchesBeforePlanning+=searches.length;
-        const platformDemands=demands.get(platformId)??[];platformDemands.push({userId:user.userId,searches});
-        demands.set(platformId,platformDemands);
-      }catch(error){
-        console.error(`Skipping ${platformId} for user ${user.userId}: ${errorMessage(error)}`);
-      }
-    }
-    const scrapeTotal=demands.size;let scrapeCompleted=0;
-    cycleStatus?.set('scraping',0,scrapeTotal);
-    await mapConcurrent([...demands],config.scrapeConcurrency,async([platformId,platformDemands])=>{
-      try {
-        trace('scrape.platform.start', { platform: platformId, users: platformDemands.length });
-        addPlatformResult(platforms, platformId, await discoverPlatformVacancies(platformId,platformDemands));
-      } catch (error) {
-        console.error(`Failed to scrape ${platformId}: ${errorMessage(error)}`);
-      } finally {
-        scrapeCompleted++;cycleStatus?.set('scraping',scrapeCompleted,scrapeTotal);
-        console.info(`Scrape progress ${scrapeCompleted}/${scrapeTotal} (${platformId})`);
-      }
-    });
-    const queue = await processCandidateQueue(users.map((user) => user.userId),
-      (phase, current, total) => cycleStatus?.set(phase, current, total));
-    for (const [source, count] of Object.entries(queue.bySource)) {
-      if (platforms[source]) platforms[source].newVacancies = count;
-    }
-    const scoringProgress=aggregateOrderedProgress(users.map(user=>user.userId),['filtering','scoring'] as const,
-      (phase,current,total)=>cycleStatus?.set(phase,current,total));
-    const scoreCounts = await mapConcurrent(users, config.userWorkflowConcurrency, async (user) => {
-      try {
-        return await retryTransientPostgres('Scoring allocation',()=>runUserTask(user.userId,
-          () => scorePendingVacancies(user.userId, undefined,
-            (phase,current,total)=>scoringProgress.report(user.userId,phase,current,total), config.userScoreLimitPerCycle)));
-      } catch (error) {
-        console.error(`Scoring allocation failed for user ${user.userId}: ${errorMessage(error)}`);
-        return {attempted:0,completed:0};
-      } finally { scoringProgress.done(user.userId); }
-    });
-    const attempted = scoreCounts.reduce((sum, result) => sum + result.attempted, 0);
-    const scoresCompleted = scoreCounts.reduce((sum, result) => sum + result.completed, 0);
-    const totals = Object.values(platforms).reduce((sum, platform) => ({
-      searches: sum.searches + platform.searches, seen: sum.seen + platform.seen,
-      discovered: sum.discovered + platform.discovered, newVacancies: sum.newVacancies + platform.newVacancies,
-    }), { searches: 0, seen: 0, discovered: 0, newVacancies: 0 });
-    const result = { platforms, users: users.length, ...totals, searchesBeforePlanning, candidateQueue: queue,
-      scoresAttempted: attempted, scoresCompleted, llmUsage: llmUsageSince(usageBefore) };
-    trace('cycle.completed', result);
-    console.info(`LLM cycle usage ${JSON.stringify(result.llmUsage)}`);
-    console.info('Vacancy cycle complete', result);
-    return result;
-  } finally {
-    await cycleStatus?.stop();
-    cycleRunning = false;
-  }
-}
-
-import { Cron } from 'croner';
-import type { DeliverySettings } from '../database.ts';
-
-type GlobalHandler = () => Promise<unknown>;
 type UserHandler = (userId: string) => Promise<unknown>;
 
 const defaultDigestMinutes = 9 * 60;
-let cycleJob: Cron | undefined;
-let scheduledCycleRunning = false;
-let scrapeHandler: GlobalHandler | undefined;
-let notifyHandler: UserHandler | undefined;
-let digestHandler: UserHandler | undefined;
-
-function validateCron(pattern: string): void {
-  const fields = pattern.trim().split(/\s+/);
-  if (fields.length !== 5 && fields.length !== 6) throw new Error('CYCLE_CRON must contain 5 fields, or 6 fields with seconds.');
-  const probe = new Cron(pattern, { timezone: config.timezone, paused: true });
-  if (!probe.nextRun()) throw new Error('CYCLE_CRON has no future run time.');
-  probe.stop();
-}
 
 export function parseClockMinutes(value: string): number {
   const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
@@ -359,18 +160,6 @@ export async function removeDeliveryWindow(userId: string): Promise<void> {
   await saveEffectiveSettings(userId, { startMinutes: 0, endMinutes: 0 });
 }
 
-async function sendAlerts(userId: string, now: Date): Promise<void> {
-  if (!notifyHandler || !await isWithinDeliveryWindow(userId, now)) return;
-  try { await notifyHandler(userId); }
-  catch (error) { console.error(`Alert delivery failed for user ${userId}: ${errorMessage(error)}`); }
-}
-
-async function sendDigest(userId: string, now: Date): Promise<void> {
-  if (!digestHandler || !await isDigestDue(userId, now)) return;
-  try { await digestHandler(userId); }
-  catch (error) { console.error(`Digest delivery failed for user ${userId}: ${errorMessage(error)}`); }
-}
-
 export async function deliverDueNotifications(notify:UserHandler,digest:UserHandler,now=new Date()):Promise<void>{
   const users=await approvedUsers();
   await mapConcurrent(users,config.deliveryConcurrency,async user=>{
@@ -381,57 +170,4 @@ export async function deliverDueNotifications(notify:UserHandler,digest:UserHand
     try{if(await isDigestDue(user.userId,now))await digest(user.userId);}
     catch(error){console.error(`Digest delivery failed for user ${user.userId}: ${errorMessage(error)}`);}
   });
-}
-
-export async function runScheduledCycle(): Promise<void> {
-  if (scheduledCycleRunning) return;
-  if (!scrapeHandler || !notifyHandler || !digestHandler) throw new Error('Cycle schedule has not been initialized.');
-  scheduledCycleRunning = true;
-  try {
-    try { await scrapeHandler(); }
-    catch (error) { console.error(`Scrape cycle failed: ${errorMessage(error)}`); }
-    await deliverDueNotifications(notifyHandler,digestHandler);
-  } finally { scheduledCycleRunning = false; }
-}
-
-export function initializeSchedules(scrape: GlobalHandler, notify: UserHandler, digest: UserHandler): void {
-  scrapeHandler = scrape; notifyHandler = notify; digestHandler = digest;
-  validateCron(config.cycleCron);
-  if (!config.runJobs) return;
-  cycleJob = new Cron(config.cycleCron, {
-    timezone: config.timezone,
-    protect: true,
-    catch: (error) => console.error(`Cycle schedule failed: ${errorMessage(error)}`),
-  }, runScheduledCycle);
-}
-
-export function stopSchedules(): void {
-  cycleJob?.stop();
-}
-
-/** Cycle ownership as seen from inside this process: a cron job only exists here when RUN_JOBS is on. */
-export function cycleScheduleStatus(): { scheduled: boolean; cron: string; timezone: string; nextRunAt: string | null } {
-  return { scheduled: Boolean(cycleJob), cron: config.cycleCron, timezone: config.timezone,
-    nextRunAt: cycleJob?.nextRun()?.toISOString() ?? null };
-}
-
-import { getPostgresPool, transientPostgresError } from '../postgres.ts';
-
-export async function runSingletonScrapeCycle(runUserTask?: UserTaskRunner): Promise<ScrapeCycleResult | null> {
-  const client = await getPostgresPool().connect();
-  let acquired = false;
-  try {
-    const result = await client.query<{ acquired: boolean }>(
-      "select pg_try_advisory_lock(hashtext('jobseeker-cycle')) acquired",
-    );
-    acquired = Boolean(result.rows[0]?.acquired);
-    if (!acquired) {
-      console.info('Skipping scrape cycle because another cycle holds the PostgreSQL advisory lock.');
-      return null;
-    }
-    return await runScrapeCycle(runUserTask);
-  } finally {
-    if (acquired) await client.query("select pg_advisory_unlock(hashtext('jobseeker-cycle'))").catch(() => undefined);
-    client.release();
-  }
 }

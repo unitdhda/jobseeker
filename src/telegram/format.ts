@@ -5,7 +5,7 @@ import { type ScoredVacancy, type TelegramUser, type UsageHour } from '../databa
 import { getSearchPlatform } from '../vacancies/registry.ts';
 import { jobWorkerStatus } from '../worker-client.ts';
 import { type ApplicationArtifact } from '../database.ts';
-import { cycleScheduleStatus } from '../vacancies/jobs.ts';
+import { engineLoopStatus } from '../engine-loop.ts';
 
 
 export function escapeHtml(value: string): string {
@@ -124,7 +124,7 @@ function scheduleClock(timestamp:string,timezone:string):string{
 // allowed to consume, who owns the scheduled cycle and where background work is dispatched. Model spend lives in
 // /usage instead, so the two commands never repeat each other.
 export function deploymentStatusText():string{
-  const memory=process.memoryUsage(),cpu=process.cpuUsage(),worker=jobWorkerStatus(),schedule=cycleScheduleStatus();
+  const memory=process.memoryUsage(),cpu=process.cpuUsage(),worker=jobWorkerStatus(),engine=engineLoopStatus();
   const cloud=Boolean(process.env.K_SERVICE); const service=process.env.K_SERVICE??'локальный процесс';
   const runtimeHours=process.uptime()/3600,isTaskWorker=service.includes('worker');
   const allocatedCpu=isTaskWorker?2:1,allocatedMemoryGiB=isTaskWorker?2:0.5;
@@ -136,10 +136,12 @@ export function deploymentStatusText():string{
   const scaling=cloud?'web 0–2 × 20; task workers 0–3 × 1; cycle 0–1':'профиль при cutover: web 0–2 × 20; task workers 0–3 × 1; cycle 0–1';
   const queue=process.env.CLOUD_TASKS_QUEUE
     ?`${process.env.CLOUD_TASKS_LOCATION??'?'}/${process.env.CLOUD_TASKS_QUEUE}`:'не настроены (работа в процессе)';
-  const cycle=schedule.scheduled
-    ?`в этом процессе · ${schedule.cron} · ${schedule.timezone}`+
-      `${schedule.nextRunAt?` · следующий в ${scheduleClock(schedule.nextRunAt,schedule.timezone)}`:''}`
-    :`внешний планировщик · профиль ${schedule.cron} · ${schedule.timezone}`;
+  const cycle=engine.running
+    ?`цикл непрерывный · итераций: ${engine.iterations}`+
+      `${engine.lastIterationAt?` · последняя в ${scheduleClock(engine.lastIterationAt,config.timezone)}`:''}`+
+      `${engine.lastWakeMs!=null?` · пауза ${Math.round(engine.lastWakeMs/1000)} c`:''}`+
+      `${engine.lastStageFailures.length?` · сбои: ${engine.lastStageFailures.join(', ')}`:''}`
+    :'планировщик вне этого процесса';
   return `${runtime}\n${allocation}\nПамять RSS: ${Math.round(memory.rss/1_048_576)} MiB · heap: ${Math.round(memory.heapUsed/1_048_576)} MiB\n`+
     `CPU процесса: ${((cpu.user+cpu.system)/1e6).toFixed(1)} c · uptime: ${runtimeHours.toFixed(1)} ч\n`+
     `Локальный job worker: ${worker.active}/1 · очередь: ${worker.pending}/${worker.capacity}\n`+

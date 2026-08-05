@@ -83,23 +83,39 @@ export interface LoopClock {
 }
 export interface EngineLoop { run(): Promise<void>; stop(): void }
 
+export interface EngineLoopStatus {
+  running: boolean; iterations: number; lastIterationAt: string | null;
+  lastDue: number; lastUnitsRun: number; lastStageFailures: string[]; lastWakeMs: number | null;
+}
+let status: EngineLoopStatus = { running: false, iterations: 0, lastIterationAt: null,
+  lastDue: 0, lastUnitsRun: 0, lastStageFailures: [], lastWakeMs: null };
+
+/** What /status reports about the scheduler: observability only, never control flow. */
+export function engineLoopStatus(): EngineLoopStatus { return { ...status, lastStageFailures: [...status.lastStageFailures] }; }
+
 const fallbackWakeMs = 60_000;
 
 export function createEngineLoop(ports: LoopPorts, clock: LoopClock): EngineLoop {
   let running = true;
   return {
-    stop() { running = false; },
+    stop() { running = false; status = { ...status, running: false }; },
     async run() {
+      status = { ...status, running: true };
       while (running) {
         try {
           const report = await runLoopIteration(ports, new Date());
           if (report.stageFailures.length) console.warn(`Engine iteration degraded: ${report.stageFailures.join(', ')}`);
+          status = { ...status, iterations: status.iterations + 1, lastIterationAt: new Date().toISOString(),
+            lastDue: report.tick?.due ?? 0, lastUnitsRun: report.tick?.unitsRun ?? 0,
+            lastStageFailures: report.stageFailures };
         } catch (error) {
           console.error(`Engine iteration failed outright: ${error instanceof Error ? error.message : String(error)}`);
         }
         const wake = await clock.nextWakeMs(new Date()).catch(() => fallbackWakeMs);
+        status = { ...status, lastWakeMs: wake };
         await clock.sleep(wake);
       }
+      status = { ...status, running: false };
     },
   };
 }

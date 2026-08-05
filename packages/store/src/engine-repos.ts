@@ -22,12 +22,27 @@ export async function dueUnits(now: Date): Promise<DueUnitRow[]> {
     cadenceMinutes: Number(row.cadence_minutes), subscribers: row.subscribers as DueUnitRow['subscribers'] }));
 }
 
+/** The loop's sleep horizon: when the earliest live unit wants to run. */
+export async function nextUnitDueAt(): Promise<Date | null> {
+  const rows = await q(`select min(next_run_at) due from search_units where retired_at is null`);
+  return rows[0]?.due ? new Date(rows[0].due as string) : null;
+}
+
 export async function recordUnitRun(unitId: string, cadenceMinutes: number, foundNovelty: boolean,
   now: Date): Promise<void> {
   await q(`update search_units set cadence_minutes = $2, last_run_at = $3,
       last_novelty_at = case when $4 then $3 else last_novelty_at end,
       next_run_at = $3::timestamptz + make_interval(mins => $2)
     where unit_id = $1`, [unitId, cadenceMinutes, now.toISOString(), foundNovelty]);
+}
+
+/** The live unit population, as compile-time adoption needs it: a new search may join any of these. */
+export async function existingCompiledUnits(): Promise<CompiledUnit[]> {
+  const rows = await q(`select unit_id, platform, filter_signature, canonical_tokens, query
+    from search_units where retired_at is null`);
+  return rows.map((row) => ({ unitId: String(row.unit_id), platform: String(row.platform),
+    filterSignature: String(row.filter_signature), canonicalTokens: (row.canonical_tokens as string[]) ?? [],
+    query: row.query }));
 }
 
 /** Applies a demand compilation: new units and subscriptions land, vanished subscriptions retire their units. */

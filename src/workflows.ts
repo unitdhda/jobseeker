@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import { generateJson } from './ai.ts';
 import { config } from './config.ts';
 import {
-  applicationAgents, beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy, getSearchProfile,
-  markApplicationReady, type ApplicationArtifact,
-  pendingVacancies, prefilterCalibration, prefilterQueueStats, rankedPendingVacancies, recordUsage, requireApprovedUser,
-  savePrefilterScore, saveScore, saveSearchProfile, usageInLast24Hours, vacanciesNeedingPrefilter, type Vacancy,
+  applicationAgents, beginApplication, claimForScoring, failApplication, getCvHash, getCvSource, getScoredVacancy,
+  getSearchProfile, getVacancy, markApplicationReady, recordUsage, requireApprovedUser, saveScore, saveSearchProfile,
+  transitionMatch, usageInLast24Hours, type ApplicationArtifact, type Vacancy,
 } from './database.ts';
-import { getSearchPlatform } from './vacancies/registry.ts';
+import { getSearchPlatform, platformSearches } from './vacancies/registry.ts';
+import { compileDemand, type DemandInput } from '@jobseeker/engine';
+import { applyDemand, existingCompiledUnits } from './database.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
 import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '@jobseeker/cv/pdf';
@@ -109,7 +110,31 @@ array when no supported category credibly matches. Translate evidenced role term
       console.error(`Failed to prepare ${platform.name} search profile: ${errorMessage(error)}`);
     }
   }
+  await compileUserDemand(userId);
   return profiles;
+}
+
+/**
+ * Profiles are wishes; units are the schedule. Whatever the searches now say replaces the user's subscriptions:
+ * new demand mints or adopts units, vanished demand retires the units nobody else holds. Without this step a saved
+ * profile would never be searched, so a compilation failure is a real failure, not a logging event.
+ */
+export async function compileUserDemand(userId: string): Promise<{ units: number; subscriptions: number }> {
+  const demands: DemandInput[] = [];
+  for (const platformId of config.searchPlatforms) {
+    const profile = await getSearchProfile<unknown>(userId, platformId);
+    if (!profile) continue;
+    try {
+      const searches = platformSearches(platformId, profile);
+      if (searches.length) demands.push({ userId, platform: platformId, searches });
+    } catch (error) {
+      console.error(`Skipping ${platformId} demand for user ${userId}: ${errorMessage(error)}`);
+    }
+  }
+  const compiled = compileDemand(demands, config.searchClusterSimilarity / 100, await existingCompiledUnits());
+  await applyDemand(userId, compiled.units, compiled.subscriptions, config.unitCadenceFloorMinutes);
+  trace('demand.compiled', { userId, minted: compiled.units.length, subscriptions: compiled.subscriptions.length });
+  return { units: compiled.units.length, subscriptions: compiled.subscriptions.length };
 }
 
 export async function missingSearchProfiles(userId:string):Promise<string[]>{
@@ -251,46 +276,16 @@ export async function scorePendingVacancies(
   progress?: (phase: 'filtering' | 'scoring', current: number, total: number) => void,
   scoreLimit = config.userScoreLimitPerCycle,
 ): Promise<ScorePendingResult> {
-  let vacancies: Vacancy[];
-  let calibrationContext: string | undefined;
-  if (config.prefilterEnabled) {
-    const cv = await getCvSource(userId);
-    if (!cv) throw new Error('An authoritative CV source is required for pre-LLM filtering.');
-    const cvText = cv.cvText;
-    const cvContentHash = createHash('sha256').update(cvText).digest('hex');
-    const careerProfile = parseStoredCareerProfile(
-      await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256,
-    );
-    if (!careerProfile) throw new Error('A current CV-derived career profile is required for prefiltering.');
-    const careerProfileHash = createHash('sha256').update(JSON.stringify(careerProfile)).digest('hex');
-    const contextHash = createHash('sha256').update([
-      'prefilter-v6-cv-derived-lexical-recency', cvContentHash, careerProfileHash, config.prefilterMinScore,
-      config.prefilterAuditPercent,
-    ].join(':')).digest('hex');
-    calibrationContext = contextHash;
-    const candidates = await vacanciesNeedingPrefilter(userId, contextHash, config.prefilterBatchSize);
-    trace('prefilter.batch.start', { contextHash: contextHash.slice(0, 12), candidates: candidates.length,
-      minimumScore: config.prefilterMinScore, auditPercent: config.prefilterAuditPercent });
-    progress?.('filtering', 0, candidates.length);
-    for (const [index, vacancy] of candidates.entries()) {
-      const result = prefilterVacancy(cvText, vacancy, config.prefilterMinScore, careerProfile);
-      const auditDigest = createHash('sha256').update(`${contextHash}:${vacancy.id}`).digest().readUInt32BE(0);
-      const auditSelected = result.filtered && auditDigest / 0x1_0000_0000 * 100 < config.prefilterAuditPercent;
-      await savePrefilterScore(userId, vacancy.id, contextHash, vacancy.contentHash, { ...result, auditSelected });
-      trace('prefilter.vacancy.scored', { vacancyId: vacancy.id, source: vacancy.source, name: vacancy.name,
-        auditSelected, ...result });
-      progress?.('filtering', index + 1, candidates.length);
-    }
-    const stats = await prefilterQueueStats(userId, contextHash);
-    const ranked = await rankedPendingVacancies(userId, contextHash, scoreLimit, Math.min(config.prefilterAuditSlots, scoreLimit));
-    vacancies = ranked;
-    trace('prefilter.queue.ranked', { ...stats, selected: ranked.map((vacancy) => ({
-      vacancyId: vacancy.id, source: vacancy.source, name: vacancy.name, prefilterScore: vacancy.prefilterScore,
-      auditSelected: vacancy.auditSelected,
-    })) });
-  } else {
-    vacancies = await pendingVacancies(userId, scoreLimit);
+  // Matching already judged relevance at ingest; scoring drains the best claims. A claim that fails to score is
+  // released back to 'matched' so the next drain can retry it — unless saveScore landed first, then the release
+  // finds no 'queued' row and does nothing.
+  const claimed = await claimForScoring(userId, scoreLimit);
+  const vacancies: Vacancy[] = [];
+  for (const vacancyId of claimed) {
+    const vacancy = await getVacancy(vacancyId);
+    if (vacancy) vacancies.push(vacancy);
   }
+  trace('scoring.claimed', { userId, claimed: claimed.length });
   const batches: Vacancy[][] = [];
   for (let offset = 0; offset < vacancies.length; offset += config.scoreBatchSize) {
     batches.push(vacancies.slice(offset, offset + config.scoreBatchSize));
@@ -311,16 +306,13 @@ export async function scorePendingVacancies(
       for (const vacancy of batch) await afterScore?.(vacancy.id);
     } catch (error) {
       console.error(`Failed to score vacancy batch [${batch.map((vacancy) => vacancy.id).join(',')}]: ${errorMessage(error)}`);
+      for (const vacancy of batch) await transitionMatch(userId, vacancy.id, 'queued', 'matched').catch(() => false);
     } finally {
       progressed += batch.length;
       progress?.('scoring', progressed, vacancies.length);
     }
   })));
   trace('scoring.parallel.completed', { vacancies: vacancies.length, batches: batches.length });
-  if (calibrationContext) {
-    trace('prefilter.calibration', await prefilterCalibration(userId, calibrationContext, config.alertScore,
-      config.prefilterCalibrationMinLabels));
-  }
   return {attempted:vacancies.length,completed};
 }
 
