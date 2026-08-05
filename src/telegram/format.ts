@@ -133,7 +133,7 @@ export function scraperStatusMessage(summary:ScraperSummary):string{
     '<b>По источникам</b>'];
   for(const row of summary.sources){
     lines.push(`• ${escapeHtml(row.source)}: ${row.discovered24h} новых · ${row.normalized24h} распознано · `+
-      `очередь ${row.queued} · сбоев ${row.failed} · закрыто ${row.closed24h}`);
+      `очередь ${row.queued} · сбоев ${row.failed} · закрыто ${row.closed24h} · оценок ${row.scored24h}`);
   }
   lines.push('','<b>Поисковые юниты</b>');
   for(const row of summary.units){

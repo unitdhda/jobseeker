@@ -407,7 +407,7 @@ export async function purgeExpiredVacancies(retentionDays: number, limit: number
  * life.
  */
 export interface ScraperHour { at: string; discovered: number; normalized: number }
-export interface SourceScrapeStats { source: string; discovered24h: number; normalized24h: number; failed: number; queued: number; closed24h: number }
+export interface SourceScrapeStats { source: string; discovered24h: number; normalized24h: number; failed: number; queued: number; closed24h: number; scored24h: number }
 export interface UnitScheduleStats { platform: string; units: number; overdue: number; cadenceMin: number; cadenceMax: number; lastNoveltyAt: string | null }
 export interface ScraperSummary {
   hourly: ScraperHour[];
@@ -435,7 +435,9 @@ export async function scraperSummary(): Promise<ScraperSummary> {
         count(v.id) filter (where v.lifecycle_status = 'failed') failed,
         count(v.id) filter (where v.lifecycle_status in ('discovered','failed')
           and (v.normalization_retry_at is null or v.normalization_retry_at <= now())) queued,
-        count(v.id) filter (where v.lifecycle_status = 'closed' and v.last_checked_at > now() - interval '24 hours') closed
+        count(v.id) filter (where v.lifecycle_status = 'closed' and v.last_checked_at > now() - interval '24 hours') closed,
+        (select count(*) from matches m join vacancies mv on mv.id = m.vacancy_id
+          where mv.source = s.source and m.score_updated_at > now() - interval '24 hours') scored
       from unnest($1::text[]) s(source) left join vacancies v on v.source = s.source
       group by s.source order by discovered desc, s.source`, [storeSettings().searchPlatforms]),
     q(`select platform, count(*) units, count(*) filter (where next_run_at <= now()) overdue,
@@ -450,7 +452,7 @@ export async function scraperSummary(): Promise<ScraperSummary> {
   return {
     hourly: hourly.map((row) => ({ at: isoTimestamp(row.bucket), discovered: Number(row.discovered), normalized: Number(row.normalized) })),
     sources: sources.map((row) => ({ source: String(row.source), discovered24h: Number(row.discovered),
-      normalized24h: Number(row.normalized), failed: Number(row.failed), queued: Number(row.queued), closed24h: Number(row.closed) })),
+      normalized24h: Number(row.normalized), failed: Number(row.failed), queued: Number(row.queued), closed24h: Number(row.closed), scored24h: Number(row.scored) })),
     units: units.map((row) => ({ platform: String(row.platform), units: Number(row.units), overdue: Number(row.overdue),
       cadenceMin: Number(row.cadence_min), cadenceMax: Number(row.cadence_max),
       lastNoveltyAt: row.last_novelty_at == null ? null : isoTimestamp(row.last_novelty_at) })),

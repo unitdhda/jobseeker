@@ -11,8 +11,8 @@ const hourly = Array.from({ length: 25 }, (_, index) => ({
 const summary: ScraperSummary = {
   hourly,
   sources: [
-    { source: 'hh', discovered24h: 320, normalized24h: 45, failed: 12, queued: 30, closed24h: 4 },
-    { source: 'geekjob', discovered24h: 0, normalized24h: 0, failed: 0, queued: 0, closed24h: 0 },
+    { source: 'hh', discovered24h: 320, normalized24h: 45, failed: 12, queued: 30, closed24h: 4, scored24h: 9 },
+    { source: 'geekjob', discovered24h: 0, normalized24h: 0, failed: 0, queued: 0, closed24h: 0, scored24h: 0 },
   ],
   units: [{ platform: 'hh', units: 68, overdue: 5, cadenceMin: 30, cadenceMax: 720, lastNoveltyAt: hourly[24]!.at }],
   matched24h: 57, scored24h: 21,
@@ -41,6 +41,7 @@ test('scraper timeline demands the full 25 hourly points', () => {
 test('the summary reports totals, per-source rows, units, and parser errors', () => {
   const message = scraperStatusMessage(summary);
   assert.match(message, /320/u);
+  assert.match(message, /оценок 9/u);
   assert.match(message, /hh/u);
   assert.match(message, /68/u);
   assert.match(message, /30–720/u);
