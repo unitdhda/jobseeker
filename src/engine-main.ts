@@ -104,21 +104,24 @@ function loopPorts(): LoopPorts {
   };
 }
 
+const judgmentIntervalMs = 2 * 60_000;
+
 let loop: EngineLoop | undefined;
 let loopDone: Promise<void> | undefined;
-let cancelSleep: (() => void) | undefined;
 
 export function startEngineLoop(): void {
   if (loop) return;
+  // Plain sleeps suffice: createEngineLoop races every sleep against stop, so shutdown stays prompt.
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
   loop = createEngineLoop(loopPorts(), {
-    nextWakeMs: async () => {
-      const due = await nextUnitDueAt();
-      return nextWakeMs(due ? [{ nextRunAt: due.getTime() }] : [], Date.now());
+    discovery: {
+      nextWakeMs: async () => {
+        const due = await nextUnitDueAt();
+        return nextWakeMs(due ? [{ nextRunAt: due.getTime() }] : [], Date.now());
+      },
+      sleep,
     },
-    sleep: (ms) => new Promise((resolve) => {
-      const timer = setTimeout(() => { cancelSleep = undefined; resolve(); }, ms);
-      cancelSleep = () => { clearTimeout(timer); cancelSleep = undefined; resolve(); };
-    }),
+    judgment: { nextWakeMs: async () => judgmentIntervalMs, sleep },
   });
   loopDone = (async () => {
     await restoreHhBrowserState().catch((error) => console.error(`Could not restore HH browser state: ${errorMessage(error)}`));
@@ -133,7 +136,6 @@ export function startEngineLoop(): void {
 export async function stopEngineLoop(): Promise<void> {
   if (!loop) return;
   loop.stop();
-  cancelSleep?.();
   await loopDone;
   loop = undefined; loopDone = undefined;
 }

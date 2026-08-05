@@ -1,51 +1,65 @@
 /**
- * The engine's main loop: tick the scheduler, normalize what it discovered, match new vacancies to users,
- * drain scoring under the daily budgets, deliver. Each stage is failure-isolated — a broken normalizer must not
- * stop scoring, and a broken tick must not stop delivery — so one iteration always runs every stage it can.
- * Like engine-runtime, everything is expressed over ports; the app wires them to repositories and workflows.
+ * The engine's main loop as two independent lanes sharing one store. Discovery (tick → normalize → match) is slow
+ * and IO-bound — a polite hh normalization pass legitimately takes many minutes. Judgment (score → deliver) is
+ * fast and budget-bound. Coupling them meant every alert waited for the slowest scrape; each lane now runs on its
+ * own clock, and the store's guarantees (skip-locked claims, append-only ingest, state-guarded transitions) make
+ * that safe. Stages stay failure-isolated within a lane, and like engine-runtime everything is expressed over
+ * ports.
  */
 import type { TickReport } from './engine-runtime.ts';
 
-export interface NormalizeReport { vacancyIds: number[]; failed: number; closed: number }
+export interface NormalizeReport {
+  vacancyIds: number[]; failed: number; closed: number;
+  expired: number; selected: number; refreshed: number; normalized: number; bySource: Record<string, number>;
+}
 export interface ScoreDueReport { users: number; drained: number; skippedOverBudget: number; failures: number }
 
-export interface LoopPorts {
+export interface DiscoveryPorts {
   tick(now: Date): Promise<TickReport>;
   /** Normalizes queued listings; returns the ids of vacancies that became visible this round. */
   normalize(now: Date): Promise<NormalizeReport>;
   matchVacancies(vacancyIds: number[], now: Date): Promise<{ matched: number; failures: number }>;
+}
+export interface JudgmentPorts {
   scoreDue(now: Date): Promise<ScoreDueReport>;
   deliver(now: Date): Promise<void>;
 }
+export interface LoopPorts extends DiscoveryPorts, JudgmentPorts {}
 
-export interface IterationReport {
+export interface DiscoveryReport {
   tick?: TickReport;
   normalize?: NormalizeReport;
   matched: number;
-  scoring?: ScoreDueReport;
   stageFailures: string[];
 }
+export interface JudgmentReport { scoring?: ScoreDueReport; stageFailures: string[] }
 
-async function stage<T>(report: IterationReport, name: string, run: () => Promise<T>): Promise<T | null> {
+async function stage<T>(failures: string[], name: string, run: () => Promise<T>): Promise<T | null> {
   try {
     return await run();
   } catch (error) {
-    report.stageFailures.push(name);
-    console.error(`Engine loop stage ${name} failed: ${error instanceof Error ? error.message : String(error)}`);
+    failures.push(name);
+    console.error(`Engine ${name} stage failed: ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 }
 
-export async function runLoopIteration(ports: LoopPorts, now: Date): Promise<IterationReport> {
-  const report: IterationReport = { matched: 0, stageFailures: [] };
-  report.tick = await stage(report, 'tick', () => ports.tick(now)) ?? undefined;
-  report.normalize = await stage(report, 'normalize', () => ports.normalize(now)) ?? undefined;
+export async function runDiscoveryIteration(ports: DiscoveryPorts, now: Date): Promise<DiscoveryReport> {
+  const report: DiscoveryReport = { matched: 0, stageFailures: [] };
+  report.tick = await stage(report.stageFailures, 'tick', () => ports.tick(now)) ?? undefined;
+  report.normalize = await stage(report.stageFailures, 'normalize', () => ports.normalize(now)) ?? undefined;
   if (report.normalize?.vacancyIds.length) {
-    const matched = await stage(report, 'match', () => ports.matchVacancies(report.normalize!.vacancyIds, now));
+    const matched = await stage(report.stageFailures, 'match',
+      () => ports.matchVacancies(report.normalize!.vacancyIds, now));
     report.matched = matched?.matched ?? 0;
   }
-  report.scoring = await stage(report, 'score', () => ports.scoreDue(now)) ?? undefined;
-  await stage(report, 'deliver', () => ports.deliver(now));
+  return report;
+}
+
+export async function runJudgmentIteration(ports: JudgmentPorts, now: Date): Promise<JudgmentReport> {
+  const report: JudgmentReport = { stageFailures: [] };
+  report.scoring = await stage(report.stageFailures, 'score', () => ports.scoreDue(now)) ?? undefined;
+  await stage(report.stageFailures, 'deliver', () => ports.deliver(now));
   return report;
 }
 
@@ -54,15 +68,26 @@ export interface ScoringPorts {
   spentTodayUsd(userId: string, now: Date): Promise<number>;
   drainUser(userId: string, claimLimit: number, now: Date): Promise<{ attempted: number; completed: number }>;
 }
-export interface ScoringPolicy { dailyBudgetUsd: number; claimLimit: number }
+export interface ScoringPolicy {
+  dailyBudgetUsd: number;
+  claimLimit: number;
+  /** The share of the day's budget available from the first minute, so early UTC hours are never starved. */
+  paceFloorFraction?: number;
+}
 
-/** Per-user scoring under the daily spend ceiling; users never pay for each other's failures. */
+/**
+ * Per-user scoring under a paced ceiling: the daily budget accrues with the UTC day (a leaky bucket), so what one
+ * noisy morning cannot spend stays available for the evening's discoveries, and best-first claiming hands each
+ * hour's slice to the best matches available then. Users never pay for each other's failures.
+ */
 export async function drainScoring(ports: ScoringPorts, policy: ScoringPolicy, now: Date): Promise<ScoreDueReport> {
+  const dayFraction = (now.getTime() - Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) / 86_400_000;
+  const ceiling = policy.dailyBudgetUsd * Math.max(policy.paceFloorFraction ?? 1 / 12, dayFraction);
   const users = await ports.scoringUserIds();
   const report: ScoreDueReport = { users: users.length, drained: 0, skippedOverBudget: 0, failures: 0 };
   for (const userId of users) {
     try {
-      if (await ports.spentTodayUsd(userId, now) >= policy.dailyBudgetUsd) {
+      if (await ports.spentTodayUsd(userId, now) >= ceiling) {
         report.skippedOverBudget += 1;
         continue;
       }
@@ -76,45 +101,73 @@ export async function drainScoring(ports: ScoringPorts, policy: ScoringPolicy, n
   return report;
 }
 
-export interface LoopClock {
-  /** How long to pause after an iteration — wired to nextWakeMs over the earliest due unit. */
+export interface LaneClock {
   nextWakeMs(now: Date): Promise<number>;
   sleep(ms: number): Promise<void>;
 }
 export interface EngineLoop { run(): Promise<void>; stop(): void }
 
-export interface EngineLoopStatus {
-  running: boolean; iterations: number; lastIterationAt: string | null;
-  lastDue: number; lastUnitsRun: number; lastStageFailures: string[]; lastWakeMs: number | null;
+export interface LaneStatus {
+  iterations: number; lastIterationAt: string | null; lastStageFailures: string[]; lastWakeMs: number | null;
 }
-let status: EngineLoopStatus = { running: false, iterations: 0, lastIterationAt: null,
-  lastDue: 0, lastUnitsRun: 0, lastStageFailures: [], lastWakeMs: null };
+export interface EngineLoopStatus {
+  running: boolean;
+  discovery: LaneStatus & { lastDue: number; lastUnitsRun: number };
+  judgment: LaneStatus;
+}
+const emptyLane = (): LaneStatus => ({ iterations: 0, lastIterationAt: null, lastStageFailures: [], lastWakeMs: null });
+let status: EngineLoopStatus = { running: false, discovery: { ...emptyLane(), lastDue: 0, lastUnitsRun: 0 }, judgment: emptyLane() };
 
 /** What /status reports about the scheduler: observability only, never control flow. */
-export function engineLoopStatus(): EngineLoopStatus { return { ...status, lastStageFailures: [...status.lastStageFailures] }; }
+export function engineLoopStatus(): EngineLoopStatus {
+  return { running: status.running,
+    discovery: { ...status.discovery, lastStageFailures: [...status.discovery.lastStageFailures] },
+    judgment: { ...status.judgment, lastStageFailures: [...status.judgment.lastStageFailures] } };
+}
 
 const fallbackWakeMs = 60_000;
 
-export function createEngineLoop(ports: LoopPorts, clock: LoopClock): EngineLoop {
+export function createEngineLoop(ports: LoopPorts, clocks: { discovery: LaneClock; judgment: LaneClock }): EngineLoop {
   let running = true;
+  let signalStop: () => void = () => undefined;
+  const stopped = new Promise<void>((resolve) => { signalStop = resolve; });
+
+  function patchLane(name: 'discovery' | 'judgment', patch: Partial<LaneStatus>): void {
+    if (name === 'discovery') status.discovery = { ...status.discovery, ...patch };
+    else status.judgment = { ...status.judgment, ...patch };
+  }
+
+  async function lane(name: 'discovery' | 'judgment', clock: LaneClock,
+    iterate: (now: Date) => Promise<{ stageFailures: string[] }>): Promise<void> {
+    while (running) {
+      try {
+        const report = await iterate(new Date());
+        if (report.stageFailures.length) console.warn(`Engine ${name} degraded: ${report.stageFailures.join(', ')}`);
+        patchLane(name, { iterations: status[name].iterations + 1,
+          lastIterationAt: new Date().toISOString(), lastStageFailures: report.stageFailures });
+      } catch (error) {
+        console.error(`Engine ${name} iteration failed outright: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      const wake = await clock.nextWakeMs(new Date()).catch(() => fallbackWakeMs);
+      patchLane(name, { lastWakeMs: wake });
+      // Racing the clock against stop keeps shutdown prompt whatever sleep the clock implements.
+      if (running) await Promise.race([clock.sleep(wake), stopped]);
+    }
+  }
+
   return {
-    stop() { running = false; status = { ...status, running: false }; },
+    stop() { running = false; status = { ...status, running: false }; signalStop(); },
     async run() {
       status = { ...status, running: true };
-      while (running) {
-        try {
-          const report = await runLoopIteration(ports, new Date());
-          if (report.stageFailures.length) console.warn(`Engine iteration degraded: ${report.stageFailures.join(', ')}`);
-          status = { ...status, iterations: status.iterations + 1, lastIterationAt: new Date().toISOString(),
-            lastDue: report.tick?.due ?? 0, lastUnitsRun: report.tick?.unitsRun ?? 0,
-            lastStageFailures: report.stageFailures };
-        } catch (error) {
-          console.error(`Engine iteration failed outright: ${error instanceof Error ? error.message : String(error)}`);
-        }
-        const wake = await clock.nextWakeMs(new Date()).catch(() => fallbackWakeMs);
-        status = { ...status, lastWakeMs: wake };
-        await clock.sleep(wake);
-      }
+      await Promise.all([
+        lane('discovery', clocks.discovery, async (now) => {
+          const report = await runDiscoveryIteration(ports, now);
+          status.discovery = { ...status.discovery, lastDue: report.tick?.due ?? 0,
+            lastUnitsRun: report.tick?.unitsRun ?? 0 };
+          return report;
+        }),
+        lane('judgment', clocks.judgment, (now) => runJudgmentIteration(ports, now)),
+      ]);
       status = { ...status, running: false };
     },
   };

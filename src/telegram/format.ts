@@ -173,11 +173,12 @@ export function deploymentStatusText():string{
   const scaling=cloud?'web 0–2 × 20; task workers 0–3 × 1; cycle 0–1':'профиль при cutover: web 0–2 × 20; task workers 0–3 × 1; cycle 0–1';
   const queue=process.env.CLOUD_TASKS_QUEUE
     ?`${process.env.CLOUD_TASKS_LOCATION??'?'}/${process.env.CLOUD_TASKS_QUEUE}`:'не настроены (работа в процессе)';
+  const lane=(label:string,laneStatus:{iterations:number;lastIterationAt:string|null;lastStageFailures:string[]})=>
+    `${label} ${laneStatus.iterations}`+
+    `${laneStatus.lastIterationAt?` (последняя ${scheduleClock(laneStatus.lastIterationAt,config.timezone)})`:''}`+
+    `${laneStatus.lastStageFailures.length?` · сбои: ${laneStatus.lastStageFailures.join(', ')}`:''}`;
   const cycle=engine.running
-    ?`цикл непрерывный · итераций: ${engine.iterations}`+
-      `${engine.lastIterationAt?` · последняя в ${scheduleClock(engine.lastIterationAt,config.timezone)}`:''}`+
-      `${engine.lastWakeMs!=null?` · пауза ${Math.round(engine.lastWakeMs/1000)} c`:''}`+
-      `${engine.lastStageFailures.length?` · сбои: ${engine.lastStageFailures.join(', ')}`:''}`
+    ?`две полосы · ${lane('разведка:',engine.discovery)} · ${lane('оценка:',engine.judgment)}`
     :'планировщик вне этого процесса';
   return `${runtime}\n${allocation}\nПамять RSS: ${Math.round(memory.rss/1_048_576)} MiB · heap: ${Math.round(memory.heapUsed/1_048_576)} MiB\n`+
     `CPU процесса: ${((cpu.user+cpu.system)/1e6).toFixed(1)} c · uptime: ${runtimeHours.toFixed(1)} ч\n`+
