@@ -130,6 +130,9 @@ create table public.matches (
   application_error text,
   application_requested_at timestamptz,
   application_updated_at timestamptz,
+  -- Delivered artifacts by kind: the Telegram file_id (cv) or text (letter) plus the cv hash it was built from,
+  -- so a repeat request resends instantly instead of regenerating.
+  application_artifacts jsonb not null default '{}'::jsonb,
   matched_at timestamptz not null,
   updated_at timestamptz not null,
   constraint matches_state_check check (state = any (array['matched','queued','scored','alerted','digested','skipped','applying','applied','expired'])),

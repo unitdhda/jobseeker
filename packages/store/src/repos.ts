@@ -577,6 +577,18 @@ export async function beginApplication(userId:string,id:number):Promise<void>{aw
   await client.query(`update matches set state='applying',application_status='generating',application_error=null,
     application_requested_at=coalesce(application_requested_at,$1),application_updated_at=$1,updated_at=$1 where user_id=$2 and vacancy_id=$3`,
     [timestamp,userId,id]);});}
+export interface DeliveredArtifact { cvSha256: string; fileId?: string; text?: string; deliveredAt: string }
+/** The artifact exactly as it went to the user, keyed to the CV it was built from; a hash mismatch means stale. */
+export async function saveDeliveredArtifact(userId:string,vacancyId:number,artifact:ApplicationArtifact,
+  payload:DeliveredArtifact):Promise<void>{
+  await ready();await q(`update matches set application_artifacts=jsonb_set(application_artifacts,array[$4::text],$3::jsonb,true)
+    where user_id=$1 and vacancy_id=$2`,[userId,vacancyId,JSON.stringify(payload),artifact]);
+}
+export async function deliveredArtifact(userId:string,vacancyId:number,artifact:ApplicationArtifact):Promise<DeliveredArtifact|null>{
+  await ready();const row=await one(`select application_artifacts->$3 payload from matches
+    where user_id=$1 and vacancy_id=$2`,[userId,vacancyId,artifact]);
+  return row?.payload?jsonValue<DeliveredArtifact>(row.payload):null;
+}
 export async function markApplicationReady(userId:string,id:number):Promise<void>{await ready();await q(`update matches set application_status='ready',
   application_updated_at=$1 where user_id=$2 and vacancy_id=$3`,[now(),userId,id]);}
 export async function markApplicationDelivered(userId:string,id:number,artifact:ApplicationArtifact):Promise<void>{

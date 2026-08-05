@@ -8,6 +8,7 @@ import {
   isApprovedUser,
   markApplicationDelivered,
   type ScoredVacancy,
+  deliveredArtifact, saveDeliveredArtifact,
 } from '@jobseeker/store';
 import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from '../prefilter.ts';
 import { refreshUserInWorker, tailorApplicationInWorker } from '../worker-client.ts';
@@ -56,17 +57,35 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
   try {
     vacancy = await getScoredVacancy(userId, vacancyId);
     if (!vacancy) throw new Error('Vacancy not found.');
+    const api = getBot().api;
+    // A repeat request for an artifact built from the current CV resends what was already delivered: a Telegram
+    // file_id upload costs nothing and no LLM run or daily-limit slot is spent on work that already happened.
+    const cvHash = await getCvHash(userId);
+    const stored = await deliveredArtifact(userId, vacancyId, artifact);
+    if (stored && cvHash && stored.cvSha256 === cvHash) {
+      if (stored.fileId) await api.sendDocument(chat, stored.fileId, {
+        caption: `Адаптированное резюме — ${vacancy.name}`.slice(0, 1024) });
+      else if (stored.text) await api.sendMessage(chat, stored.text, { link_preview_options: { is_disabled: true } });
+      else throw new Error(`Stored ${artifact} artifact is empty.`);
+      return;
+    }
     loader = await startApplicationLoader(userId,vacancy.applyId,artifact);
     const documents = await tailorApplicationInWorker(userId, vacancyId, artifact);
     if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
-    const api = getBot().api;
     loader?.setTask(artifactLabels[artifact].sending);
+    const deliveredAt = new Date().toISOString();
     if (documents.tailoredCvPdf) {
-      await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
+      const sent = await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
         caption: `Адаптированное резюме — ${vacancy.name}`.slice(0, 1024),
       });
+      if (cvHash && sent.document?.file_id) await saveDeliveredArtifact(userId, vacancyId, artifact,
+        { cvSha256: cvHash, fileId: sent.document.file_id, deliveredAt }).catch((saveError) =>
+        console.warn(`Could not store delivered cv artifact: ${errorMessage(saveError)}`));
     } else if (documents.coverLetter) {
       await api.sendMessage(chat, documents.coverLetter, { link_preview_options: { is_disabled: true } });
+      if (cvHash) await saveDeliveredArtifact(userId, vacancyId, artifact,
+        { cvSha256: cvHash, text: documents.coverLetter, deliveredAt }).catch((saveError) =>
+        console.warn(`Could not store delivered letter artifact: ${errorMessage(saveError)}`));
     } else throw new Error(`Application worker returned no ${artifact}.`);
     await markApplicationDelivered(userId, vacancyId, artifact); await loader?.stop();
   } catch (error) {
