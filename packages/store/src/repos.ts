@@ -533,9 +533,14 @@ const currentDigest=`m.state='digested' and m.updated_at=(select max(latest.upda
 const addressableDigest=`(${currentDigest} or (m.state='scored' and m.llm_score>=$2 and m.llm_score<$3
   and m.score_updated_at is not null and ((select last_digest_at from users where user_id=$1) is null
     or m.score_updated_at>(select last_digest_at from users where user_id=$1))))`;
-export async function latestDigestVacanciesByApplyIdPrefix(userId:string,min:number,high:number,prefix:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
-  where m.user_id=$1 and ${addressableDigest} and v.apply_id like $4
-  order by m.llm_score desc,v.published_at desc limit 2`,[userId,min,high,`${prefix}%`])).map(rowToScoredVacancy);}
+/**
+ * Resolves an apply-id prefix everywhere the full id resolves: any scored vacancy of the user, whatever its state.
+ * The digest prints the shortest prefix unique within its own set, so a wider search can collide — two rows are
+ * returned so the caller can ask for more letters instead of guessing.
+ */
+export async function scoredVacanciesByApplyIdPrefix(userId:string,prefix:string):Promise<ScoredVacancy[]>{
+  await ready();return(await q(`${scoredSelect} where m.user_id=$1 and v.apply_id like $2
+  order by m.llm_score desc,v.published_at desc limit 2`,[userId,`${prefix}%`])).map(rowToScoredVacancy);}
 export async function digestVacancies(userId:string,min:number,high:number,since:string|null,until:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
   where m.user_id=$1 and m.llm_score>=$2 and m.llm_score<$3 and m.state='scored' and m.score_updated_at is not null
   and ($4::timestamptz is null or m.score_updated_at>$4::timestamptz) and m.score_updated_at<=$5::timestamptz

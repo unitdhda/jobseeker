@@ -10,7 +10,7 @@ import {
   getScoredVacancyByApplyId,
   getTelegramUser,
   isApprovedUser,
-  latestDigestVacanciesByApplyIdPrefix,
+  scoredVacanciesByApplyIdPrefix,
   listTelegramUsers,
   requestAccess,
   searchScoredVacancies,
@@ -446,8 +446,8 @@ function configureTelegramBot(): Bot | null {
     const userId = String(ctx.from.id); const reference = ctx.match[1].toLowerCase();
     const exact = reference.length === 6 ? await getScoredVacancyByApplyId(userId, reference) : null;
     const matches: ScoredVacancy[] = reference.length === 6 ? (exact ? [exact] : [])
-      : await latestDigestVacanciesByApplyIdPrefix(userId, config.digestMinScore, config.alertScore, reference);
-    if (!matches.length) { await ctx.reply(`В последней подборке нет вакансии с ID ${reference}.`); return; }
+      : await scoredVacanciesByApplyIdPrefix(userId, reference);
+    if (!matches.length) { await ctx.reply(`Нет оценённой вакансии с ID ${reference}.`); return; }
     if (matches.length > 1) { await ctx.reply(`Префикс ${reference} подходит к нескольким вакансиям. Пришлите больше букв.`); return; }
     const vacancy = matches[0];
     if ([...applicationJobs].some((key) => key.startsWith(`${userId}:${vacancy.id}:`))) {
