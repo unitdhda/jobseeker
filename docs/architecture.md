@@ -9,21 +9,48 @@ For the product overview, start with the [README](../README.md). For deployment 
 
 ## System map
 
-```mermaid
-flowchart TB
-    CV[CV upload] --> Extract[Extract text and structured document]
-    Extract --> Profile[Career and source search profiles]
-    Profile --> Compile[Compile content-addressed search units]
-    Compile --> Units[(search_units + subscriptions)]
-    Units --> Discover[Source discovery]
-    Discover --> Listings[(shared vacancies/listings)]
-    Listings --> Normalize[Normalization]
-    Normalize --> Match[Per-user lexical matching]
-    Match --> Matches[(matches)]
-    Matches --> Score[Budgeted LLM scoring]
-    Score --> Deliver[Alerts and digests]
-    Deliver --> Telegram[Telegram]
-    Telegram --> Tailor[Tailored CV or letter]
+```text
+┌─────────────────────────────────────┐
+│ CV upload                           │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Extract text and structured content │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Generate career and search profiles │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Compile content-addressed units     │
+│ + per-user subscriptions            │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Discover listings from due units    │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Shared vacancy store                │
+│ normalize once · deduplicate once   │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Match through every user's CV lens  │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Paced, budgeted LLM scoring         │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ Telegram alerts and digests         │
+└──────────────────┬──────────────────┘
+                   ▼
+┌─────────────────────────────────────┐
+│ On-demand tailored CV or letter     │
+└─────────────────────────────────────┘
 ```
 
 ## Repository boundaries

@@ -39,15 +39,45 @@ Jobseeker is not another job-board interface. It is a continuously running searc
 
 ## How it works
 
-```mermaid
-flowchart LR
-    CV[Upload CV] --> Demand[Compile search demand]
-    Demand --> Sources[Monitor job boards]
-    Sources --> Store[(Shared vacancy store)]
-    Store --> Match[Match against each CV]
-    Match --> Score[Budgeted LLM scoring]
-    Score --> Telegram[Alert or digest]
-    Telegram --> Apply[Tailored CV or letter]
+```text
+┌──────────────────────────┐
+│ Upload a CV              │
+└─────────────┬────────────┘
+              │
+              ▼
+┌──────────────────────────┐
+│ Compile search demand    │
+└─────────────┬────────────┘
+              │
+              ▼
+┌──────────────────────────┐
+│ Monitor job boards       │
+└─────────────┬────────────┘
+              │
+              ▼
+┌──────────────────────────┐
+│ Shared vacancy store     │
+└─────────────┬────────────┘
+              │
+              ▼
+┌──────────────────────────┐
+│ Match against each CV    │
+└─────────────┬────────────┘
+              │
+              ▼
+┌──────────────────────────┐
+│ Budgeted LLM scoring     │
+└─────────────┬────────────┘
+              │
+              ▼
+┌──────────────────────────┐
+│ Telegram alert or digest │
+└─────────────┬────────────┘
+              │
+              ▼
+┌──────────────────────────┐
+│ Tailored CV or letter    │
+└──────────────────────────┘
 ```
 
 Searches are content-addressed: equivalent demand from different users becomes one search unit, while matching and
