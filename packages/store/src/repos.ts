@@ -221,15 +221,21 @@ export async function deleteUserData(userId: string): Promise<void> {
 }
 export async function exportUserData(userId: string): Promise<Record<string, unknown>> {
   await ready(); if (!await getTelegramUser(userId)) throw new Error('User was not found.');
-  const [profile, scores] = await Promise.all([one('select cv_text,document_json,search_profiles from cv_documents where user_id=$1', [userId]),
-    q('select v.url,m.llm_score score from matches m join vacancies v on v.id=m.vacancy_id where m.user_id=$1 and m.llm_score is not null order by m.llm_score desc,v.url', [userId])]);
+  const [profile, scores, applications] = await Promise.all([
+    one('select cv_text,document_json,search_profiles from cv_documents where user_id=$1', [userId]),
+    q('select v.url,m.llm_score score from matches m join vacancies v on v.id=m.vacancy_id where m.user_id=$1 and m.llm_score is not null order by m.llm_score desc,v.url', [userId]),
+    q(`select v.url,v.apply_id,m.application_artifacts from matches m join vacancies v on v.id=m.vacancy_id
+      where m.user_id=$1 and m.application_artifacts<>'{}'::jsonb order by v.url`, [userId]),
+  ]);
   const profiles = profile ? jsonValue<Record<string, unknown>>(profile.search_profiles) : {};
   const career = profiles[careerProfilePlatformId] as { profile?: unknown } | undefined;
   return { cvSource: profile ? String(profile.cv_text) : null, normalizedDocument: profile ? jsonValue(profile.document_json) : null,
     careerProfile: career?.profile ?? null,
     searchProfiles: Object.entries(profiles).filter(([platform]) => platform !== careerProfilePlatformId)
       .sort(([left], [right]) => left.localeCompare(right)).map(([platform, value]) => ({ platform, profile: value })),
-    scores: scores.map((row) => ({ url: String(row.url), score: Number(row.score) })) };
+    scores: scores.map((row) => ({ url: String(row.url), score: Number(row.score) })),
+    deliveredApplicationArtifacts: applications.map((row) => ({ url: String(row.url), applyId: String(row.apply_id),
+      artifacts: jsonValue<Record<string, DeliveredArtifact>>(row.application_artifacts) })) };
 }
 
 function rowToVacancy(row: Row): Vacancy {

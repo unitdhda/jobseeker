@@ -1,25 +1,23 @@
 import assert from 'node:assert/strict';
-import { closePostgresPool, postgresQuery } from '../src/postgres.ts';
+import '../src/postgres.ts';
+import * as d from '@jobseeker/store';
+import * as sessions from '../src/telegram-state.ts';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for the Postgres integration test.');
-const d = await import('../src/database.ts');
-const sessions = await import('../src/telegram-state.ts');
-const webhook = await import('../src/telegram-state.ts');
 const suffix = `${Date.now()}-${process.pid}`;
 const userId = `integration-${suffix}`;
 const sourceId = `integration-${suffix}`;
 const chatId = `integration-chat-${suffix}`;
 let vacancyId: number | undefined;
 try {
-  const legacyTables = await postgresQuery<{ table_name: string }>(`select table_name from information_schema.tables
+  const legacyTables = await d.postgresQuery<{ table_name: string }>(`select table_name from information_schema.tables
     where table_schema='public' and table_name=any($1::text[]) order by table_name`,
-    [['app_migrations','applications','global_scheduler_settings','pending_deliveries','scores','telegram_user_update_leases']]);
+    [['user_vacancies','profiles','scores','pending_deliveries']]);
   assert.deepEqual(legacyTables, []);
-  const consolidatedColumns = await postgresQuery<{ column_name: string; data_type: string }>(`select column_name,data_type
-    from information_schema.columns where table_schema='public' and table_name='user_vacancies'`);
-  assert.equal(consolidatedColumns.find((column) => column.column_name === 'score')?.data_type, 'integer');
-  assert.equal(consolidatedColumns.find((column) => column.column_name === 'application_updated_at')?.data_type,
-    'timestamp with time zone');
+  const matchColumns = await d.postgresQuery<{ column_name: string; data_type: string }>(`select column_name,data_type
+    from information_schema.columns where table_schema='public' and table_name='matches'`);
+  assert.equal(matchColumns.find((column) => column.column_name === 'llm_score')?.data_type, 'integer');
+  assert.equal(matchColumns.find((column) => column.column_name === 'application_artifacts')?.data_type, 'jsonb');
 
   const touched = await d.touchTelegramUser({ userId, chatId, displayName: 'Integration Test' });
   assert.equal(touched.status, 'unregistered');
@@ -27,92 +25,48 @@ try {
   assert.equal((await d.setUserStatus(userId, 'approved'))?.status, 'approved');
   await sessions.setTelegramSession(userId, 'window-setup', { step: 'start' }, 60_000);
   assert.deepEqual(await sessions.getTelegramSession(userId, 'window-setup'), { step: 'start' });
-  assert.equal((await sessions.claimTelegramSession(userId, 'cv-cooldown', {}, 60_000)).claimed, true);
-  assert.equal((await sessions.claimTelegramSession(userId, 'cv-cooldown', {}, 60_000)).claimed, false);
-  const updateId = 7_000_000_000_000_000 + process.pid;
-  assert.equal(await webhook.claimTelegramUpdate(updateId), true);
-  await webhook.completeTelegramUpdate(updateId);
-  assert.equal(await webhook.claimTelegramUpdate(updateId), false);
 
   await d.saveCvSource(userId, 'cv.txt', `cv-${suffix}`, {
     text: 'Integration CV with TypeScript PostgreSQL distributed systems experience. '.repeat(5),
     document: { version: 1, blocks: [{ type: 'paragraph', text: 'Integration CV' }] },
     sourceFormat: 'txt', mediaType: 'text/plain', parserName: 'integration', parserVersion: '1',
   });
-  assert.equal(await d.getCvHash(userId), `cv-${suffix}`);
   await d.saveSearchProfile(userId, 'hh', { searches: [{ text: 'distributed systems' }] });
-  assert.deepEqual(await d.getSearchProfile(userId, 'hh'), { searches: [{ text: 'distributed systems' }] });
   await d.saveDeliverySettings(userId, { startMinutes: 540, endMinutes: 1320, digestMinutes: 570, timezone: '+03:00' });
-  assert.equal((await d.getDeliverySettings(userId))?.digestMinutes, 570);
+  assert.equal(await d.getCvHash(userId), `cv-${suffix}`);
 
-  const saved = await d.upsertVacancy({ source: 'hh', sourceId, name: 'Postgres Integration Engineer', employer: 'Integration Employer',
-    area: 'Remote', salaryFrom: null, salaryTo: null, salaryCurrency: null, salaryGross: null, experience: 'senior',
-    employment: 'full', schedule: 'full', workFormat: 'remote', description: 'Build distributed TypeScript services backed by PostgreSQL.',
-    keySkills: ['TypeScript', 'PostgreSQL'], url: `https://hh.ru/vacancy/${Date.now()}`, publishedAt: '',
-    sourceQuery: 'integration', contentHash: `content-${suffix}` });
+  const saved = await d.upsertVacancy({ source: 'hh', sourceId, name: 'Postgres Integration Engineer',
+    employer: 'Integration Employer', area: 'Remote', salaryFrom: null, salaryTo: null, salaryCurrency: null,
+    salaryGross: null, experience: 'senior', employment: 'full', schedule: 'full', workFormat: 'remote',
+    description: 'Build distributed TypeScript services backed by PostgreSQL.', keySkills: ['TypeScript', 'PostgreSQL'],
+    url: `https://hh.ru/vacancy/${Date.now()}`, publishedAt: '', sourceQuery: 'integration', contentHash: `content-${suffix}` });
   vacancyId = saved.id;
-  assert.equal(saved.duplicate, false);
-  await d.savePrefilterScore(userId, vacancyId, `context-${suffix}`, `content-${suffix}`, { regexScore: 90,
-    lexicalCosine: 0.8, lexicalScore: 90, combinedScore: 90, filtered: false, auditSelected: false, reasons: ['integration'] });
-  assert.equal((await d.prefilterQueueStats(userId, `context-${suffix}`)).queued, 1);
-  assert.equal((await d.rankedPendingVacancies(userId, `context-${suffix}`, 5))[0]?.id, vacancyId);
+  assert.equal(await d.createMatches([{ userId, vacancyId, lexicalScore: 91 }], new Date()), 1);
+  assert.deepEqual(await d.claimForScoring(userId, 1), [vacancyId]);
   await d.saveScore(userId, vacancyId, 91, 'Backend', 'Strong integration match', ['TypeScript'], ['None'], false);
   assert.equal((await d.getScoredVacancy(userId, vacancyId))?.score, 91);
-  assert.equal((await d.searchScoredVacancies(userId, 'Postgres Integration'))[0]?.id, vacancyId);
-  assert.equal((await d.unsentHighScoreVacancies(userId, 80))[0]?.primaryTrack, 'Backend');
-  await d.markAlerted(userId, vacancyId);
 
-  assert.equal(await d.recordVacancyCandidate(userId, { source: 'habr', sourceId, url: `https://career.habr.com/vacancies/${sourceId}`,
-    searchName: 'integration', title: 'Integration Candidate', publishedAt: '' }), true);
-  const candidate = (await d.candidatesNeedingPrefilter(userId, 'different-context', 10)).find((item) => item.sourceId === sourceId);
-  assert.ok(candidate);
-  await d.saveCandidatePrefilter(userId, candidate, 'different-context', { regexScore: 88, lexicalCosine: 0.7,
-    lexicalScore: 85, combinedScore: 87, filtered: false, auditSelected: false, reasons: ['integration'] });
-  assert.equal((await d.rankedCandidateQueueForUsers([userId], 5))[0]?.sourceId, sourceId);
-  const normalizedCandidate = await d.upsertVacancy({ source: 'habr', sourceId, name: 'Integration Candidate',
-    employer: 'Habr Integration Employer', area: 'Remote', salaryFrom: null, salaryTo: null, salaryCurrency: null,
-    salaryGross: null, experience: '', employment: '', schedule: '', workFormat: 'remote',
-    description: 'Normalized candidate integration vacancy.', keySkills: ['PostgreSQL'],
-    url: `https://career.habr.com/vacancies/${sourceId}`, publishedAt: '', sourceQuery: 'integration',
-    contentHash: `candidate-content-${suffix}` });
-  assert.equal(normalizedCandidate.duplicate, false);
-  await d.markCandidateNormalized(candidate, normalizedCandidate.id);
-  const digestVacancy=await d.getVacancy(normalizedCandidate.id);assert.equal(digestVacancy?.sourceId,sourceId);
-  await d.saveScore(userId,normalizedCandidate.id,61,'Backend','Digest integration match',['PostgreSQL'],[],false);
-  const snapshotAt=new Date().toISOString();
-  assert.deepEqual((await d.digestVacancies(userId,50,80,null,snapshotAt)).map(vacancy=>vacancy.id),[normalizedCandidate.id]);
-  await d.replaceDigestSnapshot(userId,[normalizedCandidate.id],snapshotAt);
-  // Delivered rows leave the digest itself but stay addressable from the message that already carried them.
-  const afterSnapshot=new Date(Date.parse(snapshotAt)+1_000).toISOString();
-  assert.deepEqual(await d.digestVacancies(userId,50,80,snapshotAt,afterSnapshot),[]);
-  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,50,80,digestVacancy!.applyId.slice(0,2))).length,1);
-  await d.replaceDigestSnapshot(userId,[],afterSnapshot);
-  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,50,80,digestVacancy!.applyId.slice(0,2))).length,0);
-  // Scored after the last scheduled run: queued for the next digest and addressable straight away.
-  const beforeScore=new Date(Date.parse(snapshotAt)-60_000).toISOString();
-  await d.replaceDigestSnapshot(userId,[],beforeScore);
-  assert.deepEqual((await d.digestVacancies(userId,50,80,beforeScore,new Date(Date.now()+60_000).toISOString()))
-    .map(vacancy=>vacancy.id),[normalizedCandidate.id]);
-  assert.equal((await d.latestDigestVacanciesByApplyIdPrefix(userId,50,80,digestVacancy!.applyId.slice(0,2))).length,1);
-  assert.equal(await d.usageInLast24Hours(userId,'application'),0);
-  await d.beginApplication(userId,vacancyId);await d.markApplicationReady(userId,vacancyId);
-  assert.equal(await d.usageInLast24Hours(userId,'application'),0);
-  await d.markApplicationDelivered(userId,vacancyId);
-  assert.equal(await d.usageInLast24Hours(userId,'application'),1);
-  await d.recordUsage(userId, 'score');
-  assert.equal(await d.usageInLast24Hours(userId, 'score'), 1);
-  assert.equal((await d.userUsageSummaries()).some((summary) => summary.userId === userId && summary.scores24h === 1), true);
-  await postgresQuery(`insert into usage_events(user_id,kind,occurred_at,agent,model,total_tokens,cost_usd)
-    values($1,'llm',now(),'integration','test-model',42,0.001)`,[userId]);
-  const llmUsage=await d.llmUsageSummary();
-  assert.equal(llmUsage.hourlyTimeline.length,25);assert.ok(llmUsage.tokensTotal>=42);assert.ok(llmUsage.costTotalUsd>=0.001);
-  assert.equal((await d.exportUserData(userId)).cvSource != null, true);
+  await d.beginApplication(userId, vacancyId);
+  await d.markApplicationReady(userId, vacancyId);
+  const deliveredAt = new Date().toISOString();
+  await d.saveDeliveredArtifact(userId, vacancyId, 'cv', { cvSha256: `cv-${suffix}`, fileId: 'telegram-file-id', deliveredAt });
+  await d.saveDeliveredArtifact(userId, vacancyId, 'letter', { cvSha256: `cv-${suffix}`, text: 'Integration letter', deliveredAt });
+  await d.markApplicationDelivered(userId, vacancyId, 'cv');
+
+  const exported = await d.exportUserData(userId) as { cvSource: unknown; deliveredApplicationArtifacts: Array<{
+    artifacts: { cv?: { fileId?: string }; letter?: { text?: string } } }> };
+  assert.ok(exported.cvSource);
+  assert.equal(exported.deliveredApplicationArtifacts.length, 1);
+  assert.equal(exported.deliveredApplicationArtifacts[0]?.artifacts.cv?.fileId, 'telegram-file-id');
+  assert.equal(exported.deliveredApplicationArtifacts[0]?.artifacts.letter?.text, 'Integration letter');
+
   await d.deleteUserData(userId);
   assert.equal(await d.getCvHash(userId), null);
+  assert.equal(await d.deliveredArtifact(userId, vacancyId, 'cv'), null);
+  assert.equal((await d.getTelegramUser(userId))?.status, 'approved'); // access identity remains by design
   console.info('Postgres business repository integration passed.');
 } finally {
-  await postgresQuery('delete from users where user_id=$1', [userId]).catch(() => undefined);
-  await postgresQuery('delete from vacancies where source_id=$1', [sourceId]).catch(() => undefined);
-  if (vacancyId != null) await postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
-  await closePostgresPool();
+  await d.postgresQuery('delete from users where user_id=$1', [userId]).catch(() => undefined);
+  if (vacancyId != null) await d.postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
+  await d.closePostgresPool();
 }

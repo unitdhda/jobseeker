@@ -84,9 +84,10 @@ rediscover, re-score and re-deliver them.
 
 Keep exactly one Telegram receiver and exactly one engine loop (`RUN_JOBS=true`) active.
 
-Production is the VPS deployment: one container polling Telegram and running the loop, scoring through the
-`claude-cli` sidecar. The Cloud Run surface is deployed and idle. See [VPS deployment](docs/vps-claude-bridge.md)
-for the live topology and [Operations](docs/operations.md) for releases.
+Production is the VPS deployment: one container polls Telegram and runs both engine lanes. Its role-specific
+`AI_*_MODEL` settings currently select OAuth-backed `openai-codex` models; the private `claude-cli` sidecar remains
+healthy but idle as a standby inference route. The Cloud Run surface is deployed and idle. See
+[VPS deployment](docs/vps-claude-bridge.md) for the live topology and [Operations](docs/operations.md) for releases.
 
 ## AI providers
 

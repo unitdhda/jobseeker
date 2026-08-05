@@ -8,8 +8,8 @@ This is the canonical runbook for validating, deploying, monitoring, and handing
 
 | Surface | State | Role |
 |---|---|---|
-| VPS `jobseeker-jobseeker-1` | live | Telegram receiver (polling) **and** scrape producer on its own in-process schedule |
-| VPS `jobseeker-claude-cli-1` | live | Claude Code subscription inference sidecar, private network only |
+| VPS `jobseeker-jobseeker-1` | live | Telegram receiver (polling) **and** the only engine loop |
+| VPS `jobseeker-claude-cli-1` | live, idle | Standby Claude Code inference sidecar, private network only |
 | Supabase PostgreSQL | live | The only runtime database, shared by every surface |
 | Cloud Run `jobseeker-web` / `jobseeker-worker` | deployed, idle | Staged alternative; no Telegram webhook points at them |
 | Cloud Run Jobs `jobseeker-cycle` / `jobseeker-profile-refresh` | deployed, idle | Executed only for staged validation |
@@ -25,14 +25,13 @@ documents what each knob means.
 ## Invariants
 
 - Keep exactly one Telegram receiver per token: today the VPS poller, and therefore **no configured webhook**.
-- Keep exactly one scrape producer: today the VPS in-process schedule, and therefore Cloud Scheduler stays paused
-  and no local process runs with `RUN_JOBS=true`.
-- PostgreSQL advisory locking is a final safety guard, not a substitute for explicit ownership. It serialises
-  scraping only — **delivery is not locked**, so a second producer sends real users duplicate alerts and digests.
+- Keep exactly one engine loop: today the VPS process with `RUN_JOBS=true`, and therefore Cloud Scheduler stays
+  paused and no local process starts the loop. There is no scheduler advisory lock: `search_units.next_run_at` is
+  the schedule, and a second loop can scrape concurrently and send duplicate alerts or digests.
 - PostgreSQL is the only runtime database. SQLite files are historical recovery material.
 - Cloud Tasks must remain bounded at one concurrent dispatch and one dispatch per second unless a new bound is explicitly approved.
-- Do not deploy `OPENAI_API_KEY`; paid metered fallback stays disabled. Production inference is the Claude Code
-  subscription through the `claude-cli` sidecar.
+- Do not deploy `OPENAI_API_KEY`; production uses the `openai-codex` OAuth credential in encrypted runtime state,
+  not a metered API key. Model roles come from the live `AI_*_MODEL` settings. The Claude sidecar is standby.
 - Do not print environment values, Telegram credentials, database URLs, OAuth state, encryption keys, or personal data.
 - Historical Supabase migrations are immutable. Add forward migrations only.
 - Use Jujutsu bookmarks and workspaces; do not create Git branch workflows.
@@ -74,17 +73,18 @@ vps 'docker ps --format "{{.Names}}\t{{.Status}}"'
 compose ps
 ```
 
-Both `jobseeker-jobseeker-1` and `jobseeker-claude-cli-1` must be up, and the sidecar healthy. Confirm the deployed
-revision and that the working tree is clean:
+`jobseeker-jobseeker-1` must be up. If the standby sidecar is retained, it must be healthy and have no published
+host port. Confirm the deployed revision and that the working tree is clean:
 
 ```bash
 src 'git log --oneline -3 && git status --short'
 ```
 
-The last full cycle summary usually answers an operational question with no run at all:
+The `/scraper` owner command and recent engine-stage logs usually answer an operational question without forcing
+work:
 
 ```bash
-compose 'logs --since 2h jobseeker' | grep 'Vacancy cycle complete' | tail -3
+compose 'logs --since 2h jobseeker' | grep -E 'Engine (tick|discovery|judgment|score|deliver)' | tail -30
 ```
 
 ### Local receivers and producers
@@ -238,17 +238,17 @@ compose 'exec -T jobseeker bun -e "const p=process.env.PORT; for (const r of [\"
 The image ships no `curl` or `wget`, so probe from inside with `bun`; the container reads its own port from the
 environment, which keeps the address out of this document. `/ready` must report PostgreSQL persistence.
 
-Then confirm the receiver is alive by sending one inexpensive command
-to the bot, and wait for the next `*/30` cycle boundary rather than forcing a cycle:
+Then confirm the receiver is alive by sending one inexpensive command to the bot. Do not force a discovery pass;
+wait for the engine to run a due unit and for the independent two-minute judgment lane to report normal work:
 
 ```bash
 scripts/vps-wait.sh \
-  "cd '$VPS_DEPLOY_DIR' && docker compose logs --since 35m jobseeker | grep -q 'Vacancy cycle complete'" 2400 30 \
-  "cd '$VPS_DEPLOY_DIR' && docker compose logs --since 35m jobseeker | grep -c 'Vacancy cycle'"
+  "cd '$VPS_DEPLOY_DIR' && docker compose logs --since 45m jobseeker | grep -q 'Engine tick finish'" 2700 30 \
+  "cd '$VPS_DEPLOY_DIR' && docker compose logs --since 45m jobseeker | grep -c 'Engine'"
 ```
 
-Review the `Vacancy cycle complete` object for per-platform discovery, normalization, completed scores, delivery
-counts, and errors.
+Use `/scraper` for aggregate discovery, normalization, scoring, unit-health, and parser-error counters; inspect
+engine stage errors in logs without dumping vacancy or user payloads.
 
 ### 5. Verify inference still routes through the sidecar
 
@@ -256,8 +256,8 @@ counts, and errors.
 compose 'logs --since 1h jobseeker' | grep 'LLM cycle usage' | tail -2
 ```
 
-`byModel` must show `claude-cli/*` models. An `openai-codex/*` model means the environment did not take effect and
-the run is billing against an exhausted subscription.
+`byModel` must agree with the role-specific `AI_*_MODEL` values read from the host. Production currently routes
+through `openai-codex` OAuth; a `claude-cli/*` entry is expected only after an intentional fallback or model switch.
 
 ### Rollback on the VPS
 
@@ -340,9 +340,8 @@ neither receives Telegram updates nor delivers anything.
 
 ### 6. Run one controlled cycle
 
-**This competes with the live VPS producer.** The advisory lock keeps the two from scraping at once, so whichever
-loses the race skips its tick — but delivery is not locked. Only run it during a deliberate cutover, and stop the
-VPS bot first:
+**This competes with the live VPS engine and there is no cross-surface scheduler lock.** Only run it during a
+deliberate cutover, and stop the VPS bot first:
 
 ```bash
 compose 'stop jobseeker'
@@ -409,7 +408,7 @@ for initial cutover, token rotation, or an explicit return from polling.
 2. Delete the Telegram webhook without dropping pending updates.
 3. Wait longer than the webhook transition interval.
 4. Start the VPS bot: `compose '--env-file .env up -d jobseeker'`.
-5. Verify exactly one receiver, `/health` and `/ready` on the host, and one `Vacancy cycle complete` at the next `*/30` boundary.
+5. Verify exactly one receiver, `/health` and `/ready` on the host, and normal discovery/judgment lane activity.
 
 ## Local testing
 
@@ -425,9 +424,8 @@ requires it:
 4. Verify its health and confirm no second receiver exists.
 5. To hand back, stop the local process, wait for it to exit, and follow the handoff sequence above.
 
-**Never run a local cycle while a producer owns the schedule.** `bun run run:cycle` takes the same
-`jobseeker-cycle` advisory lock, so the VPS logs "Skipping scrape cycle" and does nothing for that half-hour. Keep
-local runs short and know when the next `*/30` boundary falls.
+**Never start a local engine loop while production owns the schedule.** There is no advisory lock to make this
+safe: a second `RUN_JOBS=true` process can perform duplicate discovery and delivery against the production database.
 
 ## Logs and incident triage
 
@@ -435,12 +433,12 @@ local runs short and know when the next `*/30` boundary falls.
 
 ```bash
 compose 'logs --since 1h jobseeker' | grep -iE 'error|fatal' | tail -50
-compose 'logs --since 6h jobseeker' | grep 'Vacancy cycle complete'
+compose 'logs --since 6h jobseeker' | grep -E 'Engine (tick|discovery|judgment|score|deliver)'
 vps 'docker stats --no-stream jobseeker-jobseeker-1 jobseeker-claude-cli-1'
 ```
 
-The per-platform cycle summary is the first thing to read: most "why is nothing arriving" questions are a throttled
-stage, not a failure. Each stage is bounded on purpose — discovery volume and delivered volume are unrelated.
+The `/scraper` funnel is the first thing to read: most "why is nothing arriving" questions are a throttled stage,
+not a failure. Each stage is bounded on purpose — discovery volume and delivered volume are unrelated.
 
 ### The inference sidecar
 
@@ -507,8 +505,8 @@ Rollback uses PostgreSQL state already written by cloud revisions. Never roll ba
 
 ## Verify against a clock you actually read
 
-"Stale since 04:00" means nothing without `select now()`. Compare timestamps against the database clock, and
-remember the VPS schedule is `*/30` — an apparent gap is usually a boundary you have not reached yet.
+"Stale since 04:00" means nothing without `select now()`. Compare timestamps against the database clock and each
+unit's `next_run_at`; judgment wakes independently every two minutes.
 
 ## Post-operation report
 
