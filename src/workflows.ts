@@ -8,7 +8,7 @@ import {
 } from '@jobseeker/store';
 import { getSearchPlatform, platformSearches } from './vacancies/registry.ts';
 import { compileDemand, type DemandInput } from '@jobseeker/engine';
-import { applyDemand, existingCompiledUnits } from '@jobseeker/store';
+import { activeUnitQueries, applyDemand, existingCompiledUnits } from '@jobseeker/store';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
 import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '@jobseeker/cv/pdf';
@@ -96,7 +96,9 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
           schema:platform.schema,system:`Build a validated vacancy-search profile only from CV-derived career tracks and the supplied
 platform capabilities. Never assume a software or technology sector. For a constrained platform, return an empty searches
 array when no supported category credibly matches. Translate evidenced role terminology when required without adding adjacent roles.`,
-          prompt:`PLATFORM CAPABILITIES:\n${JSON.stringify(platform.template())}\n\nCAREER PROFILE:\n${JSON.stringify(careerProfile)}\n\nCV SOURCE:\n${cv.cvText}`});
+          prompt:`PLATFORM CAPABILITIES:\n${JSON.stringify(platform.template())}\n\nCAREER PROFILE:\n${JSON.stringify(careerProfile)}`
+            +existingUnitsAdvisory(await activeUnitQueries(platformId))
+            +`\n\nCV SOURCE:\n${cv.cvText}`});
         if(await getCvHash(userId)!==hash)throw new Error('CV changed during profile generation.');
         await saveSearchProfile(userId,platformId,generated);
         trace('search_profile.agent.completed',{platform:platformId});
@@ -119,6 +121,26 @@ array when no supported category credibly matches. Translate evidenced role term
  * new demand mints or adopts units, vanished demand retires the units nobody else holds. Without this step a saved
  * profile would never be searched, so a compilation failure is a real failure, not a logging event.
  */
+const advisoryUnitLimit = 30;
+/**
+ * Shows profile generation the search wordings already running on the platform, so equivalent demand converges on
+ * existing units instead of minting near-duplicates. Advisory and content-only: reuse is only ever suggested when
+ * CV fit is equal, and nothing about who runs a search leaves the store.
+ */
+export function existingUnitsAdvisory(queries: readonly unknown[], limit = advisoryUnitLimit): string {
+  const wordings = queries.map((query) => {
+    const record = (query ?? {}) as Record<string, unknown>;
+    const value = [record.text, record.query, record.specialization].find(
+      (candidate): candidate is string => typeof candidate === 'string' && candidate.trim().length > 0);
+    return value?.trim() ?? '';
+  }).filter(Boolean);
+  const unique = [...new Set(wordings)].slice(0, limit);
+  if (!unique.length) return '';
+  return `\n\nEXISTING SEARCHES ALREADY RUNNING ON THIS PLATFORM (advisory only):\n${JSON.stringify(unique)}\n`
+    + 'When an existing wording fits the evidenced career tracks equally well, reuse it exactly so equivalent '
+    + 'searches converge. Never trade CV fit for reuse; ignore entries that do not match the CV.';
+}
+
 export async function compileUserDemand(userId: string): Promise<{ units: number; subscriptions: number }> {
   const demands: DemandInput[] = [];
   for (const platformId of config.searchPlatforms) {
