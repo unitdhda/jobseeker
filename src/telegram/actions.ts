@@ -14,7 +14,7 @@ import { refreshUserInWorker, tailorApplicationInWorker } from '../worker-client
 import { type ApplicationArtifact } from '@jobseeker/store';
 import { clearApplicationArtifacts } from '../documents.ts';
 import { maximumCvBytes } from '../cv.ts';
-import { readResponseBytes } from '../vacancies/http.ts';
+import { readResponseBytes } from '@jobseeker/sources';
 import { errorMessage } from '../observability.ts';
 import { getBot, targetChat } from './api.ts';
 import {

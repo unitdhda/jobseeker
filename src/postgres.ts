@@ -6,7 +6,7 @@
 import type { PoolConfig } from 'pg';
 import { configureStore } from '@jobseeker/store';
 import { config } from './config.ts';
-import { safeVacancyUrl } from './vacancies/http.ts';
+import { safeVacancyUrl } from '@jobseeker/sources';
 
 function poolMaximum(): number {
   const raw = process.env.POSTGRES_POOL_MAX ?? '4';

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readResponseBytes } from '../src/vacancies/http.ts';
-import { safeVacancyUrl, sourceUrl } from '../src/vacancies/http.ts';
+import { readResponseBytes } from '@jobseeker/sources';
+import { safeVacancyUrl, sourceUrl } from '@jobseeker/sources';
 import { errorMessage } from '../src/observability.ts';
 
 test('source URLs are restricted to HTTPS source allowlists', () => {
