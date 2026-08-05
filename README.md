@@ -1,52 +1,65 @@
 # Jobseeker
 
-A PostgreSQL-backed Telegram service that discovers vacancies, normalizes them through source adapters, filters and scores them against an authoritative CV, sends alerts/digests, and generates tailored applications.
+A PostgreSQL-backed Telegram service that discovers vacancies continuously, normalizes them through source
+adapters, matches every new listing against each user's CV-derived vocabulary, scores matches with an LLM under
+per-user daily budgets, sends alerts/digests, and generates tailored applications.
 
 ## Architecture
 
-The same codebase supports local and cloud execution:
+A Bun-workspaces monorepo: four packages hold the domain assets, the root app composes them.
 
-- `src/web.ts` — Telegram polling locally or webhook receiver in Cloud Run.
-- `src/worker.ts` — local child-process worker for long-running jobs.
-- `src/task-worker.ts` — authenticated Cloud Tasks worker.
-- `src/cycle.ts` — finite scheduled scrape cycle.
-- `src/profile-refresh.ts` — finite repair job for missing or invalid search profiles.
-- `src/vacancies/` — HH, Habr Career, Работа.ру, HireHi, GeekJob, Avito, Работа России, and company ATS adapters.
-- `src/vacancies/plan.ts` — folds every user's searches into one shared plan per platform before scraping.
-- `src/database.ts` — repository for the seven-table PostgreSQL domain schema.
-- `src/ai.ts` / `src/workflows.ts` — direct typed Pi AI calls with schema validation and bounded retries.
-- `src/claude-cli.ts` — a Pi AI provider this project adds, bridging completions to the Claude Code CLI.
-- `docker/claude-cli/` — the sidecar that serves that bridge over HTTP when the CLI cannot ship in the image.
+| Workspace | Holds |
+|---|---|
+| [`packages/engine`](packages/engine/) | Pure engine algorithms: search-unit identity, demand compilation, cadence, fair picking, the match state machine |
+| [`packages/store`](packages/store/) | The PostgreSQL client and every repository over the engine schema |
+| [`packages/sources`](packages/sources/) | The vacancy-platform contract, SSRF guard, and all eight adapters |
+| [`packages/cv`](packages/cv/) | CV extraction (`./extract`) and structured-CV PDF rendering (`./pdf`) |
+| root `src/` | Composition: config, the engine loop, workflows, Telegram, AI wiring |
+
+Key application modules:
+
+- `src/engine-main.ts` — composes the engine loop from repositories, adapters, the prefilter, and delivery;
+  started by `src/web.ts` under `RUN_JOBS=true`. **`search_units.next_run_at` is the only schedule** — there is
+  no cron and no advisory lock, so exactly one process may run the loop.
+- `src/engine-loop.ts` / `src/engine-runtime.ts` — the loop and its stages over injected ports, testable without
+  a database or a scraper.
+- `src/telegram/` — the bot in six layers: `api` (instance + send mechanics), `format` (pure rendering),
+  `delivery` (alerts/digests), `indicators` (editable progress messages), `actions` (orchestration behind
+  commands), `bot` (handlers, flows, lifecycle). `src/telegram.ts` re-exports the public surface.
+- `src/workflows.ts` — profile generation (which compiles demand into search units on every save), the scoring
+  drain, and application tailoring.
+- `src/ai.ts` + `src/ai-auth.ts` + `src/ai-plugins/` — Pi AI wiring; see AI providers below.
+- `src/worker.ts` — local child-process worker for profile refresh and application generation.
+- `src/task-worker.ts` — authenticated Cloud Tasks worker (staged, idle).
 
 `supabase/schema.sql` is the schema of record — apply it to an empty database to get a runnable environment.
-Incremental migration files are working material and stay out of version control; see
-[Operations](docs/operations.md).
 
-Production domain tables:
+Domain tables: `users`, `cv_documents`, `vacancies`, `search_units`, `unit_subscriptions`, `matches`,
+`accounts`, `usage_events`, `user_state`, `telegram_updates`. The pre-2026-08-05 world survives as the frozen
+`legacy` schema until its retirement date; `src/scripts/migration/` holds the tooling that performed the cutover
+and its six verification gates.
 
-- `users`
-- `profiles`
-- `vacancies`
-- `user_vacancies`
-- `telegram_updates`
-- `user_state`
-- `usage_events`
+## Discovery: units, subscriptions, cadence
 
-There is no SQLite, Flue, Redis, local embedding model, or generic background-task database.
+Users express demand as search profiles; the engine compiles them into **search units** — content-addressed by
+platform, canonical role tokens, and filter signature — with **subscriptions** tying users to units under each
+user's own search name. Equivalent searches from different users become one unit fetched once for everyone;
+compilation is the only clustering moment, so units never re-cluster and identity never drifts. Profile saves
+recompile the user's demand: new units are minted or adopted, abandoned subscriptions retire their units.
 
-## Discovery plan
+Each unit runs on its own **cadence**: novelty halves the interval toward `UNIT_CADENCE_FLOOR_MINUTES`, silence
+stretches it toward `UNIT_CADENCE_CEILING_MINUTES`. The loop picks due units per platform under a budget of
+subscribers × `SEARCH_QUERIES_PER_CYCLE`, serving every due unit's subscribers before spending spare budget on
+breadth. A failed platform leaves its units due — retried next tick, never silently skipped.
 
-Search profiles belong to users, but `vacancies` is shared, so discovery is planned per platform rather than per
-user. Equivalent searches from different users are clustered by role vocabulary — across languages, ignoring
-grade words, and only where the non-text filters agree — and each cluster is fetched once and recorded for every
-user in it, under that user's own search name. Boards that publish their whole listing whatever the query are
-enumerated once for everyone rather than once per user. Rotation then walks the shared cluster list, so each
-platform costs `users × SEARCH_QUERIES_PER_CYCLE` fetches per cycle while covering more of every profile.
+Discovery writes only shared listings. Who sees a vacancy is decided at **match time**: after normalization,
+every approved user's lexical lens (the CV-derived prefilter) judges the new vacancy, and qualifying pairs become
+`matches` rows. The match then walks a checked state machine — `matched → queued → scored → alerted/digested/
+skipped → applying → applied` — and anything the user has already seen can never be delivered again; the store
+enforces the transitions in SQL, not by convention.
 
-The store is read as a source of its own. A user only ever meets the listings their own searches returned, so
-`STORE_LINK_LIMIT_PER_USER` vacancies another user already found are linked to them each cycle, best CV-title
-matches first. This costs no request: an already-normalized row goes straight to prefiltering and scoring, and a
-candidate that still needs fetching joins the ranked queue under its own source and its normalization quota.
+Scoring drains each user's best claims under a per-day spend ceiling recorded in `accounts`
+(`USER_DAILY_LLM_BUDGET_CENTS`).
 
 ## Age and retention
 
@@ -56,10 +69,9 @@ JobPosting block on the vacancy page, falling back to the visible "Ваканс�
 the date as unknown rather than inventing one.
 
 Age is carried through the pipeline in bands — today, 1-7, 8-14, 15-30, over 30 days. Past
-`PREFILTER_MAX_AGE_DAYS` the prefilter rejects an advert outright however well it matches, on the assumption that
-it is filled; inside the limit age only discounts the score (to 0.92 and 0.8), so recency never outranks fit. A
-vacancy is re-prefiltered when it crosses a band. The scoring prompt receives the same band and is told to use it
-only to separate otherwise comparable matches.
+`PREFILTER_MAX_AGE_DAYS` the lens rejects an advert outright however well it matches, on the assumption that it
+is filled; inside the limit age only discounts the score, so recency never outranks fit. The scoring prompt
+receives the same band and is told to use it only to separate otherwise comparable matches.
 
 Retention deletes a vacancy once the sources have stopped returning it for `VACANCY_RETENTION_DAYS` and it is
 itself that old, keeping anything a user applied to, skipped, or still has waiting for delivery. `vacancies` is
@@ -68,58 +80,32 @@ rediscover, re-score and re-deliver them.
 
 ## Runtime ownership
 
-Keep exactly one Telegram receiver and one scrape producer active.
+Keep exactly one Telegram receiver and exactly one engine loop (`RUN_JOBS=true`) active.
 
-Production is the VPS deployment: one container polling Telegram and running its own cycle schedule, scoring
-through the `claude-cli` sidecar. The Cloud Run surface is deployed and idle, with Cloud Scheduler paused and no
-webhook configured. See [VPS deployment](docs/vps-claude-bridge.md) for the live topology and
-[Operations](docs/operations.md) for releases and handoffs between the two.
-
-### VPS (production) and local
-
-```env
-TELEGRAM_MODE=polling
-RUN_JOBS=true
-RUN_INITIAL_CYCLE=false
-```
-
-### Cloud web
-
-```env
-TELEGRAM_MODE=webhook
-TELEGRAM_WEBHOOK_ASYNC=true
-RUN_JOBS=false
-```
-
-### Cloud cycle and task workers
-
-```env
-TELEGRAM_MODE=off
-RUN_JOBS=false
-```
-
-Cloud Tasks concurrency and the scrape advisory lock provide bounded execution. Deployments leave Scheduler paused and do not configure the Telegram webhook automatically.
+Production is the VPS deployment: one container polling Telegram and running the loop, scoring through the
+`claude-cli` sidecar. The Cloud Run surface is deployed and idle. See [VPS deployment](docs/vps-claude-bridge.md)
+for the live topology and [Operations](docs/operations.md) for releases.
 
 ## AI providers
 
-Inference goes through [Pi AI](https://github.com/earendil-works/pi-ai). Three providers are registered, and a
-model identifier of the form `provider/model` selects one:
+Inference goes through [Pi AI](https://github.com/earendil-works/pi-ai). The entire built-in provider catalog is
+registered behind a credential store, plus one provider of our own; a model identifier of the form
+`provider/model` selects one. **No model is hardcoded anywhere**: a role whose `AI_*_MODEL` variable is blank
+fails at request time naming the variable.
 
-| Provider | Billing | Needs |
-|---|---|---|
-| `openai-codex` | ChatGPT subscription over OAuth | `OPENAI_CODEX_AUTH_FILE` or the encrypted cloud OAuth document |
-| `openai` | metered API | `OPENAI_API_KEY` |
-| `claude-cli` | Claude Code subscription | the `claude` CLI, or a sidecar at `CLAUDE_CLI_ENDPOINT` |
-
-`.env.example` ships every `AI_*_MODEL` blank so the choice is yours; blank falls back to the built-in default for
-that role. A provider is inert until a model names it, so registering all three costs nothing.
+Credentials come from either the provider's usual environment variable (`OPENAI_API_KEY` and friends) or the
+auth.json credential store at `AI_AUTH_FILE` (default `./auth/auth.json`; the encrypted cloud runtime state when
+configured) — a JSON document keyed by provider id. A stored credential owns its provider; the environment is
+consulted only when nothing is stored. OAuth tokens (e.g. `openai-codex`) live in the store and refresh through
+it, serialized in-process and across processes.
 
 ### The `claude-cli` provider is ours, not upstream
 
-Pi AI has no Claude Code provider, so this repository adds one in `src/claude-cli.ts`. It is not the Anthropic
-provider with a different base URL — it does not speak the Anthropic HTTP API at all. It runs the CLI in print mode
-(locally, or remotely through the `docker/claude-cli/` sidecar which accepts the same argument list over HTTP and
-streams the CLI's NDJSON straight back). The consequences are worth knowing before selecting it:
+Pi AI has no Claude Code provider, so this repository adds one in `src/ai-plugins/claude-bridge.ts`. It is not
+the Anthropic provider with a different base URL — it does not speak the Anthropic HTTP API at all. It runs the
+CLI in print mode (locally, or remotely through the `docker/claude-cli/` sidecar which accepts the same argument
+list over HTTP and streams the CLI's NDJSON straight back). The consequences are worth knowing before selecting
+it:
 
 | | Anthropic provider | `claude-cli` provider |
 |---|---|---|
@@ -132,9 +118,8 @@ streams the CLI's NDJSON straight back). The consequences are worth knowing befo
 | Input | text and images | text only |
 | Latency floor | one HTTP round trip | ~1–2s of process startup per request |
 
-See [Claude CLI bridge](docs/claude-cli-bridge.md) for the mapping, the token-overhead measurements behind
-`--system-prompt`/`--tools ""`, and the remaining gaps. [VPS deployment](docs/vps-claude-bridge.md) covers running
-the sidecar.
+See [Claude CLI bridge](docs/claude-cli-bridge.md) for the mapping and measurements.
+[VPS deployment](docs/vps-claude-bridge.md) covers running the sidecar.
 
 ## Development
 
@@ -143,10 +128,8 @@ Requirements:
 - Bun 1.3.14+
 - PostgreSQL via `DATABASE_URL`
 - Chromium for HH browser search
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) — **only** when an `AI_*_MODEL` selects `claude-cli/*`.
-  Install it with `npm install -g @anthropic-ai/claude-code` and sign in (`claude setup-token` mints a long-lived
-  subscription token). Alternatively point `CLAUDE_CLI_ENDPOINT` at the sidecar and install nothing locally.
-  Nothing else in the project imports it, so leaving `claude-cli/*` unselected needs no Claude install at all.
+- [Claude Code](https://docs.claude.com/en/docs/claude-code) — **only** when an `AI_*_MODEL` selects
+  `claude-cli/*`, or point `CLAUDE_CLI_ENDPOINT` at the sidecar and install nothing locally.
 
 ```bash
 bun install --frozen-lockfile
@@ -159,13 +142,10 @@ bun run test:postgres
 Start the built service:
 
 ```bash
-bun --env-file=.env --env-file=.env.cloud dist/server.mjs
+bun --env-file=.env dist/server.mjs
 ```
 
-Readiness endpoints:
-
-- `GET /health` — process health
-- `GET /ready` — PostgreSQL readiness
+Readiness endpoints: `GET /health` (process), `GET /ready` (PostgreSQL).
 
 ## Main configuration
 
@@ -175,41 +155,32 @@ Readiness endpoints:
 | `TELEGRAM_BOT_TOKEN` | Telegram bot credential |
 | `TELEGRAM_USER_ID` | Owner user ID |
 | `TELEGRAM_MODE` | `polling`, `webhook`, or `off` |
+| `RUN_JOBS` | Whether this process runs the engine loop; exactly one replica may |
 | `SEARCH_PLATFORMS` | Subset of `hh,habr,rabota,hirehi,geekjob,avito,trudvsem,ats` |
-| `SEARCH_CLUSTER_SIMILARITY` | Token overlap at which two users' searches are fetched as one |
-| `STORE_LINK_LIMIT_PER_USER` | Vacancies the shared store hands to each user per cycle; `0` disables |
+| `SEARCH_CLUSTER_SIMILARITY` | Token overlap at which two users' searches compile into one unit |
+| `SEARCH_QUERIES_PER_CYCLE` | Per-user share of each platform's per-tick unit budget |
+| `UNIT_CADENCE_FLOOR_MINUTES` / `UNIT_CADENCE_CEILING_MINUTES` | How often a unit may run |
+| `USER_DAILY_LLM_BUDGET_CENTS` | Per-user daily scoring spend ceiling, from `accounts` |
+| `USER_SCORE_LIMIT_PER_CYCLE` | Claims per scoring drain |
 | `PREFILTER_MAX_AGE_DAYS` | Advert age past which a vacancy is rejected however well it matches |
 | `USER_DAILY_APPLICATION_LIMIT` | Tailored CVs delivered per user per 24h |
 | `USER_DAILY_COVER_LETTER_LIMIT` | Cover letters delivered per user per 24h |
 | `VACANCY_RETENTION_DAYS` | How long a vacancy no source still lists is kept |
-| `AI_MODEL` | Profile and application model; blank uses the default |
-| `AI_SCORING_MODEL` | Batched vacancy-scoring model; blank uses the default |
+| `AI_MODEL` / `AI_SCORING_MODEL` | Model per role; blank fails at request time by design |
+| `AI_AUTH_FILE` | The auth.json credential store |
 | `CLAUDE_CLI_PATH` / `CLAUDE_CLI_ENDPOINT` | Local `claude` binary, or the sidecar serving it |
 | `CLAUDE_CLI_TOKEN` | Bearer secret shared with that sidecar |
 | `SCORING_BATCH_TIMEOUT_SECONDS` | Abort deadline for each scoring worker attempt |
-| `SCORING_BATCH_MAX_ATTEMPTS` | Bounded scoring attempts after timeout or failure |
-| `SCRAPE_CONCURRENCY` | Bounded concurrent user/platform scrape operations; HH remains serialized |
+| `SCRAPE_CONCURRENCY` | Bounded concurrent platform scrapes; HH remains serialized |
 | `HH_OPERATION_TIMEOUT_SECONDS` | Hard deadline for each serialized HH browser search |
-| `OPENAI_CODEX_AUTH_FILE` | Local encrypted OAuth source document |
 | `RUNTIME_STATE_ENCRYPTION_KEY` | AES-256-GCM key for cloud OAuth/browser state |
-| `HH_BROWSER_DATA_PATH` | HH browser profile directory |
 | `TYPST_FONT_PATHS` | Font directories for generated PDFs |
 
 See `.env.example` for bounded limits and optional settings.
 
-## Cloud images
-
-`Dockerfile` exposes two targets:
-
-- `web` — Bun webhook image without Chromium, Typst, PDF parsing or Pi AI.
-- `worker` — Bun cycle/task image with Chromium, document generation and Pi AI.
-
-`cloudbuild.yaml` builds both images. `scripts/deploy-gcp.sh` deploys them but intentionally leaves cutover inactive.
-
 ## Data and secrets
 
 - PostgreSQL is the only runtime database.
-- SQLite files are historical backups only.
 - OAuth and browser state are encrypted before storage.
 - Never commit `.env`, OAuth documents, database passwords, Telegram tokens, or encryption keys.
 - A migration already applied remotely is immutable; regenerate `supabase/schema.sql` instead of rewriting one.
