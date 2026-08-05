@@ -321,15 +321,17 @@ export async function normalizeHhCandidates(candidates: VacancyCandidate[]): Pro
   const results = new Map<string, VacancyInput | Error>();
   if (!candidates.length) return results;
   try{
-    await withHhDeadline('normalization',async context=>{
-      const page = context.pages()[0] ?? await context.newPage();
-      for (const candidate of candidates) {
-        try {
+    // The deadline bounds one vacancy page, not the whole batch: the batch size is the queue's decision, and a
+    // large one must cost slow candidates their own retry, never brand the unprocessed tail as timed out.
+    for (const candidate of candidates) {
+      try {
+        await withHhDeadline('normalization',async context=>{
+          const page = context.pages()[0] ?? await context.newPage();
           results.set(candidate.sourceId, await stripVacancy(page, candidate.url, candidate.searchName));
-          await pause(500, 1_200);
-        } catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
-      }
-    });
+        });
+        await pause(500, 1_200);
+      } catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
+    }
   }catch(error){
     const failure=error instanceof Error?error:new Error(String(error));
     for(const candidate of candidates)if(!results.has(candidate.sourceId))results.set(candidate.sourceId,failure);
