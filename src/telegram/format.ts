@@ -1,7 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import { type RichBlockTableCell, type RichText } from 'grammy/types';
 import { config } from '../config.ts';
-import { type ScoredVacancy, type TelegramUser, type UsageHour } from '../database.ts';
+import { type ScoredVacancy, type ScraperHour, type ScraperSummary, type TelegramUser, type UsageHour } from '../database.ts';
 import { getSearchPlatform } from '../vacancies/registry.ts';
 import { jobWorkerStatus } from '../worker-client.ts';
 import { type ApplicationArtifact } from '../database.ts';
@@ -87,27 +87,64 @@ function mergeUsageSeries(tokens:string[][],money:string[][]):string[][]{
     return boldUsageStroke[shape]??shape;
   }));
 }
-export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
-  if(hours.length!==usagePlotHours+1)throw new Error('Usage timeline must contain 25 hourly points.');
-  const tokenStep=niceUsageStep(Math.max(...hours.map(hour=>hour.tokens),0));
-  const moneyStep=niceUsageStep(Math.max(...hours.map(hour=>hour.costUsd),0));
-  const tokenMaximum=tokenStep*usagePlotHeight,moneyMaximum=moneyStep*usagePlotHeight;
-  const grid=mergeUsageSeries(drawUsageSeries(hours.map(hour=>hour.tokens),tokenMaximum,'●'),
-    drawUsageSeries(hours.map(hour=>hour.costUsd),moneyMaximum,'○'));
-  const leftLabels=Array.from({length:usagePlotHeight},(_,row)=>axisInteger(tokenStep*(usagePlotHeight-row)));
+interface TimelinePoint{at:string;left:number;right:number}
+function timelineChart(points:TimelinePoint[],legend:string,rightAxis:(value:number,maximum:number)=>string,
+  timezone:string):string{
+  if(points.length!==usagePlotHours+1)throw new Error('Timeline must contain 25 hourly points.');
+  const leftStep=niceUsageStep(Math.max(...points.map(point=>point.left),0));
+  const rightStep=niceUsageStep(Math.max(...points.map(point=>point.right),0));
+  const leftMaximum=leftStep*usagePlotHeight,rightMaximum=rightStep*usagePlotHeight;
+  const grid=mergeUsageSeries(drawUsageSeries(points.map(point=>point.left),leftMaximum,'●'),
+    drawUsageSeries(points.map(point=>point.right),rightMaximum,'○'));
+  const leftLabels=Array.from({length:usagePlotHeight},(_,row)=>axisInteger(leftStep*(usagePlotHeight-row)));
   const leftWidth=Math.max(1,...leftLabels.map(label=>label.length));
-  const lines=[`● Токены — левая ось             ○ Деньги — правая ось`,
+  const lines=[legend,
     '2 символа на час · точки каждые 4 часа · ━ и ◐ — серии совпадают',`${' '.repeat(leftWidth+1)}┌${'─'.repeat(usagePlotWidth)}┐`];
   for(let row=0;row<usagePlotHeight;row++)lines.push(`${leftLabels[row]!.padStart(leftWidth)} │${grid[row]!.join('')}│ `+
-    axisMoney(moneyStep*(usagePlotHeight-row),moneyMaximum));
-  lines.push(`${'0'.padStart(leftWidth)} └${'─'.repeat(usagePlotWidth)}┘ ${axisMoney(0,moneyMaximum)}`);
+    rightAxis(rightStep*(usagePlotHeight-row),rightMaximum));
+  lines.push(`${'0'.padStart(leftWidth)} └${'─'.repeat(usagePlotWidth)}┘ ${rightAxis(0,rightMaximum)}`);
   const timeLabels=Array<string>(usagePlotWidth).fill(' ');
-  for(let hour=0;hour<=usagePlotHours;hour+=4)placeLabel(timeLabels,hour*2,localHourLabel(hours[hour]!.at,timezone));
+  for(let hour=0;hour<=usagePlotHours;hour+=4)placeLabel(timeLabels,hour*2,localHourLabel(points[hour]!.at,timezone));
   lines.push(`${' '.repeat(leftWidth+1)}${timeLabels.join('')}`);
   const dayLabels=Array<string>(usagePlotWidth).fill(' ');placeLabel(dayLabels,2,'вчера');placeLabel(dayLabels,usagePlotWidth-4,'сегодня');
   lines.push(`${' '.repeat(leftWidth+1)}${dayLabels.join('')}`);
   const timeCaption=Array<string>(usagePlotWidth).fill(' ');placeLabel(timeCaption,Math.floor(usagePlotWidth/2),'местное время →');
   lines.push(`${' '.repeat(leftWidth+1)}${timeCaption.join('')}`);
+  return lines.join('\n');
+}
+export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
+  return timelineChart(hours.map(hour=>({at:hour.at,left:hour.tokens,right:hour.costUsd})),
+    `● Токены — левая ось             ○ Деньги — правая ось`,axisMoney,timezone);
+}
+export function scraperTimelineChart(hours:ScraperHour[],timezone:string):string{
+  return timelineChart(hours.map(hour=>({at:hour.at,left:hour.discovered,right:hour.normalized})),
+    `● Листинги — левая ось        ○ Распознано — правая ось`,(value)=>axisInteger(value),timezone);
+}
+/**
+ * The scraper's day at a glance for the owner: what each adapter brought in, what the parser made of it, how the
+ * scheduler is pacing the units, and what is failing — a dead adapter shows as a zero row, never as absence.
+ */
+export function scraperStatusMessage(summary:ScraperSummary):string{
+  const lines=['<b>Скрейпер и парсер — 24 часа</b>',
+    `Листинги: <b>${summary.sources.reduce((total,row)=>total+row.discovered24h,0)}</b> новых · `+
+    `распознано: <b>${summary.sources.reduce((total,row)=>total+row.normalized24h,0)}</b> · `+
+    `очередь: ${summary.sources.reduce((total,row)=>total+row.queued,0)}`,
+    `Матчи: <b>${summary.matched24h}</b> · оценки: <b>${summary.scored24h}</b>`,'',
+    '<b>По источникам</b>'];
+  for(const row of summary.sources){
+    lines.push(`• ${escapeHtml(row.source)}: ${row.discovered24h} новых · ${row.normalized24h} распознано · `+
+      `очередь ${row.queued} · сбоев ${row.failed} · закрыто ${row.closed24h}`);
+  }
+  lines.push('','<b>Поисковые юниты</b>');
+  for(const row of summary.units){
+    const novelty=row.lastNoveltyAt?`новизна ${Math.round((Date.now()-Date.parse(row.lastNoveltyAt))/3_600_000)} ч назад`:'новизны не было';
+    lines.push(`• ${escapeHtml(row.platform)}: ${row.units} юнитов · просрочено ${row.overdue} · `+
+      `каденция ${row.cadenceMin}–${row.cadenceMax} мин · ${novelty}`);
+  }
+  if(summary.errors.length){
+    lines.push('','<b>Ошибки парсера за 24 часа</b>');
+    for(const row of summary.errors)lines.push(`• ${escapeHtml(row.error)} ×${row.count}`);
+  }
   return lines.join('\n');
 }
 export function compactNumber(value:number):string{return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value);}

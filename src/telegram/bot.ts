@@ -18,7 +18,7 @@ import {
   skipVacancy,
   touchTelegramUser,
   userUsageSummaries,
-  llmUsageSummary,
+  llmUsageSummary, scraperSummary,
   type ScoredVacancy,
   type TelegramUser,
 } from '../database.ts';
@@ -46,6 +46,7 @@ import {
   escapeHtml,
   headerCell,
   money,
+  scraperTimelineChart, scraperStatusMessage,
   usageTimelineChart,
   userStatusText,
 } from './format.ts';
@@ -174,7 +175,7 @@ async function deletePersonalData(ctx: Context, confirmation: string): Promise<v
 async function approvedStartText(user: TelegramUser): Promise<string> {
   const ownerCommands = user.isOwner
     ? '\n\nКоманды владельца:\n/ok ID или @username — одобрить доступ\n/users — пользователи и их активность\n'
-      + '/revoke ССЫЛКА — отозвать доступ\n/usage — токены и стоимость модели\n/status — развёртывание и облако'
+      + '/revoke ССЫЛКА — отозвать доступ\n/usage — токены и стоимость модели\n/scraper — здоровье скрейпера и парсера\n/status — развёртывание и облако'
     : '';
   return `Доступ открыт.\n\n1. Загрузите актуальное резюме командой /cv.\n` +
     `2. Настройте время уведомлений и дайджеста командой /window.\n` +
@@ -292,6 +293,16 @@ function configureTelegramBot(): Bot | null {
       `<b>Почасовая динамика за 24 часа</b>\n<pre>${escapeHtml(chart)}</pre>`,
       { parse_mode: 'HTML' });
     await trackMessages(ownerUserId(), 'usage-messages', [ctx.message?.message_id, sent.message_id]);
+  });
+  instance.command('scraper', async (ctx) => {
+    if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }
+    const [summary,settings]=await Promise.all([scraperSummary(),getDeliverySettings(ownerUserId())]);
+    const chart=scraperTimelineChart(summary.hourly,settings?.timezone??config.timezone);
+    await dropTrackedMessages(ownerUserId(), 'scraper-messages');
+    const sent = await ctx.reply(`${scraperStatusMessage(summary)}\n\n`+
+      `<b>Почасовая динамика за 24 часа</b>\n<pre>${escapeHtml(chart)}</pre>`,
+      { parse_mode: 'HTML' });
+    await trackMessages(ownerUserId(), 'scraper-messages', [ctx.message?.message_id, sent.message_id]);
   });
   instance.command('status', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }

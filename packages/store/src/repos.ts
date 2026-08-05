@@ -406,6 +406,59 @@ export async function purgeExpiredVacancies(retentionDays: number, limit: number
  * re-scored once it crosses one of the age bands `vacancyRecency` uses, which happens at most four times in its
  * life.
  */
+export interface ScraperHour { at: string; discovered: number; normalized: number }
+export interface SourceScrapeStats { source: string; discovered24h: number; normalized24h: number; failed: number; queued: number; closed24h: number }
+export interface UnitScheduleStats { platform: string; units: number; overdue: number; cadenceMin: number; cadenceMax: number; lastNoveltyAt: string | null }
+export interface ScraperSummary {
+  hourly: ScraperHour[];
+  sources: SourceScrapeStats[];
+  units: UnitScheduleStats[];
+  matched24h: number; scored24h: number;
+  errors: { error: string; count: number }[];
+}
+
+/** The owner's scraper/parser health view: 25 hourly points plus per-source, per-platform and error summaries. */
+export async function scraperSummary(): Promise<ScraperSummary> {
+  await ready();
+  const hourBuckets = `with bounds as (select date_trunc('hour', now()) end_hour),
+    hours as (select generate_series(end_hour - interval '24 hours', end_hour, interval '1 hour') bucket from bounds)`;
+  const [hourly, sources, units, matches, errors] = await Promise.all([
+    q(`${hourBuckets}
+      select h.bucket,
+        (select count(*) from vacancies v where v.first_seen_at >= h.bucket and v.first_seen_at < h.bucket + interval '1 hour') discovered,
+        (select count(*) from vacancies v where v.lifecycle_status in ('normalized','duplicate')
+          and v.last_checked_at >= h.bucket and v.last_checked_at < h.bucket + interval '1 hour') normalized
+      from hours h order by h.bucket`),
+    q(`select s.source,
+        count(v.id) filter (where v.first_seen_at > now() - interval '24 hours') discovered,
+        count(v.id) filter (where v.lifecycle_status in ('normalized','duplicate') and v.last_checked_at > now() - interval '24 hours') normalized,
+        count(v.id) filter (where v.lifecycle_status = 'failed') failed,
+        count(v.id) filter (where v.lifecycle_status in ('discovered','failed')
+          and (v.normalization_retry_at is null or v.normalization_retry_at <= now())) queued,
+        count(v.id) filter (where v.lifecycle_status = 'closed' and v.last_checked_at > now() - interval '24 hours') closed
+      from unnest($1::text[]) s(source) left join vacancies v on v.source = s.source
+      group by s.source order by discovered desc, s.source`, [storeSettings().searchPlatforms]),
+    q(`select platform, count(*) units, count(*) filter (where next_run_at <= now()) overdue,
+        min(cadence_minutes) cadence_min, max(cadence_minutes) cadence_max, max(last_novelty_at) last_novelty_at
+      from search_units where retired_at is null group by platform order by units desc`),
+    one(`select count(*) filter (where matched_at > now() - interval '24 hours') matched,
+        count(*) filter (where score_updated_at > now() - interval '24 hours') scored from matches`),
+    q(`select left(normalization_error, 120) error, count(*) n from vacancies
+      where normalization_error is not null and last_checked_at > now() - interval '24 hours'
+      group by 1 order by 2 desc limit 3`),
+  ]);
+  return {
+    hourly: hourly.map((row) => ({ at: isoTimestamp(row.bucket), discovered: Number(row.discovered), normalized: Number(row.normalized) })),
+    sources: sources.map((row) => ({ source: String(row.source), discovered24h: Number(row.discovered),
+      normalized24h: Number(row.normalized), failed: Number(row.failed), queued: Number(row.queued), closed24h: Number(row.closed) })),
+    units: units.map((row) => ({ platform: String(row.platform), units: Number(row.units), overdue: Number(row.overdue),
+      cadenceMin: Number(row.cadence_min), cadenceMax: Number(row.cadence_max),
+      lastNoveltyAt: row.last_novelty_at == null ? null : isoTimestamp(row.last_novelty_at) })),
+    matched24h: Number(matches?.matched ?? 0), scored24h: Number(matches?.scored ?? 0),
+    errors: errors.map((row) => ({ error: String(row.error), count: Number(row.n) })),
+  };
+}
+
 export async function queuedListings(limit: number): Promise<VacancyCandidate[]> {
   await ready();
   const freshest = new Date(Date.now() - storeSettings().prefilterMaxAgeDays * 86_400_000).toISOString();
