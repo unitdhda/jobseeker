@@ -9,17 +9,16 @@
         "@google-cloud/tasks": "^6.3.0",
         "@hono/node-server": "^2.0.12",
         "@jobseeker/cv": "workspace:*",
+        "@jobseeker/store": "workspace:*",
         "croner": "10.0.1",
         "grammy": "1.45.1",
         "hono": "4.12.32",
         "pdfjs-dist": "6.2.108",
-        "pg": "^8.22.0",
         "playwright": "1.62.0",
         "valibot": "1.4.2",
       },
       "devDependencies": {
         "@types/node": "26.1.2",
-        "@types/pg": "^8.20.3",
         "adm-zip": "0.6.0",
         "typescript": "7.0.2",
         "vite": "8.1.5",
@@ -34,6 +33,16 @@
         "pdfjs-dist": "6.2.108",
         "unpdf": "1.8.0",
         "valibot": "1.4.2",
+      },
+    },
+    "packages/store": {
+      "name": "@jobseeker/store",
+      "dependencies": {
+        "@jobseeker/cv": "workspace:*",
+        "pg": "^8.22.0",
+      },
+      "devDependencies": {
+        "@types/pg": "^8.20.3",
       },
     },
   },
@@ -169,6 +178,8 @@
     "@isaacs/cliui": ["@isaacs/cliui@8.0.2", "", { "dependencies": { "string-width": "^5.1.2", "string-width-cjs": "npm:string-width@^4.2.0", "strip-ansi": "^7.0.1", "strip-ansi-cjs": "npm:strip-ansi@^6.0.1", "wrap-ansi": "^8.1.0", "wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0" } }, "sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA=="],
 
     "@jobseeker/cv": ["@jobseeker/cv@workspace:packages/cv"],
+
+    "@jobseeker/store": ["@jobseeker/store@workspace:packages/store"],
 
     "@js-sdsl/ordered-map": ["@js-sdsl/ordered-map@4.4.2", "", {}, "sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw=="],
 

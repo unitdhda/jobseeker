@@ -20,7 +20,7 @@ export const careerProfileSchema = v.strictObject({
 export type CareerTrack = v.InferOutput<typeof careerTrackSchema>;
 export type CareerProfile = v.InferOutput<typeof careerProfileSchema>;
 
-export const careerProfilePlatformId = '__career-profile-v1';
+export { careerProfilePlatformId } from '@jobseeker/store';
 
 export interface StoredCareerProfile {
   cvHash: string;
