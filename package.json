@@ -16,13 +16,15 @@
     "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts",
     "test:postgres": "bun --env-file=.env.cloud tests/database-postgres.integration.ts",
     "cv:prepare": "bun src/scripts/prepare-cv.ts",
-    "run:cycle": "bun src/cycle.ts"
+    "run:cycle": "bun src/cycle.ts",
+    "migrate:rehearse": "bun src/scripts/migration/rehearse.ts"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.81.1",
     "@google-cloud/tasks": "^6.3.0",
     "@hono/node-server": "^2.0.12",
     "@jobseeker/cv": "workspace:*",
+    "@jobseeker/engine": "workspace:*",
     "@jobseeker/sources": "workspace:*",
     "@jobseeker/store": "workspace:*",
     "croner": "10.0.1",
