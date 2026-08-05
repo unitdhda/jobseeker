@@ -6,7 +6,7 @@
  */
 import { contentText, createModels, type ThinkingLevel } from '@earendil-works/pi-ai';
 import * as v from 'valibot';
-import { claudeCliProvider } from '../src/claude-cli.ts';
+import { claudeCliProvider } from '../src/ai-plugins/claude-bridge.ts';
 
 const vacancyScoreSchema = v.object({
   vacancyId: v.pipe(v.number(), v.integer(), v.minValue(1)),

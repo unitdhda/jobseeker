@@ -18,11 +18,11 @@ function booleanEnv(name: string, fallback: boolean): boolean {
   throw new Error(`${name} must be true or false.`);
 }
 
-// Model and thinking settings are left blank in .env.example so the operator picks a provider deliberately; a
-// blank value therefore has to mean "unset" rather than an empty model identifier that fails at request time.
-function modelEnv(name: string, fallback: string): string {
+// Model choice belongs entirely to the operator: no model identifier is hardcoded anywhere in the app, so an
+// unset variable stays undefined and the request path reports which variable is missing when a role is used.
+function modelEnv(name: string): string | undefined {
   const raw = process.env[name]?.trim();
-  return raw ? raw : fallback;
+  return raw ? raw : undefined;
 }
 
 const thinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
@@ -78,11 +78,11 @@ if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
 
 export const config = {
   hhBrowserDataPath: resolve(process.env.HH_BROWSER_DATA_PATH ?? './data/hh-browser'),
-  model: modelEnv('AI_MODEL', 'openai-codex/gpt-5.6-terra'),
+  model: modelEnv('AI_MODEL'),
   thinkingLevel: thinkingLevelEnv('AI_THINKING_LEVEL', 'high'),
-  scoringModel: modelEnv('AI_SCORING_MODEL', 'openai-codex/gpt-5.6-luna'),
+  scoringModel: modelEnv('AI_SCORING_MODEL'),
   scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
-  scoringFallbackModel: modelEnv('AI_SCORING_FALLBACK_MODEL', 'openai/gpt-5.4-mini'),
+  scoringFallbackModel: modelEnv('AI_SCORING_FALLBACK_MODEL'),
   scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
   hhAreaId: process.env.HH_AREA_ID ?? '1',
   playwrightChromiumPath: process.env.PLAYWRIGHT_CHROMIUM_PATH,

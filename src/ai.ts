@@ -1,5 +1,6 @@
 import { contentText, type ModelThinkingLevel, type Usage } from '@earendil-works/pi-ai';
 import * as v from 'valibot';
+import { postgresQuery } from './postgres.ts';
 
 function modelParts(value:string):[string,string]{
   const slash=value.indexOf('/');
@@ -41,7 +42,7 @@ function invalidJsonError(agent:string,parsed:unknown,validationIssues:readonly 
 }
 
 export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,v.BaseIssue<unknown>>>(options:{
-  userId:string;agent:string;model:string;thinking:ModelThinkingLevel;system:string;prompt:string;schema:TSchema;
+  userId:string;agent:string;model:string|undefined;thinking:ModelThinkingLevel;system:string;prompt:string;schema:TSchema;
   signal?:AbortSignal;
   /**
    * Last-resort salvage for a shape the model keeps getting wrong. It runs only after every attempt has failed
@@ -49,6 +50,7 @@ export async function generateJson<TSchema extends v.BaseSchema<unknown,unknown,
    */
   repair?:(value:unknown)=>unknown;
 }):Promise<v.InferOutput<TSchema>>{
+  if(!options.model)throw new Error(`No AI model is configured for ${options.agent}; set AI_MODEL / AI_SCORING_MODEL.`);
   const [provider,id]=modelParts(options.model),models=aiModels(),model=models.getModel(provider,id);
   if(!model)throw new Error(`Configured AI model is unavailable: ${options.model}`);
   let correction='';let lastError:Error|undefined;let lastParsed:unknown;let parsedAny=false;
@@ -192,105 +194,27 @@ export function llmUsageSince(previous: LlmUsageReport): LlmUsageReport {
     byModel: subtractBreakdown(current.byModel, previous.byModel) };
 }
 
-import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
-import { openaiCodexProvider } from '@earendil-works/pi-ai/providers/openai-codex';
-import { openaiProvider } from '@earendil-works/pi-ai/providers/openai';
-import { createModels, type Models, type OAuthCredential, type Provider } from '@earendil-works/pi-ai';
-import { claudeCliProvider } from './claude-cli.ts';
+import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
+import { createModels, type Models } from '@earendil-works/pi-ai';
+import { claudeCliProvider } from './ai-plugins/claude-bridge.ts';
+import { createCredentialStore } from './ai-auth.ts';
 import { config } from './config.ts';
-import { getEncryptedRuntimeState, putEncryptedRuntimeState } from './runtime-state.ts';
-import { postgresQuery, withPostgresTransaction } from './postgres.ts';
-
-const providerId = 'openai-codex';
-const cloudAuthPath = 'oauth/codex.json';
-let refreshInFlight: Promise<OAuthCredential> | undefined;
-
-function authPath(): string {
-  return resolve(process.env.OPENAI_CODEX_AUTH_FILE ?? './auth/auth.json');
-}
-
-function usesCloudCredentialStore(): boolean {
-  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY
-    && process.env.SUPABASE_STORAGE_BUCKET && process.env.RUNTIME_STATE_ENCRYPTION_KEY);
-}
-
-async function readDocument(): Promise<Record<string, unknown>> {
-  if (usesCloudCredentialStore()) {
-    const encrypted = await getEncryptedRuntimeState(cloudAuthPath);
-    if (!encrypted) throw new Error('OpenAI Codex OAuth is not configured in encrypted cloud storage.');
-    try { return JSON.parse(Buffer.from(encrypted).toString('utf8')) as Record<string, unknown>; }
-    catch (error) { throw new Error('OpenAI Codex OAuth cloud document is invalid.', { cause: error }); }
-  }
-  try {
-    const document = JSON.parse(await readFile(authPath(), 'utf8')) as Record<string, unknown>;
-    await chmod(authPath(), 0o600);
-    return document;
-  } catch (error) {
-    throw new Error(`OpenAI Codex OAuth is not configured at ${authPath()}.`, { cause: error });
-  }
-}
-
-async function readCredential(): Promise<OAuthCredential> {
-  const credential = (await readDocument())[providerId] as Partial<OAuthCredential> | undefined;
-  if (credential?.type !== 'oauth' || !credential.access || !credential.refresh || !credential.expires) {
-    throw new Error('OpenAI Codex OAuth credential is missing.');
-  }
-  return credential as OAuthCredential;
-}
-
-async function persistCredential(credential: OAuthCredential): Promise<void> {
-  const document: Record<string, unknown> = await readDocument().catch(() => ({}));
-  document[providerId] = credential;
-  if (usesCloudCredentialStore()) {
-    await putEncryptedRuntimeState(cloudAuthPath, Buffer.from(`${JSON.stringify(document, null, 2)}\n`));
-    return;
-  }
-  const path = authPath();
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = `${path}.${process.pid}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(document, null, 2)}\n`, { mode: 0o600 });
-  await rename(temporary, path);
-}
-
-async function refreshCredential(source: Provider): Promise<OAuthCredential> {
-  const refresh = async (): Promise<OAuthCredential> => {
-    const current = await readCredential();
-    if (current.expires > Date.now() + 60_000) return current;
-    const oauth = source.auth.oauth;
-    if (!oauth) throw new Error('OpenAI Codex provider has no OAuth implementation.');
-    const refreshed = await oauth.refresh(current);
-    await persistCredential(refreshed);
-    return refreshed;
-  };
-  return withPostgresTransaction(async (client) => {
-    await client.query("select pg_advisory_xact_lock(hashtext('jobseeker-openai-codex-refresh'))");
-    return refresh();
-  });
-}
-
-async function validCredential(source: Provider): Promise<OAuthCredential> {
-  const credential = await readCredential();
-  if (credential.expires > Date.now() + 60_000) return credential;
-  refreshInFlight ??= refreshCredential(source).finally(() => { refreshInFlight = undefined; });
-  return refreshInFlight;
-}
 
 let configuredModels: Models | undefined;
 
+/**
+ * The model catalog behind every request. No provider or model is chosen here: the built-in catalog is registered
+ * whole, the two app plugins on top, and which of them actually serves traffic is decided entirely by the model
+ * identifiers in AI_MODEL and friends plus whichever credentials the store or the environment supplies.
+ */
 export function aiModels(): Models {
   if (configuredModels) return configuredModels;
-  const models=createModels();
-  models.setProvider(openaiProvider());
-  // Forwards `claude-cli/*` models to the local Claude Code CLI; it resolves its own credentials, so registering
-  // it never requires configuration and stays inert unless a model explicitly selects it.
-  models.setProvider(claudeCliProvider({defaultTimeoutMs:config.claudeCliTimeoutSeconds*1_000}));
-  const source=openaiCodexProvider(),oauth=source.auth.oauth;
-  if(!oauth)throw new Error('OpenAI Codex provider has no OAuth implementation.');
-  models.setProvider({...source,auth:{apiKey:{name:'OpenAI Codex OAuth',async resolve(){
-    const credential=await validCredential(source);
-    return {auth:await oauth.toAuth(credential),source:'OpenAI Codex OAuth'};
-  }}}});
-  configuredModels=models;
+  const models = createModels({ credentials: createCredentialStore() });
+  for (const provider of builtinProviders()) models.setProvider(provider);
+  // The one app plugin: the Claude Code CLI bridge (subscription billing, resolves its own credentials). It stays
+  // inert unless a model identifier selects it. OAuth providers from the catalog (openai-codex) need no plugin:
+  // their tokens live in the credential store, seeded via src/scripts/seed-cloud-oauth.ts or auth.json directly.
+  models.setProvider(claudeCliProvider({ defaultTimeoutMs: config.claudeCliTimeoutSeconds * 1_000 }));
+  configuredModels = models;
   return models;
 }

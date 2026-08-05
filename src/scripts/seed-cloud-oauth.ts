@@ -4,7 +4,7 @@ import { getEncryptedRuntimeState, putEncryptedRuntimeState } from '../runtime-s
 
 const providerId = 'openai-codex';
 const objectPath = 'oauth/codex.json';
-const sourcePath = resolve(process.env.OPENAI_CODEX_AUTH_FILE ?? './auth/auth.json');
+const sourcePath = resolve(process.env.AI_AUTH_FILE ?? process.env.OPENAI_CODEX_AUTH_FILE ?? './auth/auth.json');
 const source = JSON.parse(await readFile(sourcePath, 'utf8')) as Record<string, unknown>;
 await chmod(sourcePath, 0o600);
 const credential = source[providerId] as Record<string, unknown> | undefined;

@@ -180,7 +180,7 @@ function fallbackDuration(error: unknown): number {
 }
 
 function scoringApiFallbackConfigured(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY);
+  return Boolean(config.scoringFallbackModel);
 }
 
 async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provider: 'subscription' | 'api',
@@ -231,10 +231,10 @@ async function scoreBatchAttempt(userId:string,vacancies:Vacancy[],signal:AbortS
     if (!isSubscriptionUsageLimit(error)) throw error;
     scoringSubscriptionUnavailableUntil = Date.now() + fallbackDuration(error);
     if (!scoringApiFallbackConfigured()) {
-      throw new Error('ChatGPT subscription usage limit reached and OPENAI_API_KEY is not configured for scoring fallback.',
+      throw new Error('Subscription scoring usage limit reached and AI_SCORING_FALLBACK_MODEL is not configured.',
         { cause: error });
     }
-    console.warn(`ChatGPT scoring limit reached; using metered OpenAI API fallback for ${vacancies.length} vacancies.`);
+    console.warn(`Subscription scoring limit reached; falling back to ${config.scoringFallbackModel} for ${vacancies.length} vacancies.`);
     await dispatchScoringBatch(userId, vacancies, 'api',signal);
     trace('scoring.agent.completed', { vacancyIds: vacancies.map((vacancy) => vacancy.id), provider: 'api-fallback' });
   }
