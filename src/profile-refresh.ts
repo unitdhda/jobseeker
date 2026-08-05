@@ -1,7 +1,9 @@
+// The store composition must run before any module touches a repository.
+import './postgres.ts';
 import { config } from './config.ts';
-import { approvedUsers } from './database.ts';
-import { closePostgresPool } from './postgres.ts';
-import { mapConcurrent } from './concurrency.ts';
+import { approvedUsers } from '@jobseeker/store';
+import { closePostgresPool } from '@jobseeker/store';
+import { mapConcurrent } from '@jobseeker/sources';
 import { ensureCvAndSearchProfiles, missingSearchProfiles } from './workflows.ts';
 import { errorMessage } from './observability.ts';
 

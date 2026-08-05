@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { careerProfileSchema, vacancyRecency, type CareerProfile } from '../src/prefilter.ts';
 import { prefilterVacancy } from '../src/prefilter.ts';
-import type { Vacancy } from '../src/database.ts';
+import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
 import { hhPublishedAt, textSearchProfileSchema } from '@jobseeker/sources';
 

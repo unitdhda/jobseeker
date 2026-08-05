@@ -11,7 +11,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { Credential, CredentialInfo, CredentialStore } from '@earendil-works/pi-ai';
 import { getEncryptedRuntimeState, putEncryptedRuntimeState } from './runtime-state.ts';
-import { withPostgresTransaction } from './postgres.ts';
+import { withPostgresTransaction } from '@jobseeker/store';
 
 // The cloud object predates the generalized store and already holds a provider-keyed document; renaming it would
 // orphan deployed credentials.

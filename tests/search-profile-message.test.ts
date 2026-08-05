@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { searchProfileMessage } from '../src/telegram.ts';
+import { searchProfileMessage } from '../src/telegram/format.ts';
 
 const view = {
   filename: 'cv.pdf',

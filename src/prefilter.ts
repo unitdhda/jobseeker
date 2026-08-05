@@ -65,7 +65,7 @@ export function parseStoredCareerProfile(value: unknown, expectedCvHash: string)
 }
 
 import { config } from './config.ts';
-import type { Vacancy } from './database.ts';
+import type { Vacancy } from '@jobseeker/store';
 
 const stop = new Set([
   'and','the','with','for','from','that','this','into','или','для','как','что','при','это','его','она','они',

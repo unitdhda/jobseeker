@@ -1,6 +1,6 @@
 import { contentText, type ModelThinkingLevel, type Usage } from '@earendil-works/pi-ai';
 import * as v from 'valibot';
-import { postgresQuery } from './postgres.ts';
+import { postgresQuery } from '@jobseeker/store';
 
 function modelParts(value:string):[string,string]{
   const slash=value.indexOf('/');

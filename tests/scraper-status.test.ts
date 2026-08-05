@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { scraperStatusMessage, scraperTimelineChart } from '../src/telegram/format.ts';
-import type { ScraperSummary } from '../src/database.ts';
+import type { ScraperSummary } from '@jobseeker/store';
 
 const start = Date.parse('2026-08-02T12:00:00Z');
 const hourly = Array.from({ length: 25 }, (_, index) => ({

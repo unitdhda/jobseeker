@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { usageTimelineChart } from '../src/telegram.ts';
+import { usageTimelineChart } from '../src/telegram/format.ts';
 
 const start=Date.parse('2026-08-02T12:00:00Z');
 const hours=Array.from({length:25},(_,index)=>({

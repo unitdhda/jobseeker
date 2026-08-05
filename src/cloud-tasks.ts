@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { CloudTasksClient, protos } from '@google-cloud/tasks';
 import { config } from './config.ts';
-import { approvedUsers } from './database.ts';
+import { approvedUsers } from '@jobseeker/store';
 import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './telegram-state.ts';
-import { mapConcurrent } from './concurrency.ts';
+import { mapConcurrent } from '@jobseeker/sources';
 
 export type CloudTaskRequest =
   | { key: string; kind: 'telegram'; update: unknown }
@@ -88,7 +88,8 @@ export async function enqueueDueDeliveryTasks(now = new Date()): Promise<number>
 }
 
 export async function handleCloudTask(request: CloudTaskRequest): Promise<void> {
-  const {handleTelegramWebhookUpdate,sendDailyDigest,sendPendingAlerts}=await import('./telegram.ts');
+  const {handleTelegramWebhookUpdate}=await import('./telegram/bot.ts');
+  const {sendDailyDigest,sendPendingAlerts}=await import('./telegram/delivery.ts');
   const {isDigestDue,isWithinDeliveryWindow}=await import('./vacancies/jobs.ts');
   if (!request || typeof request.key !== 'string' || request.key.length < 1 || request.key.length > 240) {
     throw new Error('Cloud Task key is invalid.');

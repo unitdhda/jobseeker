@@ -1,10 +1,10 @@
 import { InlineKeyboard } from 'grammy';
 import { type RichBlockTableCell, type RichText } from 'grammy/types';
 import { config } from '../config.ts';
-import { type ScoredVacancy, type ScraperHour, type ScraperSummary, type TelegramUser, type UsageHour } from '../database.ts';
+import { type ScoredVacancy, type ScraperHour, type ScraperSummary, type TelegramUser, type UsageHour } from '@jobseeker/store';
 import { getSearchPlatform } from '../vacancies/registry.ts';
 import { jobWorkerStatus } from '../worker-client.ts';
-import { type ApplicationArtifact } from '../database.ts';
+import { type ApplicationArtifact } from '@jobseeker/store';
 import { engineLoopStatus } from '../engine-loop.ts';
 
 

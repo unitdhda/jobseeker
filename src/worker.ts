@@ -1,9 +1,11 @@
+// The store composition must run before any module touches a repository.
+import './postgres.ts';
 import { ensureCvAndSearchProfiles, tailorApplication } from './workflows.ts';
 import { config } from './config.ts';
-import { getCvHash, requireApprovedUser, usageInLast24Hours } from './database.ts';
+import { getCvHash, requireApprovedUser, usageInLast24Hours } from '@jobseeker/store';
 import type { JobWorkerMessage, JobWorkerRequest, RefreshUserResult, SerializedApplication } from './worker-client.ts';
 import { errorMessage } from './observability.ts';
-import { KeyedTaskScheduler } from './concurrency.ts';
+import { KeyedTaskScheduler } from '@jobseeker/sources';
 
 const userScheduler = new KeyedTaskScheduler(config.userWorkflowConcurrency);
 let stopping = false;

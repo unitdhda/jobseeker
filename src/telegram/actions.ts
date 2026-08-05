@@ -8,10 +8,10 @@ import {
   isApprovedUser,
   markApplicationDelivered,
   type ScoredVacancy,
-} from '../database.ts';
+} from '@jobseeker/store';
 import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from '../prefilter.ts';
 import { refreshUserInWorker, tailorApplicationInWorker } from '../worker-client.ts';
-import { type ApplicationArtifact } from '../database.ts';
+import { type ApplicationArtifact } from '@jobseeker/store';
 import { clearApplicationArtifacts } from '../documents.ts';
 import { maximumCvBytes } from '../cv.ts';
 import { readResponseBytes } from '../vacancies/http.ts';

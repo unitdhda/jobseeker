@@ -1,7 +1,7 @@
 /**
- * Composition shim: turns the environment into store options exactly once and re-exports the client surface, so the
- * eight files importing this path keep working unchanged. Env-shape validation lives here because it is the app's
- * job; the package receives plain values.
+ * The store composition root: turns the environment into store options exactly once. Entrypoints import this
+ * module for its effect before anything touches a repository; everything else imports @jobseeker/store directly.
+ * Env-shape validation lives here because it is the app's job; the package receives plain values.
  */
 import type { PoolConfig } from 'pg';
 import { configureStore } from '@jobseeker/store';
@@ -42,8 +42,3 @@ configureStore({
     safeVacancyUrl,
   },
 });
-
-export {
-  closePostgresPool, getPostgresPool, persistenceReady, postgresQuery, transientPostgresError,
-  withPostgresTransaction,
-} from '@jobseeker/store';

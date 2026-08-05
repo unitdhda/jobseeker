@@ -21,9 +21,9 @@ import {
   llmUsageSummary, scraperSummary,
   type ScoredVacancy,
   type TelegramUser,
-} from '../database.ts';
+} from '@jobseeker/store';
 import { importCvSource } from '../cv.ts';
-import { type ApplicationArtifact } from '../database.ts';
+import { type ApplicationArtifact } from '@jobseeker/store';
 import { maximumCvBytes } from '../cv.ts';
 import { errorMessage } from '../observability.ts';
 import { claimTelegramSession, deleteTelegramSession, getTelegramSession, setTelegramSession } from '../telegram-state.ts';

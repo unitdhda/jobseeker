@@ -2,7 +2,7 @@ import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { GeneratedApplication } from './documents.ts';
-import type { ApplicationArtifact } from './database.ts';
+import type { ApplicationArtifact } from '@jobseeker/store';
 import { config } from './config.ts';
 
 type JobPayload =

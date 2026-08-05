@@ -25,10 +25,12 @@ Key application modules:
   a database or a scraper.
 - `src/telegram/` — the bot in six layers: `api` (instance + send mechanics), `format` (pure rendering),
   `delivery` (alerts/digests), `indicators` (editable progress messages), `actions` (orchestration behind
-  commands), `bot` (handlers, flows, lifecycle). `src/telegram.ts` re-exports the public surface.
+  commands), `bot` (handlers, flows, lifecycle).
 - `src/workflows.ts` — profile generation (which compiles demand into search units on every save), the scoring
   drain, and application tailoring.
 - `src/ai.ts` + `src/ai-auth.ts` + `src/ai-plugins/` — Pi AI wiring; see AI providers below.
+- `src/postgres.ts` — the store composition root: entrypoints import it for its effect before anything touches a
+  repository; all other modules import `@jobseeker/store` directly.
 - `src/worker.ts` — local child-process worker for profile refresh and application generation.
 - `src/task-worker.ts` — authenticated Cloud Tasks worker (staged, idle).
 

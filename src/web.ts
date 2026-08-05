@@ -1,9 +1,11 @@
+// The store composition must run before any module touches a repository.
+import './postgres.ts';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { closeCloudTasksClient, enqueueTelegramUpdateTask } from './cloud-tasks.ts';
 import { config } from './config.ts';
 import { errorMessage } from './observability.ts';
-import { closePostgresPool, persistenceReady } from './postgres.ts';
+import { closePostgresPool, persistenceReady } from '@jobseeker/store';
 import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './telegram-state.ts';
 
 const app=new Hono();
@@ -28,7 +30,7 @@ app.post('/telegram/webhook',async c=>{
   }
   if(!await claimTelegramUpdate(updateId))return c.json({ok:true,duplicate:true});
   try{
-    const {handleTelegramWebhookUpdate}=await import('./telegram.ts');
+    const {handleTelegramWebhookUpdate}=await import('./telegram/bot.ts');
     await handleTelegramWebhookUpdate(update);await completeTelegramUpdate(updateId);return c.json({ok:true});
   }catch(error){
     await failTelegramUpdate(updateId,error).catch(()=>undefined);
@@ -39,7 +41,7 @@ app.post('/telegram/webhook',async c=>{
 let stopRuntime=async():Promise<void>=>{};
 async function initializeRuntime():Promise<void>{
   if(!config.runJobs&&config.telegramMode!=='polling'&&!(config.telegramMode==='webhook'&&!config.telegramWebhookAsync))return;
-  const [telegram,worker,engine]=await Promise.all([import('./telegram.ts'),import('./worker-client.ts'),import('./engine-main.ts')]);
+  const [telegram,worker,engine]=await Promise.all([import('./telegram/bot.ts'),import('./worker-client.ts'),import('./engine-main.ts')]);
   telegram.startTelegramBot();
   if(config.telegramMode==='webhook')await telegram.initializeTelegramWebhookMode();
   if(config.runJobs)engine.startEngineLoop();

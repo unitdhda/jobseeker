@@ -10,7 +10,7 @@ import { matchVacancy, nextWakeMs, runSchedulerTick, type TickDiscovery } from '
 import {
   addSpend, approvedUsers, createMatches, dueUnits, getCvSource, getSearchProfile, getVacancy, nextUnitDueAt,
   recordUnitRun, spentToday, type Vacancy,
-} from './database.ts';
+} from '@jobseeker/store';
 import { deliverDueNotifications, normalizeListings } from './vacancies/jobs.ts';
 import { getSearchPlatform, type SearchPlan } from './vacancies/registry.ts';
 import {
@@ -97,7 +97,7 @@ function loopPorts(): LoopPorts {
     }, { dailyBudgetUsd: config.userDailyLlmBudgetUsd, claimLimit: config.userScoreLimitPerCycle }, now),
     deliver: async (now) => {
       if (config.backgroundDeliveryAsync) { await enqueueDueDeliveryTasks(); return; }
-      const { sendDailyDigest, sendPendingAlerts } = await import('./telegram.ts');
+      const { sendDailyDigest, sendPendingAlerts } = await import('./telegram/delivery.ts');
       await deliverDueNotifications(sendPendingAlerts,
         (userId) => sendDailyDigest(userId, { scheduled: true }), now);
     },

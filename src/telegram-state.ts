@@ -1,4 +1,4 @@
-import { postgresQuery, withPostgresTransaction } from './postgres.ts';
+import { postgresQuery, withPostgresTransaction } from '@jobseeker/store';
 
 function validKind(kind:string):void{
   if(!/^[a-z][a-z0-9-]{0,63}$/.test(kind))throw new Error('Telegram session kind is invalid.');

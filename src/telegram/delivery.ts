@@ -8,7 +8,7 @@ import {
   replaceDigestSnapshot,
   unsentHighScoreVacancies,
   type AlertVacancy,
-} from '../database.ts';
+} from '@jobseeker/store';
 import { getBot, targetChat, telegramRetryAfter } from './api.ts';
 import { applicationKeyboard, cell, escapeHtml, headerCell, salary, sourceLabel } from './format.ts';
 
