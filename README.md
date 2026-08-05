@@ -40,44 +40,24 @@ Jobseeker is not another job-board interface. It is a continuously running searc
 ## How it works
 
 ```text
-┌──────────────────────────┐
-│ Upload a CV              │
-└─────────────┬────────────┘
-              │
-              ▼
-┌──────────────────────────┐
-│ Compile search demand    │
-└─────────────┬────────────┘
-              │
-              ▼
-┌──────────────────────────┐
-│ Monitor job boards       │
-└─────────────┬────────────┘
-              │
-              ▼
-┌──────────────────────────┐
-│ Shared vacancy store     │
-└─────────────┬────────────┘
-              │
-              ▼
-┌──────────────────────────┐
-│ Match against each CV    │
-└─────────────┬────────────┘
-              │
-              ▼
-┌──────────────────────────┐
-│ Budgeted LLM scoring     │
-└─────────────┬────────────┘
-              │
-              ▼
-┌──────────────────────────┐
-│ Telegram alert or digest │
-└─────────────┬────────────┘
-              │
-              ▼
-┌──────────────────────────┐
-│ Tailored CV or letter    │
-└──────────────────────────┘
+┌──────────────────────────┐     ┌──────────────────────────┐
+│ Upload a CV              │     │ Tailored CV or letter    │
+└──────────────────────────┘     └──────────────────────────┘
+              │                                ▲
+              ▼                                │
+┌──────────────────────────┐     ┌──────────────────────────┐
+│ Compile search demand    │     │ Telegram alert or digest │
+└──────────────────────────┘     └──────────────────────────┘
+              │                                ▲
+              ▼                                │
+┌──────────────────────────┐     ┌──────────────────────────┐
+│ Monitor job boards       │     │ Budgeted LLM scoring     │
+└──────────────────────────┘     └──────────────────────────┘
+              │                                ▲
+              ▼                                │
+┌──────────────────────────┐     ┌──────────────────────────┐
+│ Shared vacancy store     │ ──▶ │ Match against each CV    │
+└──────────────────────────┘     └──────────────────────────┘
 ```
 
 Searches are content-addressed: equivalent demand from different users becomes one search unit, while matching and
