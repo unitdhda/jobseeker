@@ -406,7 +406,7 @@ export async function purgeExpiredVacancies(retentionDays: number, limit: number
  * re-scored once it crosses one of the age bands `vacancyRecency` uses, which happens at most four times in its
  * life.
  */
-export interface ScraperHour { at: string; discovered: number; normalized: number }
+export interface ScraperHour { at: string; scored: number; normalized: number }
 export interface SourceScrapeStats { source: string; discovered24h: number; normalized24h: number; failed: number; queued: number; closed24h: number; scored24h: number }
 export interface UnitScheduleStats { platform: string; units: number; overdue: number; cadenceMin: number; cadenceMax: number; lastNoveltyAt: string | null }
 export interface ScraperSummary {
@@ -425,7 +425,7 @@ export async function scraperSummary(): Promise<ScraperSummary> {
   const [hourly, sources, units, matches, errors] = await Promise.all([
     q(`${hourBuckets}
       select h.bucket,
-        (select count(*) from vacancies v where v.first_seen_at >= h.bucket and v.first_seen_at < h.bucket + interval '1 hour') discovered,
+        (select count(*) from matches m where m.score_updated_at >= h.bucket and m.score_updated_at < h.bucket + interval '1 hour') scored,
         (select count(*) from vacancies v where v.lifecycle_status in ('normalized','duplicate')
           and v.last_checked_at >= h.bucket and v.last_checked_at < h.bucket + interval '1 hour') normalized
       from hours h order by h.bucket`),
@@ -450,7 +450,7 @@ export async function scraperSummary(): Promise<ScraperSummary> {
       group by 1 order by 2 desc limit 3`),
   ]);
   return {
-    hourly: hourly.map((row) => ({ at: isoTimestamp(row.bucket), discovered: Number(row.discovered), normalized: Number(row.normalized) })),
+    hourly: hourly.map((row) => ({ at: isoTimestamp(row.bucket), scored: Number(row.scored), normalized: Number(row.normalized) })),
     sources: sources.map((row) => ({ source: String(row.source), discovered24h: Number(row.discovered),
       normalized24h: Number(row.normalized), failed: Number(row.failed), queued: Number(row.queued), closed24h: Number(row.closed), scored24h: Number(row.scored) })),
     units: units.map((row) => ({ platform: String(row.platform), units: Number(row.units), overdue: Number(row.overdue),

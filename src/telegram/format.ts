@@ -117,8 +117,8 @@ export function usageTimelineChart(hours:UsageHour[],timezone:string):string{
     `● Токены — левая ось             ○ Деньги — правая ось`,axisMoney,timezone);
 }
 export function scraperTimelineChart(hours:ScraperHour[],timezone:string):string{
-  return timelineChart(hours.map(hour=>({at:hour.at,left:hour.discovered,right:hour.normalized})),
-    `● Листинги — левая ось        ○ Распознано — правая ось`,(value)=>axisInteger(value),timezone);
+  return timelineChart(hours.map(hour=>({at:hour.at,left:hour.scored,right:hour.normalized})),
+    `● Оценки — левая ось          ○ Распознано — правая ось`,(value)=>axisInteger(value),timezone);
 }
 /**
  * The scraper's day at a glance for the owner: what each adapter brought in, what the parser made of it, how the

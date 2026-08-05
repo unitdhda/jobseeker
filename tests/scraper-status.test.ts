@@ -5,7 +5,7 @@ import type { ScraperSummary } from '@jobseeker/store';
 
 const start = Date.parse('2026-08-02T12:00:00Z');
 const hourly = Array.from({ length: 25 }, (_, index) => ({
-  at: new Date(start + index * 3_600_000).toISOString(), discovered: 40, normalized: 12,
+  at: new Date(start + index * 3_600_000).toISOString(), scored: 40, normalized: 12,
 }));
 
 const summary: ScraperSummary = {
@@ -23,7 +23,7 @@ test('scraper timeline keeps the usage chart geometry with its own legend', () =
   const chart = scraperTimelineChart(hourly, '+00:00');
   const lines = chart.split('\n');
   assert.equal(lines.length, 19);
-  assert.match(lines[0]!, /Листинги/u);
+  assert.match(lines[0]!, /Оценки/u);
   assert.match(lines[0]!, /Распознано/u);
   const plotRows = lines.slice(3, 15);
   const left = plotRows[0]!.indexOf('│'), right = plotRows[0]!.lastIndexOf('│');
