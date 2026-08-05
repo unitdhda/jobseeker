@@ -51,6 +51,7 @@
       "name": "@jobseeker/store",
       "dependencies": {
         "@jobseeker/cv": "workspace:*",
+        "@jobseeker/engine": "workspace:*",
         "pg": "^8.22.0",
       },
       "devDependencies": {

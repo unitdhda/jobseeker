@@ -3,3 +3,4 @@ export {
   transientPostgresError, withPostgresTransaction, type StoreOptions, type StoreSettings,
 } from './client.ts';
 export * from './repos.ts';
+export * from './engine-repos.ts';
