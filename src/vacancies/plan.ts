@@ -11,17 +11,10 @@
  * rotated slice.
  */
 import { config } from '../config.ts';
+import type { PlanOptions, PlannedSearch, SearchPlan, SearchRecipient, UserSearches } from '@jobseeker/sources';
 
-export interface SearchRecipient { userId: string; searchName: string }
-export interface PlannedSearch<T> { search: T; recipients: SearchRecipient[] }
-export interface SearchPlan<T> { searches: PlannedSearch<T>[] }
-export interface UserSearches<T> { userId: string; searches: readonly T[] }
-export interface PlanOptions {
-  /** The platform lists everything it has whatever the query, so one job covers every cluster. */
-  enumerates?: boolean;
-  /** The platform accepts boolean text, so a cluster becomes one OR query rather than its broadest member. */
-  mergeText?: 'or';
-}
+// The plan shapes live with their consumer, the sources contract; the planner produces what adapters accept.
+export type { PlanOptions, PlannedSearch, SearchPlan, SearchRecipient, UserSearches };
 
 /** hh.ru caps search text at 300 characters, and the profile schema enforces it. */
 const mergedTextLimit = 280;

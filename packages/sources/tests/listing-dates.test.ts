@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { russianDate } from '../src/vacancies/http.ts';
-import { habrListings } from '../src/vacancies/additional.ts';
+import { russianDate } from '../src/http.ts';
+import { habrListings } from '../src/additional.ts';
 
 // Taken verbatim from a live career.habr.com result card.
 const habrCard = `<section class="basic-section basic-section--appearance-vacancy-card"><div class="vacancy-card vacancy-card--bp">`

@@ -4,13 +4,12 @@
  * listing title instead. Carrying the real title matters because the candidate prefilter scores on it.
  */
 import * as v from 'valibot';
-import { config } from '../config.ts';
-import type { VacancyCandidate, VacancyInput } from '../database.ts';
-import { errorMessage, trace } from '../observability.ts';
+import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
 import { fetchSourceHtml, htmlText, jobPostings, russianDate, structuredVacancy, VacancySearchCollector } from './http.ts';
 import { postingMatchesQuery } from './ats.ts';
-import type { SearchPlan } from './plan.ts';
-import type { SearchPlatform } from './registry.ts';
+import type { SearchPlan } from './contract.ts';
+import type { SearchPlatform } from './contract.ts';
 
 export type JsonLdBoardId = 'geekjob' | 'avito';
 
@@ -90,10 +89,14 @@ export const boardSearchProfileSchema = v.strictObject({
 export type BoardSearchProfile = v.InferOutput<typeof boardSearchProfileSchema>;
 export type BoardSearch = BoardSearchProfile['searches'][number];
 
+const boardHosts: Record<JsonLdBoardId, readonly string[]> = {
+  geekjob: ['geekjob.ru', 'www.geekjob.ru'], avito: ['career.avito.com'],
+};
+
 export function boardPlatform(id: JsonLdBoardId): SearchPlatform<typeof boardSearchProfileSchema> {
   const board = jsonLdBoards[id];
   return {
-    id, name: board.name, schema: boardSearchProfileSchema,
+    id, name: board.name, hosts: boardHosts[id], schema: boardSearchProfileSchema,
     // The whole board is listed whatever the query, so one enumeration serves every user's searches at once.
     enumerates: true,
     template: () => ({
@@ -123,9 +126,9 @@ function pause(): Promise<void> {
 export async function scrapeJsonLdBoard(id: JsonLdBoardId,
   plan: SearchPlan<BoardSearch>): Promise<{ seen: number; discovered: number }> {
   const board = jsonLdBoards[id];
-  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
+  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
   if (!plan.searches.length) return collector.result();
-  const pages = Math.max(1, Math.min(config.additionalMaxPages, config.searchPageBudgetPerPlatform));
+  const pages = Math.max(1, Math.min(sourcesSettings().additionalMaxPages, sourcesSettings().searchPageBudgetPerPlatform));
   const seenIds = new Set<string>();
   for (let page = 1; page <= pages; page++) {
     const url = board.listing(page);

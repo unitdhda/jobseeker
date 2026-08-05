@@ -1,0 +1,11 @@
+{
+  "name": "@jobseeker/sources",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "dependencies": {
+    "@jobseeker/store": "workspace:*",
+    "playwright": "1.62.0",
+    "valibot": "1.4.2"
+  }
+}

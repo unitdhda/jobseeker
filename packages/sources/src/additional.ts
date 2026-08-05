@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import type { SearchPlatform } from './registry.ts';
+import type { SearchPlatform } from './contract.ts';
 
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
 export const textSearchProfileSchema = v.strictObject({
@@ -12,9 +12,13 @@ export const textSearchProfileSchema = v.strictObject({
 });
 export type TextSearchProfile = v.InferOutput<typeof textSearchProfileSchema>;
 
+const textHosts: Record<'habr' | 'rabota', readonly string[]> = {
+  habr: ['career.habr.com'], rabota: ['rabota.ru', 'www.rabota.ru'],
+};
+
 function textPlatform(id: 'habr' | 'rabota', name: string, rules: string[]): SearchPlatform<typeof textSearchProfileSchema> {
   return {
-    id, name, schema: textSearchProfileSchema,
+    id, name, hosts: textHosts[id], schema: textSearchProfileSchema,
     template: () => ({
       platform: id,
       version: 1,
@@ -39,13 +43,11 @@ export const rabotaPlatform = textPlatform('rabota', 'Работа.ру', [
   'Use Russian role titles because the query becomes an SEO path segment.',
 ]);
 
-import { config } from '../config.ts';
-import type { VacancyCandidate, VacancyInput } from '../database.ts';
+import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
 import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, russianDate, structuredVacancy, type JsonObject } from './http.ts';
-import { trace } from '../observability.ts';
-import { errorMessage } from '../observability.ts';
 import { VacancySearchCollector } from './http.ts';
-import type { SearchPlan } from './plan.ts';
+import type { SearchPlan } from './contract.ts';
 
 type TextSearch = TextSearchProfile['searches'][number];
 
@@ -91,9 +93,9 @@ export function habrListings(html: string, base: string): HabrListing[] {
 }
 
 export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
-  const pagesPerSearch=Math.max(1,Math.min(config.additionalMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
+  const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().additionalMaxPages,
+    Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
   searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       const url = new URL('/vacancies', 'https://career.habr.com');
@@ -126,9 +128,9 @@ export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: 
 }
 
 export async function scrapeRabota(plan: SearchPlan<TextSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
-  const pagesPerSearch=Math.max(1,Math.min(config.additionalMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
+  const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().additionalMaxPages,
+    Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
   searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       try {

@@ -2,7 +2,7 @@ import { deliverDueNotifications,runSingletonScrapeCycle } from './vacancies/job
 import { persistHhBrowserState, restoreHhBrowserState } from './runtime-state.ts';
 import { enqueueDueDeliveryTasks } from './cloud-tasks.ts';
 import { config } from './config.ts';
-import { closeHhBrowser } from './vacancies/hh.ts';
+import { closeHhBrowser } from '@jobseeker/sources';
 
 await restoreHhBrowserState();
 try {

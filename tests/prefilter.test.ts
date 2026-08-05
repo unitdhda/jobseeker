@@ -4,8 +4,7 @@ import { careerProfileSchema, vacancyRecency, type CareerProfile } from '../src/
 import { prefilterVacancy } from '../src/prefilter.ts';
 import type { Vacancy } from '../src/database.ts';
 import * as v from 'valibot';
-import { textSearchProfileSchema } from '../src/vacancies/additional.ts';
-import { hhPublishedAt } from '../src/vacancies/hh.ts';
+import { hhPublishedAt, textSearchProfileSchema } from '@jobseeker/sources';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 

@@ -9,12 +9,12 @@
         "@google-cloud/tasks": "^6.3.0",
         "@hono/node-server": "^2.0.12",
         "@jobseeker/cv": "workspace:*",
+        "@jobseeker/sources": "workspace:*",
         "@jobseeker/store": "workspace:*",
         "croner": "10.0.1",
         "grammy": "1.45.1",
         "hono": "4.12.32",
         "pdfjs-dist": "6.2.108",
-        "playwright": "1.62.0",
         "valibot": "1.4.2",
       },
       "devDependencies": {
@@ -32,6 +32,14 @@
         "node-html-parser": "9.0.1",
         "pdfjs-dist": "6.2.108",
         "unpdf": "1.8.0",
+        "valibot": "1.4.2",
+      },
+    },
+    "packages/sources": {
+      "name": "@jobseeker/sources",
+      "dependencies": {
+        "@jobseeker/store": "workspace:*",
+        "playwright": "1.62.0",
         "valibot": "1.4.2",
       },
     },
@@ -178,6 +186,8 @@
     "@isaacs/cliui": ["@isaacs/cliui@8.0.2", "", { "dependencies": { "string-width": "^5.1.2", "string-width-cjs": "npm:string-width@^4.2.0", "strip-ansi": "^7.0.1", "strip-ansi-cjs": "npm:strip-ansi@^6.0.1", "wrap-ansi": "^8.1.0", "wrap-ansi-cjs": "npm:wrap-ansi@^7.0.0" } }, "sha512-O8jcjabXaleOG9DQ0+ARXWZBTfnP4WNAqzuiJK7ll44AmxGKv/J2M4TPjxjY3znBCfvBXFzucm1twdyFybFqEA=="],
 
     "@jobseeker/cv": ["@jobseeker/cv@workspace:packages/cv"],
+
+    "@jobseeker/sources": ["@jobseeker/sources@workspace:packages/sources"],
 
     "@jobseeker/store": ["@jobseeker/store@workspace:packages/store"],
 

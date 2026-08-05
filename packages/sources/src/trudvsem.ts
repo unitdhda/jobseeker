@@ -3,17 +3,16 @@
  * neither HTML parsing nor a browser. One request returns complete postings, and normalization reuses the payload.
  */
 import * as v from 'valibot';
-import { config } from '../config.ts';
-import type { VacancyCandidate, VacancyInput } from '../database.ts';
-import { errorMessage, trace } from '../observability.ts';
+import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
 import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
   VacancySearchCollector, type JsonObject } from './http.ts';
-import type { SearchPlan } from './plan.ts';
-import type { SearchPlatform } from './registry.ts';
+import type { SearchPlan } from './contract.ts';
+import type { SearchPlatform } from './contract.ts';
 
 /** Federal region code; defaults to Москва, matching the default HH area. */
 export function trudvsemRegion(): string {
-  const raw = process.env.TRUDVSEM_REGION?.trim();
+  const raw = sourcesSettings().trudvsemRegion;
   if (!raw) return '7700000000';
   if (!/^\d{11,13}$/.test(raw)) throw new Error('TRUDVSEM_REGION must be a numeric federal region code.');
   return raw;
@@ -32,7 +31,8 @@ export type TrudvsemSearchProfile = v.InferOutput<typeof trudvsemSearchProfileSc
 export type TrudvsemSearch = TrudvsemSearchProfile['searches'][number];
 
 export const trudvsemPlatform: SearchPlatform<typeof trudvsemSearchProfileSchema> = {
-  id: 'trudvsem', name: 'Работа России', schema: trudvsemSearchProfileSchema,
+  id: 'trudvsem', name: 'Работа России', hosts: ['opendata.trudvsem.ru', 'trudvsem.ru', 'www.trudvsem.ru'],
+  schema: trudvsemSearchProfileSchema,
   template: () => ({
     platform: 'trudvsem', version: 1,
     purpose: 'Open federal vacancy register published by trudvsem.ru.',
@@ -97,9 +97,9 @@ export function trudvsemVacancyInput(vacancy: JsonObject, sourceQuery: string): 
 
 export async function scrapeTrudvsem(
   plan: SearchPlan<TrudvsemSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
-  const pagesPerSearch = Math.max(1, Math.min(config.additionalMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
+  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
+  const pagesPerSearch = Math.max(1, Math.min(sourcesSettings().additionalMaxPages,
+    Math.floor(sourcesSettings().searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
   searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       const url = trudvsemSearchUrl(search.query, page);

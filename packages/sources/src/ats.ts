@@ -4,13 +4,12 @@
  * lists a board and keeps the postings whose title matches a CV-derived query; there is no server-side search.
  */
 import * as v from 'valibot';
-import { config } from '../config.ts';
-import type { VacancyCandidate, VacancyInput } from '../database.ts';
-import { errorMessage, trace } from '../observability.ts';
+import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
 import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
   VacancySearchCollector, type JsonObject } from './http.ts';
-import type { SearchPlan } from './plan.ts';
-import type { SearchPlatform } from './registry.ts';
+import type { SearchPlan } from './contract.ts';
+import type { SearchPlatform } from './contract.ts';
 
 export const atsProviders = ['greenhouse', 'lever', 'ashby', 'smartrecruiters'] as const;
 export type AtsProvider = typeof atsProviders[number];
@@ -27,11 +26,11 @@ const defaultBoards: Record<AtsProvider, string[]> = {
   greenhouse: [], lever: [], ashby: [], smartrecruiters: [],
 };
 
-export function configuredBoards(): Record<AtsProvider, string[]> {
-  const raw = process.env.ATS_BOARDS?.trim();
-  if (!raw) return defaultBoards;
+export function configuredBoards(entries: readonly string[] = sourcesSettings().atsBoards): Record<AtsProvider, string[]> {
+  const raw = entries;
+  if (!raw.length) return defaultBoards;
   const boards: Record<AtsProvider, string[]> = { greenhouse: [], lever: [], ashby: [], smartrecruiters: [] };
-  for (const entry of raw.split(',').map((value) => value.trim()).filter(Boolean)) {
+  for (const entry of raw) {
     const [provider, slug] = entry.split(':');
     if (!provider || !slug) throw new Error(`ATS_BOARDS entry must be provider:slug, got ${entry}`);
     if (!atsProviders.includes(provider as AtsProvider)) throw new Error(`Unknown ATS provider: ${provider}`);
@@ -54,6 +53,13 @@ export type AtsSearch = AtsSearchProfile['searches'][number];
 
 export const atsPlatform: SearchPlatform<typeof atsSearchProfileSchema> = {
   id: 'ats', name: 'Company ATS boards', schema: atsSearchProfileSchema,
+  // One adapter spans several ATS products, so both their APIs and the public posting pages they link to are listed.
+  hosts: [
+    'boards-api.greenhouse.io', 'boards.greenhouse.io', 'job-boards.greenhouse.io',
+    'api.lever.co', 'jobs.lever.co',
+    'api.ashbyhq.com', 'jobs.ashbyhq.com',
+    'api.smartrecruiters.com', 'jobs.smartrecruiters.com',
+  ],
   // A board is read whole and matched by title, so one read serves every user's searches at once.
   enumerates: true,
   template: () => ({
@@ -190,7 +196,7 @@ export function postingMatchesQuery(title: string, query: string): boolean {
 }
 
 export async function scrapeAts(plan: SearchPlan<AtsSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
+  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
   if (!plan.searches.length) return collector.result();
   const boards = configuredBoards();
   for (const provider of atsProviders) {

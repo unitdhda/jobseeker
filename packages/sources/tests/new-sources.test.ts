@@ -1,10 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { postingMatchesQuery, configuredBoards, atsProviders } from '../src/vacancies/ats.ts';
-import { jsonLdBoards, boardPlatform } from '../src/vacancies/boards.ts';
-import { trudvsemVacancies, trudvsemVacancyInput, trudvsemSearchUrl } from '../src/vacancies/trudvsem.ts';
-import { getSearchPlatform, searchPlatformIds } from '../src/vacancies/registry.ts';
-import { sourceUrl } from '../src/vacancies/http.ts';
+import { postingMatchesQuery, configuredBoards, atsProviders } from '../src/ats.ts';
+import { jsonLdBoards, boardPlatform } from '../src/boards.ts';
+import { trudvsemVacancies, trudvsemVacancyInput, trudvsemSearchUrl } from '../src/trudvsem.ts';
+import { getSearchPlatform, searchPlatformIds } from '../src/registry.ts';
+import { sourceUrl } from '../src/http.ts';
 
 test('new platforms are registered through the common vacancy-platform interface', () => {
   for (const id of ['geekjob', 'avito', 'trudvsem', 'ats']) {
@@ -34,21 +34,12 @@ test('ATS title matching requires every query word', () => {
 });
 
 test('ATS boards are configured per provider and reject malformed entries', () => {
-  const previous = process.env.ATS_BOARDS;
-  try {
-    process.env.ATS_BOARDS = 'greenhouse:acme, lever:beta';
-    const boards = configuredBoards();
-    assert.deepEqual(boards.greenhouse, ['acme']);
-    assert.deepEqual(boards.lever, ['beta']);
-    assert.deepEqual(boards.ashby, []);
-    process.env.ATS_BOARDS = 'unknown:acme';
-    assert.throws(() => configuredBoards(), /Unknown ATS provider/);
-    process.env.ATS_BOARDS = 'greenhouse';
-    assert.throws(() => configuredBoards(), /provider:slug/);
-  } finally {
-    if (previous === undefined) delete process.env.ATS_BOARDS; else process.env.ATS_BOARDS = previous;
-  }
-  assert.deepEqual([...atsProviders].sort(), ['ashby', 'greenhouse', 'lever', 'smartrecruiters']);
+  const boards = configuredBoards(['greenhouse:acme', 'lever:beta']);
+  assert.deepEqual(boards.greenhouse, ['acme']);
+  assert.deepEqual(boards.lever, ['beta']);
+  assert.deepEqual(boards.ashby, []);
+  assert.throws(() => configuredBoards(['unknown:acme']), /Unknown ATS provider/);
+  assert.throws(() => configuredBoards(['greenhouse']), /provider:slug/);
 });
 
 test('JSON-LD board listings yield source ids, canonical urls, and real titles', () => {

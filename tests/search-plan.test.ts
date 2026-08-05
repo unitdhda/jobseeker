@@ -142,3 +142,11 @@ test('a user appearing twice in one cluster is recorded once', () => {
   assert.equal(plan.searches.length, 1);
   assert.equal(plan.searches[0]!.recipients.length, 1);
 });
+
+test('HireHi merges the same facet and specialization asked for by several users',()=>{
+  const search={name:'Backend',rationale:'CV evidence',specialization:'backend' as const,facet:'all' as const};
+  const plan=planPlatformSearches('hirehi',[{userId:'u1',searches:[search]},
+    {userId:'u2',searches:[{...search,name:'Бэкенд'}]}],{},0);
+  assert.equal(plan.searches.length,1,'one SEO landing page must not be fetched twice');
+  assert.deepEqual(plan.searches[0]!.recipients.map(recipient=>recipient.userId),['u1','u2']);
+});

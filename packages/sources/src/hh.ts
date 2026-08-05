@@ -1,6 +1,6 @@
 import * as v from 'valibot';
-import { config } from '../config.ts';
-import type { SearchPlatform } from './registry.ts';
+import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { SearchPlatform } from './contract.ts';
 
 const id = v.pipe(v.string(), v.regex(/^\d+$/, 'Expected a numeric HH identifier'));
 const shortText = v.pipe(v.string(), v.minLength(1), v.maxLength(240));
@@ -53,6 +53,7 @@ export type HhSearch = HhSearchProfile['searches'][number];
 export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
   id: 'hh',
   name: 'hh.ru browser search',
+  hosts: ['hh.ru', 'www.hh.ru'],
   schema: hhSearchProfileSchema,
   // hh's text field is boolean, so equivalent queries from several users become one OR search over one page load.
   mergeText: 'or',
@@ -65,11 +66,11 @@ export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
       searches: [{
         name: 'CV-derived track', rationale: 'CV evidence for this role search',
         text: 'название профессии из карьерного профиля', searchFields: ['name', 'description'],
-        areas: [config.hhAreaId], periodDays: 7, orderBy: 'publication_time',
+        areas: [sourcesSettings().hhAreaId], periodDays: 7, orderBy: 'publication_time',
       }],
     },
     capabilities: {
-      configuredDefaultArea: config.hhAreaId,
+      configuredDefaultArea: sourcesSettings().hhAreaId,
       searchFields, experiences, employmentForms, workFormats, workSchedules: schedules,
       workingHours: hours, labels, currencies,
       education: ['not_required_or_not_specified', 'special_secondary', 'higher'],
@@ -125,11 +126,10 @@ export function hhSearchUrl(search: HhSearch, page: number): string {
 import { createHash } from 'node:crypto';
 
 import { chromium, type BrowserContext, type Page } from 'playwright';
-import { type VacancyCandidate, type VacancyInput } from '../database.ts';
-import { trace } from '../observability.ts';
+import { type VacancyCandidate, type VacancyInput } from '@jobseeker/store';
 import { VacancySearchCollector } from './http.ts';
 import { assertPublicAddress, jobPostings, plainText, russianDate, sourceUrl } from './http.ts';
-import type { SearchPlan } from './plan.ts';
+import type { SearchPlan } from './contract.ts';
 
 /**
  * The advert's own publication date.
@@ -219,12 +219,12 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
 let sharedContext:BrowserContext|undefined;
 
 async function launchContext(): Promise<BrowserContext> {
-  const browserData = config.hhBrowserDataPath;
+  const browserData = sourcesSettings().hhBrowserDataPath;
   const context=await chromium.launchPersistentContext(browserData, {
-    executablePath: config.playwrightChromiumPath,
-    headless: config.playwrightHeadless,
+    executablePath: sourcesSettings().playwrightChromiumPath,
+    headless: sourcesSettings().playwrightHeadless,
     locale: 'ru-RU',
-    timezoneId: config.timezone,
+    timezoneId: sourcesSettings().timezone,
     viewport: { width: 1440, height: 1000 },
     chromiumSandbox: true,
     env: {
@@ -264,12 +264,12 @@ export async function closeHhBrowser():Promise<void>{
 
 async function withHhDeadline<T>(operationName:string,operation:(context:BrowserContext)=>Promise<T>):Promise<T>{
   const context=await openContext(),timeoutMessage=
-    `HH browser ${operationName} exceeded ${config.hhOperationTimeoutSeconds} seconds.`;
+    `HH browser ${operationName} exceeded ${sourcesSettings().hhOperationTimeoutSeconds} seconds.`;
   let deadline:ReturnType<typeof setTimeout>|undefined;
   const timedOut=new Promise<never>((_resolve,reject)=>{deadline=setTimeout(()=>{
     if(sharedContext===context)sharedContext=undefined;
     void context.close({reason:timeoutMessage}).catch(()=>undefined);reject(new Error(timeoutMessage));
-  },config.hhOperationTimeoutSeconds*1_000);});
+  },sourcesSettings().hhOperationTimeoutSeconds*1_000);});
   try{return await Promise.race([operation(context),timedOut]);}
   catch(error){
     if(/closed|crashed|disconnected/i.test(error instanceof Error?error.message:String(error))&&sharedContext===context){
@@ -280,11 +280,11 @@ async function withHhDeadline<T>(operationName:string,operation:(context:Browser
 }
 
 export async function scrapeHh(plan: SearchPlan<HhSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(config.searchNewVacancyLimit);
+  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
   try{await withHhDeadline('search',async context=>{
     const page = context.pages()[0] ?? await context.newPage();
-    const pagesPerSearch=Math.max(1,Math.min(config.hhMaxPages,
-      Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+    const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().hhMaxPages,
+      Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
     searches: for (const { search, recipients } of plan.searches) {
       for (let pageNumber = 0; pageNumber < pagesPerSearch; pageNumber++) {
         const safeSearchUrl = sourceUrl('hh', hhSearchUrl(search, pageNumber)); await assertPublicAddress(safeSearchUrl);

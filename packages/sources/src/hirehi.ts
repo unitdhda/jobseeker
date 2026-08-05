@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
 import * as v from 'valibot';
-import { config } from '../config.ts';
-import type { VacancyCandidate, VacancyInput } from '../database.ts';
-import { errorMessage, trace } from '../observability.ts';
+import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
 import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, sourceUrl, type JsonObject, VacancySearchCollector } from './http.ts';
-import type { SearchPlan } from './plan.ts';
-import type { SearchPlatform } from './registry.ts';
+import type { SearchPlan } from './contract.ts';
+import type { SearchPlatform } from './contract.ts';
 
 export const hireHiSpecializations=[
   '1c','analytics','android','backend','business-analyst','ci-cd','cloud','cpp','data-analyst','data-engineer',
@@ -23,7 +22,7 @@ export type HireHiSearchProfile=v.InferOutput<typeof hireHiSearchProfileSchema>;
 export type HireHiSearch=HireHiSearchProfile['searches'][number];
 
 export const hireHiPlatform:SearchPlatform<typeof hireHiSearchProfileSchema>={
-  id:'hirehi',name:'HireHi',schema:hireHiSearchProfileSchema,template:()=>({platform:'hirehi',version:1,
+  id:'hirehi',name:'HireHi',hosts:['hirehi.ru','www.hirehi.ru'],schema:hireHiSearchProfileSchema,template:()=>({platform:'hirehi',version:1,
     purpose:'Validated public HireHi SEO landing pages. The adapter does not call the disallowed HireHi search API.',
     jsonShape:{version:1,searches:[{name:'Supported CV track',rationale:'direct CV evidence',specialization:'one listed specialization',facet:'all'}]},
     capabilities:{specializations:hireHiSpecializations,facets,facetMeaning:{all:'all levels and work formats',remote:'remote vacancies',
@@ -83,9 +82,9 @@ function workFormat(value:string):string{
 function listingLocation(value:string):string{const format=workFormat(value);return format?value.slice(format.length).trim():'';}
 
 export async function scrapeHireHi(plan:SearchPlan<HireHiSearch>):Promise<{seen:number;discovered:number}>{
-  const collector=new VacancySearchCollector(config.searchNewVacancyLimit);
-  const pagesPerSearch=Math.max(1,Math.min(config.hireHiMaxPages,
-    Math.floor(config.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+  const collector=new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
+  const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().hireHiMaxPages,
+    Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
   searches:for(const {search,recipients} of plan.searches)for(let page=1;page<=pagesPerSearch;page++){
     try{
       const url=hireHiSearchUrl(search,page);trace('scrape.search.request',{platform:'hirehi',search:search.name,page,url});
