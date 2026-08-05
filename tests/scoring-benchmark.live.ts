@@ -4,9 +4,9 @@
  *
  *   bun --no-env-file tests/scoring-benchmark.live.ts [repeats] [model,model] [effort,effort]
  */
-import { contentText, createModels, type ThinkingLevel } from '@earendil-works/pi-ai';
+import { contentText, type ThinkingLevel } from '@earendil-works/pi-ai';
 import * as v from 'valibot';
-import { claudeCliProvider } from '../src/ai-plugins/claude-bridge.ts';
+import { aiModels } from '../src/ai.ts';
 
 const vacancyScoreSchema = v.object({
   vacancyId: v.pipe(v.number(), v.integer(), v.minValue(1)),
@@ -53,11 +53,10 @@ const prompt = `CV:\n${cv}\n\nVACANCIES:\n${JSON.stringify(vacancies, null, 1)}\
   + 'Return {"scores":[{"vacancyId":number,"score":0-100,"primaryTrack":string,"summary":string,"reasons":string[],'
   + '"gaps":string[],"hardRejection":boolean}]} with exactly one entry per vacancy.';
 
-const models = createModels();
-models.setProvider(claudeCliProvider({ defaultTimeoutMs: 300_000 }));
+const models = aiModels();
 
 const repeats = Number(process.argv[2] ?? 3);
-const candidates = (process.argv[3] ?? 'claude-haiku-4-5-20251001,claude-sonnet-5,claude-opus-5').split(',');
+const candidates = (process.argv[3] ?? 'claude-cli/claude-haiku-4-5-20251001,claude-cli/claude-sonnet-5,claude-cli/claude-opus-5').split(',');
 const efforts = (process.argv[4] ?? 'medium').split(',') as ThinkingLevel[];
 
 interface Run { ok: boolean; ms: number; cost: number; input: number; output: number;
@@ -69,9 +68,12 @@ const median = (xs: number[]): number => {
 };
 const spread = (xs: number[]): number => (xs.length < 2 ? 0 : Math.max(...xs) - Math.min(...xs));
 
-for (const id of candidates) for (const effort of efforts) {
-  const model = models.getModel('claude-cli', id);
-  if (!model) { console.error(`${id}: not registered`); continue; }
+for (const candidate of candidates) for (const effort of efforts) {
+  const slash = candidate.indexOf('/');
+  const provider = slash < 0 ? 'claude-cli' : candidate.slice(0, slash);
+  const id = slash < 0 ? candidate : candidate.slice(slash + 1);
+  const model = models.getModel(provider, id);
+  if (!model) { console.error(`${candidate}: not registered`); continue; }
   const runs: Run[] = [];
   for (let attempt = 0; attempt < repeats; attempt++) {
     const started = Date.now();
@@ -108,7 +110,7 @@ for (const id of candidates) for (const effort of efforts) {
     return { id: vacancy.id, median: values.length ? median(values) : null, spread: spread(values) };
   });
   console.info(JSON.stringify({
-    model: id,
+    model: candidate,
     effort,
     valid: `${good.length}/${runs.length}`,
     medianMs: good.length ? Math.round(median(good.map((r) => r.ms))) : null,
