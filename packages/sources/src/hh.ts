@@ -187,7 +187,19 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
   await page.goto(safeUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
   sourceUrl('hh', page.url());
   await assertSearchPage(page);
-  await page.locator('[data-qa="vacancy-title"]').waitFor({ state: 'visible', timeout: 20_000 });
+  // A closed or removed vacancy renders no title at all; classify it before paying the 20-second wait for one.
+  const closedMarker = /вакансия (закрыта|в архиве|не найдена)|page not found/i;
+  const closedCheck = async (): Promise<void> => {
+    const body = await page.locator('body').innerText().catch(() => '');
+    if (closedMarker.test(body)) throw new Error(`HH vacancy ${safeUrl} закрыта или в архиве.`);
+  };
+  await closedCheck();
+  try {
+    await page.locator('[data-qa="vacancy-title"]').waitFor({ state: 'visible', timeout: 20_000 });
+  } catch (error) {
+    await closedCheck(); // the closed banner may hydrate after domcontentloaded
+    throw error;
+  }
   const published = hhPublishedAt(await page.content(), await page.locator('body').innerText());
   if (!published) console.warn(`hh vacancy ${safeUrl} published no date; recording the time it was read instead.`);
 
