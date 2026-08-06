@@ -6,7 +6,8 @@ How the **cloud** deployment fits together, and how to turn it on, pause it, or 
 > `PAUSED` and no Telegram webhook points at Cloud Run, so nothing in this file is running on a schedule today.
 
 For the full release, validation, triage, and rollback procedures, see `docs/operations.md`. This file covers only the
-shape of the cloud system and its three control surfaces.
+shape of the cloud system and its three control surfaces. The `bun` invocations below also run under Node.js 24+
+(substitute `node`; add `--experimental-transform-types` for `.ts` entrypoints).
 
 ## Shell setup
 

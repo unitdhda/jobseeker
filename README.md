@@ -16,7 +16,7 @@ looks promising, request a tailored CV or cover letter directly from the alert.
        width="1000">
 </p>
 
-<p align="center"><strong>Bun · PostgreSQL · Telegram · Pi AI · Playwright · Typst</strong></p>
+<p align="center"><strong>Node/Bun · PostgreSQL · Telegram · Pi AI · Playwright · Typst</strong></p>
 
 > [!NOTE]
 > Jobseeker is in active development. It runs in production for a small group of users, but configuration, adapters,
@@ -121,7 +121,7 @@ mean it should be enabled in every deployment; probe it from the machine that wi
 
 You will need:
 
-- Bun 1.3.14 or newer;
+- Bun 1.3.14 or newer for installing dependencies and running package scripts; the app itself runs on Node.js 24+ or Bun;
 - PostgreSQL;
 - a Telegram bot token and an owner account;
 - Chromium for browser-backed sources;
@@ -162,15 +162,15 @@ bun install --frozen-lockfile
 bun run typecheck
 bun run test
 bun run build
-bun --env-file=.env dist/server.mjs
+bun --env-file=.env dist/server.mjs   # or: node --env-file=.env dist/server.mjs
 ```
 
 Health endpoints are available at `/health` and `/ready`; readiness includes PostgreSQL connectivity.
 
 ## Technical overview
 
-Jobseeker is a Bun-workspaces monorepo. Domain and infrastructure packages stay behind explicit dependency
-boundaries; the root application composes them.
+Jobseeker is a Bun-workspaces monorepo that runs on Node or Bun — no Bun-specific APIs are used. Domain and
+infrastructure packages stay behind explicit dependency boundaries; the root application composes them.
 
 | Workspace | Responsibility |
 |---|---|

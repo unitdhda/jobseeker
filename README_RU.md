@@ -16,7 +16,7 @@
        width="1000">
 </p>
 
-<p align="center"><strong>Bun · PostgreSQL · Telegram · Pi AI · Playwright · Typst</strong></p>
+<p align="center"><strong>Node/Bun · PostgreSQL · Telegram · Pi AI · Playwright · Typst</strong></p>
 
 > [!NOTE]
 > Jobseeker активно разрабатывается. Сервис уже работает в продакшене для небольшой группы пользователей, но
@@ -122,7 +122,7 @@ Jobseeker — не очередной интерфейс для просмотр
 
 Понадобятся:
 
-- Bun 1.3.14 или новее;
+- Bun 1.3.14 или новее для установки зависимостей и скриптов пакета; само приложение работает на Node.js 24+ или Bun;
 - PostgreSQL;
 - токен Telegram-бота и аккаунт владельца;
 - Chromium для браузерных источников;
@@ -163,14 +163,15 @@ bun install --frozen-lockfile
 bun run typecheck
 bun run test
 bun run build
-bun --env-file=.env dist/server.mjs
+bun --env-file=.env dist/server.mjs   # или: node --env-file=.env dist/server.mjs
 ```
 
 `/health` показывает состояние процесса, `/ready` дополнительно проверяет PostgreSQL.
 
 ## Технический обзор
 
-Jobseeker — монорепозиторий на Bun workspaces. Четыре пакета содержат доменную логику, корневое приложение их собирает.
+Jobseeker — монорепозиторий на Bun workspaces, работающий на Node или Bun (Bun-специфичные API не используются).
+Четыре пакета содержат доменную логику, корневое приложение их собирает.
 
 | Workspace | Ответственность |
 |---|---|

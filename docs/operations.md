@@ -22,6 +22,10 @@ This document deliberately records no configuration values, host addresses, or f
 settings from the host's env file when you need them; a copy here would drift and mislead. `.env.example`
 documents what each knob means.
 
+Runtime: every `bun <file>` command in this runbook also runs under Node.js 24+ — substitute `node`, and add
+`--experimental-transform-types` when the entrypoint is a `.ts` file. Bun remains required for `bun install` and
+`bun run <script>`, and inside the deployed container, whose image ships Bun only.
+
 ## Invariants
 
 - Keep exactly one Telegram receiver per token: today the VPS poller, and therefore **no configured webhook**.

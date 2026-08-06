@@ -37,7 +37,8 @@ For the product overview, start with the [README](../README.md). For deployment 
 
 ## Repository boundaries
 
-The repository has four Bun workspaces composed by the executable application layer. See the
+The repository has four Bun workspaces composed by the executable application layer; the code uses no
+Bun-specific APIs, so the built application runs on Node or Bun. See the
 [dependency graph](dependency-graph.md) for allowed import directions and factory ownership.
 
 | Workspace | Owns | Does not own |

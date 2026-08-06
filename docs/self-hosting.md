@@ -10,7 +10,8 @@ instance as production.
 
 ## Requirements
 
-- Bun 1.3.14 or newer;
+- Bun 1.3.14 or newer for `bun install` and package scripts; the app itself runs on Node.js 24+ or Bun
+  (with Node, add `--experimental-transform-types` when running `.ts` entrypoints directly);
 - PostgreSQL reachable through `DATABASE_URL`;
 - a Telegram bot token;
 - credentials for at least one model in Pi AI's catalog;
@@ -191,7 +192,7 @@ Build and start the server:
 
 ```bash
 bun run build
-bun --env-file=.env dist/server.mjs
+bun --env-file=.env dist/server.mjs   # or: node --env-file=.env dist/server.mjs
 ```
 
 Expected startup signals:
