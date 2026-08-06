@@ -13,7 +13,7 @@ export function escapeHtml(value: string): string {
 }
 const sourceLabels: Record<string, string> = {
   hh: 'HH', habr: 'Habr Career', rabota: 'Работа.ру', hirehi: 'HireHi',
-  geekjob: 'GeekJob', avito: 'Avito', trudvsem: 'Работа России', ats: 'ATS-борды компаний',
+  geekjob: 'GeekJob', avito: 'Avito', trudvsem: 'Работа России', ats: 'ATS-борды компаний', yandex: 'Яндекс',
 };
 export function sourceLabel(source: string): string {
   return sourceLabels[source] ?? 'источник';

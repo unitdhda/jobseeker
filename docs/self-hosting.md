@@ -137,6 +137,11 @@ TRUDVSEM_REGION=
 ATS_BOARDS=
 ```
 
+Optional `SEARCH_PLATFORMS` values include `geekjob`, `avito`, `ats`, and `yandex`. The Yandex adapter searches
+Yandex's first-party career API and normalizes its server-rendered vacancy pages; it is implemented through the
+shared company-site runner so another large employer can be added as a host/parser definition rather than a new
+pipeline.
+
 Do not enable every adapter merely because it exists. Some boards block particular egress networks or return no
 listings. `/scraper` exposes the actual funnel after startup.
 

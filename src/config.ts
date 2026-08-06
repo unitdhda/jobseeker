@@ -43,10 +43,10 @@ function telegramModeEnv(): TelegramMode {
   return value as TelegramMode;
 }
 
-const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi', 'geekjob', 'avito', 'trudvsem', 'ats'] as const;
-// geekjob, avito and ats are supported but off by default: measured over 24 hours they returned no listings at
-// all, geekjob and avito because their boards do not answer the production egress, ats because no board ships by
-// default. Name them in SEARCH_PLATFORMS once a probe from the scraping host shows they read something.
+const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi', 'geekjob', 'avito', 'trudvsem', 'ats', 'yandex'] as const;
+// geekjob, avito, ats, and yandex are supported but off by default. The first three have either read nothing from
+// production egress or need explicit boards; Yandex is new and must be probed before it is enabled. Name an optional
+// adapter in SEARCH_PLATFORMS only after a probe from the scraping host shows that it reads useful listings.
 const defaultSearchPlatforms: SearchPlatformId[] = ['hh', 'habr', 'rabota', 'hirehi', 'trudvsem'];
 type SearchPlatformId = typeof supportedSearchPlatforms[number];
 

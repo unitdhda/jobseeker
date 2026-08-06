@@ -16,6 +16,9 @@ import { hireHiPlatform, normalizeHireHiCandidate, scrapeHireHi } from './hirehi
 import { atsPlatform, normalizeAtsCandidate, scrapeAts } from './ats.ts';
 import { boardPlatform, normalizeJsonLdCandidate, scrapeJsonLdBoard, type JsonLdBoardId } from './boards.ts';
 import { normalizeTrudvsemCandidate, scrapeTrudvsem, trudvsemPlatform } from './trudvsem.ts';
+import {
+  companyPlatform, normalizeCompanyCandidate, scrapeCompanySite, type CompanySiteId,
+} from './companies.ts';
 
 export type AnyVacancyPlatform = VacancyPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>;
 const hhPools = new WeakMap<SourcesRuntime, AdaptiveTaskPool>();
@@ -81,8 +84,17 @@ const trudvsemAdapter: VacancyPlatform<typeof trudvsemPlatform.schema> = {
   async discover(plan) { return planned(plan, await scrapeTrudvsem(plan)); },
   normalize: candidates => normalizeIndividually(candidates, normalizeTrudvsemCandidate),
 };
+function companyAdapter(id: CompanySiteId): VacancyPlatform<ReturnType<typeof companyPlatform>['schema']> {
+  const platform = companyPlatform(id);
+  return {
+    ...platform,
+    async discover(plan) { return planned(plan, await scrapeCompanySite(id, plan)); },
+    normalize: candidates => normalizeIndividually(candidates, normalizeCompanyCandidate),
+  };
+}
 const registeredPlatforms: AnyVacancyPlatform[] = [hhAdapter,habrAdapter,rabotaAdapter,hireHiAdapter,
-  jsonLdBoardAdapter('geekjob'),jsonLdBoardAdapter('avito'),trudvsemAdapter,atsAdapter] as AnyVacancyPlatform[];
+  jsonLdBoardAdapter('geekjob'),jsonLdBoardAdapter('avito'),trudvsemAdapter,atsAdapter,
+  companyAdapter('yandex')] as AnyVacancyPlatform[];
 
 const platforms = new Map(registeredPlatforms.map((platform) => [platform.id, platform]));
 for (const platform of registeredPlatforms) registerSourceHosts(platform.id, platform.hosts);

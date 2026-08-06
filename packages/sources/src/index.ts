@@ -9,4 +9,5 @@ export {
   russianDate, safeVacancyUrl, sourceUrl, structuredVacancy, VacancySearchCollector, asObject, type JsonObject,
 } from './http.ts';
 export { textSearchProfileSchema } from './additional.ts';
+export { companySearchProfileSchema } from './companies.ts';
 export { hhPublishedAt } from './hh.ts';

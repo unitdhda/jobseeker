@@ -104,6 +104,7 @@ without another model call; uploading a new CV invalidates the cached version na
 | Работа России | Public API |
 | Geekjob and Avito | Optional adapters |
 | Greenhouse, Lever, Ashby, SmartRecruiters | Configurable company ATS boards |
+| Yandex Careers | First-party company career-site adapter |
 
 Source availability depends on network egress and the source's current behavior. An adapter being built in does not
 mean it should be enabled in every deployment; probe it from the machine that will actually scrape it.
