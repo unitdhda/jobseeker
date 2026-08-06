@@ -96,36 +96,27 @@ Jobseeker — не очередной интерфейс для просмотр
 
 ## Источники вакансий
 
-| Источник | Адаптер |
-|---|---|
-| hh.ru | Постоянный браузер Playwright |
-| Habr Career | HTML-объявления |
-| Rabota.ru | HTML-объявления |
-| HireHi | Структурированные данные |
-| Работа России | Открытый API |
-| Geekjob и Avito | Опциональные адаптеры |
-| Greenhouse, Lever, Ashby, SmartRecruiters | Настраиваемые ATS отдельных компаний |
-| Вакансии Яндекса | Адаптер карьерного сайта компании |
-| Ozon Careers | Публичный JSON API компании |
-| RWB / Wildberries | Публичный JSON API компании |
+Источники — это открытые провайдеры, а не фиксированный каталог. `@jobseeker/sources` даёт runtime: контракт
+провайдера, регистрацию в рамках экземпляра, явно передаваемый контекст, границу HTTPS/SSRF и универсальные драйверы
+для тех поверхностей, которые реально публикуют сайты. Каждый конкретный источник — код приложения в
+`src/vacancies/providers/`, собираемый в `src/vacancies/providers.ts`.
+
+| Драйвер | Поверхность источника | Встроенные примеры |
+|---|---|---|
+| `createApiSource` | Постраничные JSON-списки и опциональная JSON-карточка | Ozon Careers, RWB / Wildberries |
+| `createAtsSource` | Борды Greenhouse, Lever, Ashby, SmartRecruiters | Настраиваемые борды компаний `provider:slug` |
+| `createCompanySiteSource` | Собственный JSON-поиск компании и HTML-страницы вакансий | Вакансии Яндекса |
+| `createJsonLdBoardSource` | Перечисляемые борды с разметкой schema.org `JobPosting` | Avito Careers, Geekjob |
+| `createSourceProvider` | Всё остальное, включая браузерные источники | hh.ru (постоянный Playwright), Habr Career, Rabota.ru, HireHi, Работа России |
+
+Провайдер объявляет все хосты, к которым может обращаться, ходит в сеть только через переданный HTTP-клиент и
+регистрируется независимо от участия в поиске: это отдельно решает `SEARCH_PLATFORMS`. Источник может оставаться
+зарегистрированным для нормализации и проверки URL, не создавая новых поисков.
 
 Доступность источника зависит от сетевого выхода сервера и текущего поведения площадки. Наличие адаптера в коде не
 означает, что его следует включать в каждом деплое: проверяйте источник с той машины, которая будет выполнять поиск.
 
-## Технический обзор
-
-Jobseeker — монорепозиторий на Bun workspaces. Четыре пакета содержат доменную логику, корневое приложение их собирает.
-
-| Workspace | Ответственность |
-|---|---|
-| `packages/engine` | Идентичность поисков, компиляция спроса, адаптивный ритм, планирование, правила состояний |
-| `packages/store` | PostgreSQL-клиент и репозитории |
-| `packages/sources` | Открытый runtime провайдеров, контракты, SSRF/HTTP-политика и переиспользуемые драйверы |
-| `packages/cv` | Извлечение резюме и генерация PDF через Typst |
-| `src/` | Провайдеры вакансий, runtime движка, Telegram, workflow, модели, воркеры и точки входа |
-
-PostgreSQL — единственная runtime-база. Расписание обнаружения хранится в `search_units.next_run_at`, и только один
-процесс может работать с `RUN_JOBS=true`. Advisory lock, который делал бы второй движок безопасным, отсутствует.
+[Руководство по runtime провайдеров и драйверам →](packages/sources/README.md)
 
 ## Развернуть свой экземпляр
 
@@ -143,6 +134,28 @@ PostgreSQL — единственная runtime-база. Расписание �
 
 **[Открыть руководство по self-hosting →](docs/self-hosting.md)**
 
+Настройку и добавление источника удобно поручить кодинг-агенту, оставив себе проверку доказательств и диффа.
+Скопируйте один из промптов:
+
+### Настроить экземпляр
+
+```text
+Clone https://github.com/unitdhda/jobseeker and configure a private local instance. Read and follow
+README.md, docs/self-hosting.md, and .env.example; ask me for missing choices and credentials without exposing or
+committing secrets. Preserve the single Telegram receiver and single engine-loop invariants, run the documented
+validation, verify /health and /ready, and stop for approval before pushing or deploying.
+```
+
+### Добавить источник вакансий
+
+```text
+Add <source name and listing URL> to Jobseeker as a vacancy source. Read packages/sources/README.md and
+src/vacancies/providers.ts first. Probe the public JSON or HTML surface and show the evidence, then pick the
+closest reusable driver (or createSourceProvider directly). Keep the concrete provider under
+src/vacancies/providers/, declare every host, fetch only through context.http, keep raw queries out of traces,
+and add deterministic tests. Run typecheck, test, and build, then stop for approval before enabling or deploying.
+```
+
 После настройки для локальной разработки достаточно:
 
 ```bash
@@ -154,6 +167,21 @@ bun --env-file=.env dist/server.mjs
 ```
 
 `/health` показывает состояние процесса, `/ready` дополнительно проверяет PostgreSQL.
+
+## Технический обзор
+
+Jobseeker — монорепозиторий на Bun workspaces. Четыре пакета содержат доменную логику, корневое приложение их собирает.
+
+| Workspace | Ответственность |
+|---|---|
+| `packages/engine` | Идентичность поисков, компиляция спроса, адаптивный ритм, планирование, правила состояний |
+| `packages/store` | PostgreSQL-клиент и репозитории |
+| `packages/sources` | Открытый runtime провайдеров, контракты, SSRF/HTTP-политика и переиспользуемые драйверы |
+| `packages/cv` | Извлечение резюме и генерация PDF через Typst |
+| `src/` | Провайдеры вакансий, runtime движка, Telegram, workflow, модели, воркеры и точки входа |
+
+PostgreSQL — единственная runtime-база. Расписание обнаружения хранится в `search_units.next_run_at`, и только один
+процесс может работать с `RUN_JOBS=true`. Advisory lock, который делал бы второй движок безопасным, отсутствует.
 
 ## AI-провайдеры и стоимость
 

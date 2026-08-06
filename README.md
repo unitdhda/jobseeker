@@ -95,38 +95,27 @@ without another model call; uploading a new CV invalidates the cached version na
 
 ## Vacancy sources
 
-| Source | Adapter |
-|---|---|
-| hh.ru | Persistent Playwright browser |
-| Habr Career | HTML listings |
-| Rabota.ru | HTML listings |
-| HireHi | Structured listing data |
-| Работа России | Public API |
-| Geekjob and Avito | Optional adapters |
-| Greenhouse, Lever, Ashby, SmartRecruiters | Configurable company ATS boards |
-| Yandex Careers | First-party company career-site adapter |
-| Ozon Careers | Public first-party JSON API |
-| RWB / Wildberries | Public first-party JSON API |
+Sources are open providers rather than a fixed catalogue. `@jobseeker/sources` supplies the runtime — the provider
+contract, per-instance registration, explicitly injected context, the HTTPS/SSRF boundary, and generic drivers for the
+surfaces sites actually expose. Every concrete source is application code under `src/vacancies/providers/`, composed in
+`src/vacancies/providers.ts`.
+
+| Driver | Source surface | Built-in examples |
+|---|---|---|
+| `createApiSource` | Paginated JSON listings with optional JSON detail | Ozon Careers, RWB / Wildberries |
+| `createAtsSource` | Greenhouse, Lever, Ashby, SmartRecruiters boards | Configured `provider:slug` company boards |
+| `createCompanySiteSource` | First-party JSON search with HTML vacancy pages | Yandex Careers |
+| `createJsonLdBoardSource` | Enumerated boards with schema.org `JobPosting` | Avito Careers, Geekjob |
+| `createSourceProvider` | Anything else, including browser-backed sources | hh.ru (persistent Playwright), Habr Career, Rabota.ru, HireHi, Работа России |
+
+A provider declares every host it may touch, fetches only through the injected HTTP client, and is registered
+independently of whether it participates in discovery: `SEARCH_PLATFORMS` decides that separately, so a source can stay
+registered for normalization and URL validation while contributing no new searches.
 
 Source availability depends on network egress and the source's current behavior. An adapter being built in does not
 mean it should be enabled in every deployment; probe it from the machine that will actually scrape it.
 
-## Technical overview
-
-Jobseeker is a Bun-workspaces monorepo. Domain and infrastructure packages stay behind explicit dependency
-boundaries; the root application composes them.
-
-| Workspace | Responsibility |
-|---|---|
-| `packages/engine` | Pipeline contracts, bounded concurrency, identity, matching, budgets, and loop policy |
-| `packages/store` | Factory-owned PostgreSQL pool and repositories |
-| `packages/sources` | Open provider runtime, contracts, SSRF policy, HTTP utilities, and reusable source drivers |
-| `packages/cv` | CV extraction, structured documents, and Typst PDF rendering |
-| `src/` | Vacancy providers, configuration, factory composition, cross-domain workflows, AI, Telegram, workers, and entrypoints |
-
-The [workspace dependency graph](docs/dependency-graph.md) documents and enforces the allowed import directions.
-PostgreSQL is the only runtime database. `search_units.next_run_at` owns the discovery schedule, and exactly one
-process may run with `RUN_JOBS=true`. There is no scheduler lock that makes a second engine loop safe.
+[Provider runtime and driver guide →](packages/sources/README.md)
 
 ## Run your own instance
 
@@ -159,13 +148,11 @@ validation, verify /health and /ready, and stop for approval before pushing or d
 ### Add a vacancy source
 
 ```text
-Add <source name and URL> to Jobseeker. First read packages/sources/README.md,
-packages/sources/src/contract.ts, packages/sources/src/sources.ts, packages/engine/src/contracts.ts,
-src/vacancies/providers.ts, and the closest provider factory, adapter, and tests. Prefer an application-owned
-provider under src/ when the source is deployment-specific; change @jobseeker/sources only for reusable package
-functionality. Follow the VacancyPlatform contracts, injected factory configuration, package boundaries, and
-source URL/SSRF helpers; add deterministic tests and documentation, run the validation baseline, and stop for
-approval before committing, pushing, deploying, or enabling it.
+Add <source name and listing URL> to Jobseeker as a vacancy source. Read packages/sources/README.md and
+src/vacancies/providers.ts first. Probe the public JSON or HTML surface and show the evidence, then pick the
+closest reusable driver (or createSourceProvider directly). Keep the concrete provider under
+src/vacancies/providers/, declare every host, fetch only through context.http, keep raw queries out of traces,
+and add deterministic tests. Run typecheck, test, and build, then stop for approval before enabling or deploying.
 ```
 
 For a quick development checkout after configuration:
@@ -179,6 +166,23 @@ bun --env-file=.env dist/server.mjs
 ```
 
 Health endpoints are available at `/health` and `/ready`; readiness includes PostgreSQL connectivity.
+
+## Technical overview
+
+Jobseeker is a Bun-workspaces monorepo. Domain and infrastructure packages stay behind explicit dependency
+boundaries; the root application composes them.
+
+| Workspace | Responsibility |
+|---|---|
+| `packages/engine` | Pipeline contracts, bounded concurrency, identity, matching, budgets, and loop policy |
+| `packages/store` | Factory-owned PostgreSQL pool and repositories |
+| `packages/sources` | Open provider runtime, contracts, SSRF policy, HTTP utilities, and reusable source drivers |
+| `packages/cv` | CV extraction, structured documents, and Typst PDF rendering |
+| `src/` | Vacancy providers, configuration, factory composition, cross-domain workflows, AI, Telegram, workers, and entrypoints |
+
+The [workspace dependency graph](docs/dependency-graph.md) documents and enforces the allowed import directions.
+PostgreSQL is the only runtime database. `search_units.next_run_at` owns the discovery schedule, and exactly one
+process may run with `RUN_JOBS=true`. There is no scheduler lock that makes a second engine loop safe.
 
 ## AI providers and cost
 
