@@ -26,7 +26,8 @@ export interface ApiSourceDefinition<S extends BaseSchema<unknown, unknown, Base
   extends SearchPlatform<S> {
   searchName(search: PlatformSearch<S>): string;
   searchUrl(search: PlatformSearch<S>, cursor?: string): string;
-  listingPage(payload: unknown, search: PlatformSearch<S>): ApiListingPage;
+  /** `cursor` is the value the page was requested with, for codecs whose payloads do not echo their position. */
+  listingPage(payload: unknown, search: PlatformSearch<S>, cursor?: string): ApiListingPage;
   /** Omit when listing payloads are already complete and normalization needs no second request. */
   detailUrl?(candidate: VacancyCandidate): string;
   vacancy(candidate: VacancyCandidate, payload: unknown, context: SourceContext):
@@ -58,7 +59,7 @@ async function discoverApi<S extends BaseSchema<unknown, unknown, BaseIssue<unkn
     for (let page = 1; page <= pagesPerSearch; page++) {
       const payload = await context.http.fetchSourceJson(definition.id,
         definition.searchUrl(search, cursor), requestInit(definition, 'listing'));
-      const result = definition.listingPage(payload, search);
+      const result = definition.listingPage(payload, search, cursor);
       context.trace('scrape.search.result', { platform: definition.id, page, found: result.listings.length });
       for (const listing of result.listings) {
         if (!listing.sourceId || !listing.title) continue;

@@ -7,10 +7,19 @@ import { geekjobSource } from './providers/geekjob.ts';
 import { habrSource } from './providers/habr.ts';
 import { hhSource } from './providers/hh.ts';
 import { hireHiSource } from './providers/hirehi.ts';
+import { kasperskySource } from './providers/kaspersky.ts';
+import { konturSource } from './providers/kontur.ts';
+import { magnitSource } from './providers/magnit.ts';
+import { mtsSource } from './providers/mts.ts';
 import { ozonSource } from './providers/ozon.ts';
 import { rabotaSource } from './providers/rabota.ts';
 import { rwbSource } from './providers/rwb.ts';
+import { sberSource } from './providers/sber.ts';
+import { selectelSource } from './providers/selectel.ts';
+import { tbankSource } from './providers/tbank.ts';
 import { trudvsemSource } from './providers/trudvsem.ts';
+import { vkSource } from './providers/vk.ts';
+import { yadroSource } from './providers/yadro.ts';
 import { yandexSource } from './providers/yandex.ts';
 
 const additionalPages = { maxPages: config.additionalMaxPages };
@@ -39,6 +48,15 @@ export const sourceProviders = [
   yandexSource(additionalPages),
   ozonSource(additionalPages),
   rwbSource(additionalPages),
+  mtsSource(additionalPages),
+  vkSource(additionalPages),
+  konturSource(additionalPages),
+  magnitSource(additionalPages),
+  yadroSource(additionalPages),
+  selectelSource(additionalPages),
+  sberSource(additionalPages),
+  kasperskySource(additionalPages),
+  tbankSource(additionalPages),
 ];
 const availableProviderIds = new Set(sourceProviders.map((provider) => provider.id));
 const unknownProviderIds = config.searchPlatforms.filter((id) => !availableProviderIds.has(id));

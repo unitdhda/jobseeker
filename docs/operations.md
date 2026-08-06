@@ -34,8 +34,8 @@ Runtime: every `bun <file>` command in this runbook also runs under Node.js 24+ 
   the schedule, and a second loop can scrape concurrently and send duplicate alerts or digests.
 - PostgreSQL is the only runtime database. SQLite files are historical recovery material.
 - Cloud Tasks must remain bounded at one concurrent dispatch and one dispatch per second unless a new bound is explicitly approved.
-- Do not deploy `OPENAI_API_KEY`; production uses the `openai-codex` OAuth credential in encrypted runtime state,
-  not a metered API key. Model roles come from the live `AI_*_MODEL` settings. The Claude sidecar is standby.
+- Do not deploy `OPENAI_API_KEY`; production inference is subscription-backed, not a metered API key. Model roles
+  come from the live `AI_*_MODEL` settings; both roles currently select the `claude-cli` sidecar route.
 - Do not print environment values, Telegram credentials, database URLs, OAuth state, encryption keys, or personal data.
 - Historical Supabase migrations are immutable. Add forward migrations only.
 - Use Jujutsu bookmarks and workspaces; do not create Git branch workflows.
@@ -261,7 +261,8 @@ compose 'logs --since 1h jobseeker' | grep 'LLM cycle usage' | tail -2
 ```
 
 `byModel` must agree with the role-specific `AI_*_MODEL` values read from the host. Production currently routes
-through `openai-codex` OAuth; a `claude-cli/*` entry is expected only after an intentional fallback or model switch.
+through the `claude-cli` sidecar for both scoring and generation, so `byModel` entries name that provider; another
+provider appears only after an intentional fallback or model switch.
 
 ### Rollback on the VPS
 

@@ -138,10 +138,13 @@ TRUDVSEM_REGION=
 ATS_BOARDS=
 ```
 
-Optional `SEARCH_PLATFORMS` values include `geekjob`, `avito`, `ats`, and `yandex`. Every concrete adapter is
-application-owned under `src/vacancies/providers/` and registered through the public `@jobseeker/sources` API.
-Yandex uses the shared company-site driver; the default-enabled Ozon and RWB providers use `job-api.ozon.ru` and
-`career.rwb.ru` JSON APIs respectively.
+Optional `SEARCH_PLATFORMS` values include `geekjob`, `avito`, `ats`, `yandex`, `mts`, `vk`, `kontur`, `magnit`,
+`yadro`, `selectel`, `sber`, `kaspersky`, and `tbank`. Every concrete adapter is application-owned under
+`src/vacancies/providers/` and registered through the public `@jobseeker/sources` API. Yandex and VK use the shared
+company-site driver; Ozon, RWB, MTS, Magnit Tech, YADRO, Selectel, and Sber use first-party JSON APIs; Kontur uses
+the schema.org board driver; Kaspersky and T-Bank are direct providers over server-rendered pages and an RPC
+gateway respectively. Ozon and RWB are enabled by default; the rest stay registered but unselected until you probe
+them from the machine that will scrape them.
 
 Do not enable every adapter merely because it exists. Some boards block particular egress networks or return no
 listings. `/scraper` exposes the actual funnel after startup.

@@ -102,10 +102,10 @@ surfaces sites actually expose. Every concrete source is application code under 
 
 | Driver | Source surface | Built-in examples |
 |---|---|---|
-| `createApiSource` | Paginated JSON listings with optional JSON detail | Ozon Careers, RWB / Wildberries |
+| `createApiSource` | Paginated JSON listings with optional JSON detail | Ozon Careers, RWB / Wildberries, MTS Careers |
 | `createAtsSource` | Greenhouse, Lever, Ashby, SmartRecruiters boards | Configured `provider:slug` company boards |
-| `createCompanySiteSource` | First-party JSON search with HTML vacancy pages | Yandex Careers |
-| `createJsonLdBoardSource` | Enumerated boards with schema.org `JobPosting` | Avito Careers, Geekjob |
+| `createCompanySiteSource` | First-party JSON search with HTML vacancy pages | Yandex Careers, VK Careers |
+| `createJsonLdBoardSource` | Enumerated boards with schema.org `JobPosting` | Avito Careers, Geekjob, Kontur Careers |
 | `createSourceProvider` | Anything else, including browser-backed sources | hh.ru (persistent Playwright), Habr Career, Rabota.ru, HireHi, Работа России |
 
 A provider declares every host it may touch, fetches only through the injected HTTP client, and is registered

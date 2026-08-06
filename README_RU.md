@@ -103,10 +103,10 @@ Jobseeker — не очередной интерфейс для просмотр
 
 | Драйвер | Поверхность источника | Встроенные примеры |
 |---|---|---|
-| `createApiSource` | Постраничные JSON-списки и опциональная JSON-карточка | Ozon Careers, RWB / Wildberries |
+| `createApiSource` | Постраничные JSON-списки и опциональная JSON-карточка | Ozon Careers, RWB / Wildberries, Вакансии МТС |
 | `createAtsSource` | Борды Greenhouse, Lever, Ashby, SmartRecruiters | Настраиваемые борды компаний `provider:slug` |
-| `createCompanySiteSource` | Собственный JSON-поиск компании и HTML-страницы вакансий | Вакансии Яндекса |
-| `createJsonLdBoardSource` | Перечисляемые борды с разметкой schema.org `JobPosting` | Avito Careers, Geekjob |
+| `createCompanySiteSource` | Собственный JSON-поиск компании и HTML-страницы вакансий | Вакансии Яндекса, Вакансии VK |
+| `createJsonLdBoardSource` | Перечисляемые борды с разметкой schema.org `JobPosting` | Avito Careers, Geekjob, Вакансии Контура |
 | `createSourceProvider` | Всё остальное, включая браузерные источники | hh.ru (постоянный Playwright), Habr Career, Rabota.ru, HireHi, Работа России |
 
 Провайдер объявляет все хосты, к которым может обращаться, ходит в сеть только через переданный HTTP-клиент и
