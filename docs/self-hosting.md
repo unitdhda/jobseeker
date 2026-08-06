@@ -118,7 +118,7 @@ private encrypted runtime-state document instead of a plain local credential fil
 ### Optional Claude Code bridge
 
 A role may select `claude-cli/<model>`. Either install the `claude` executable and set `CLAUDE_CLI_PATH`, or run the
-private sidecar and set `CLAUDE_CLI_ENDPOINT` plus its bearer secret. See [Claude CLI bridge](claude-cli-bridge.md).
+private sidecar and set `CLAUDE_CLI_ENDPOINT` plus its bearer secret.
 
 ## 5. Choose vacancy sources
 
@@ -226,8 +226,8 @@ The repository includes:
 - health/readiness endpoints;
 - documentation for safe ownership handoff.
 
-The live deployment runbook is [VPS deployment](vps-claude-bridge.md). Release and rollback procedures are in
-[operations](operations.md). Do not copy live host values into documentation or source control.
+Release and rollback procedures are in [operations](operations.md). Do not copy live host values into
+documentation or source control.
 
 ## 11. Production checklist
 

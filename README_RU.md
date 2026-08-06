@@ -220,8 +220,6 @@ Jobseeker обрабатывает резюме и поисковые предп
 | Как работают поисковые единицы, бюджеты и доставка? | [Архитектура](docs/architecture.md) |
 | Почему нет вакансий, оценок или документов? | [Диагностика](docs/troubleshooting.md) |
 | Как проверять, деплоить, наблюдать и откатывать продакшен? | [Эксплуатация](docs/operations.md) |
-| Как устроен опциональный провайдер Claude Code? | [Claude CLI bridge](docs/claude-cli-bridge.md) |
-| Как устроен VPS sidecar? | [VPS deployment](docs/vps-claude-bridge.md) |
 | Что осталось в неактивной облачной поверхности? | [Cloud Run](docs/cloud-run.md) |
 
 ## Статус проекта

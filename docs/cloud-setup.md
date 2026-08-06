@@ -2,7 +2,7 @@
 
 How the **cloud** deployment fits together, and how to turn it on, pause it, or stop it by hand.
 
-> Production currently runs on a VPS, not here — see [VPS deployment](vps-claude-bridge.md). Cloud Scheduler is
+> Production currently runs on a VPS, not here. Cloud Scheduler is
 > `PAUSED` and no Telegram webhook points at Cloud Run, so nothing in this file is running on a schedule today.
 
 For the full release, validation, triage, and rollback procedures, see `docs/operations.md`. This file covers only the

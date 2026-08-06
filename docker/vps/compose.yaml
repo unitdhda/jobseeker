@@ -2,7 +2,7 @@
 # scoring through the claude-cli sidecar instead of a metered API key.
 #
 # PREREQUISITE — this takes Telegram and scheduling ownership away from Cloud Run.
-# Pause Cloud Scheduler and remove the Cloud Run webhook first; see docs/vps-claude-bridge.md.
+# Pause Cloud Scheduler and remove the Cloud Run webhook first; see docs/operations.md.
 #
 # Expected host layout:
 #   ~/containers/jobseeker/      compose.yaml, .env, claude-creds/auth.json

@@ -221,8 +221,6 @@ PostgreSQL database, Telegram token, and model credentials.
 | How do search units, matching, budgets, and delivery work? | [Architecture](docs/architecture.md) |
 | Why are there no vacancies, scores, or documents? | [Troubleshooting](docs/troubleshooting.md) |
 | How do I validate, deploy, monitor, or roll back production? | [Operations](docs/operations.md) |
-| How does the optional Claude Code provider work? | [Claude CLI bridge](docs/claude-cli-bridge.md) |
-| How is the VPS sidecar arranged? | [VPS deployment](docs/vps-claude-bridge.md) |
 | What is retained in the dormant cloud surface? | [Cloud Run](docs/cloud-run.md) |
 
 ## Project status

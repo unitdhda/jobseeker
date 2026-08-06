@@ -241,4 +241,4 @@ The live surface is one VPS application container polling Telegram and owning th
 sidecar is available as an optional provider. Cloud Run services, jobs, Cloud Tasks, and Scheduler remain deployed as
 a dormant alternative and must never be activated while the VPS owns Telegram or the engine schedule.
 
-See [operations](operations.md), [VPS deployment](vps-claude-bridge.md), and [Cloud Run](cloud-run.md).
+See [operations](operations.md) and [Cloud Run](cloud-run.md).

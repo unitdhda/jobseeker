@@ -1,6 +1,6 @@
 # Cloud Run staging and cutover
 
-> **This surface is deployed and idle.** Production runs on a VPS — see [VPS deployment](vps-claude-bridge.md).
+> **This surface is deployed and idle.** Production runs on a VPS.
 > Cloud Scheduler is `PAUSED` and no Telegram webhook points here. Everything below describes the staged
 > alternative and what a cutover back to it would involve.
 
