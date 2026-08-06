@@ -141,6 +141,28 @@ single-engine-loop invariant:
 
 **[Open the self-hosting guide →](docs/self-hosting.md)**
 
+Prefer an agent-assisted start? A coding agent can configure your own instance or help add a vacancy source. Copy
+one of these prompts:
+
+### Configure an instance
+
+```text
+Clone https://github.com/unitdhda/jobseeker and configure a private local instance. Read and follow
+README.md, docs/self-hosting.md, and .env.example; ask me for missing choices and credentials without exposing or
+committing secrets. Preserve the single Telegram receiver and single engine-loop invariants, run the documented
+validation, verify /health and /ready, and stop for approval before pushing or deploying.
+```
+
+### Add a vacancy source
+
+```text
+Add <source name and URL> to Jobseeker. First read packages/sources/README.md,
+packages/sources/src/contract.ts, packages/engine/src/contracts.ts, packages/sources/src/registry.ts, and the closest
+adapter and tests. Follow the VacancyPlatform contracts, injected factory configuration, package boundaries, and
+source URL/SSRF helpers; add deterministic tests and documentation, run the validation baseline, and stop for
+approval before committing, pushing, deploying, or enabling it.
+```
+
 For a quick development checkout after configuration:
 
 ```bash
