@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import * as v from 'valibot';
-import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, sourceUrl, type JsonObject, VacancySearchCollector } from './http.ts';
-import type { SearchPlan } from './contract.ts';
-import type { SearchPlatform } from './contract.ts';
+import {
+  asObject, createSourceProvider, htmlText, jobPostings, plainText, VacancySearchCollector,
+  type JsonObject, type SearchPlan, type SearchPlatform,
+} from '@jobseeker/sources';
 
 export const hireHiSpecializations=[
   '1c','analytics','android','backend','business-analyst','ci-cd','cloud','cpp','data-analyst','data-engineer',
@@ -46,13 +47,14 @@ function itemLists(value:unknown):JsonObject[]{
   if(Array.isArray(value))return value.flatMap(itemLists);const object=asObject(value);if(!object)return[];
   return[...(object['@type']==='ItemList'?[object]:[]),...itemLists(object['@graph'])];
 }
-export function hireHiListingUrls(html:string):Map<string,string>{
+export function hireHiListingUrls(html:string,
+  validateUrl:(source:string,input:string)=>URL):Map<string,string>{
   const urls=new Map<string,string>();
   for(const script of html.matchAll(/<script\b(?=[^>]*\btype=["']application\/ld\+json["'])[^>]*>([\s\S]*?)<\/script>/gi))try{
     for(const list of itemLists(JSON.parse(script[1]!))){const items=Array.isArray(list.itemListElement)?list.itemListElement:[];
       for(const value of items){const item=asObject(value),nested=asObject(item?.item);
         const raw=plainText(item?.url)||plainText(item?.item)||plainText(nested?.url);if(!raw)continue;
-        try{const url=sourceUrl('hirehi',raw);if(url.search||url.hash)continue;
+        try{const url=validateUrl('hirehi',raw);if(url.search||url.hash)continue;
           const id=url.pathname.match(/^\/[^/]+\/[^/]+-(\d+)\/?$/)?.[1];if(id)urls.set(id,url.toString());}catch{/* Ignore unrelated invalid structured links. */}
       }
     }
@@ -81,22 +83,23 @@ function workFormat(value:string):string{
 }
 function listingLocation(value:string):string{const format=workFormat(value);return format?value.slice(format.length).trim():'';}
 
-export async function scrapeHireHi(plan:SearchPlan<HireHiSearch>):Promise<{seen:number;discovered:number}>{
-  const collector=new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
-  const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().hireHiMaxPages,
-    Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+export async function scrapeHireHi(plan:SearchPlan<HireHiSearch>,context:SourceContext,
+  maxPages:number):Promise<{seen:number;discovered:number}>{
+  const collector=new VacancySearchCollector(context.limits.searchNewVacancyLimit,context.recordListingCandidate);
+  const pagesPerSearch=Math.max(1,Math.min(maxPages,
+    Math.floor(context.limits.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
   searches:for(const {search,recipients} of plan.searches)for(let page=1;page<=pagesPerSearch;page++){
     try{
-      const url=hireHiSearchUrl(search,page);trace('scrape.search.request',{platform:'hirehi',search:search.name,page,url});
-      const {html}=await fetchSourceHtml('hirehi',url),canonicalUrls=hireHiListingUrls(html);
+      const url=hireHiSearchUrl(search,page);context.trace('scrape.search.request',{platform:'hirehi',page});
+      const {html}=await context.http.fetchSourceHtml('hirehi',url),canonicalUrls=hireHiListingUrls(html,context.http.sourceUrl);
       const listing=asObject(scriptJson(html,'__SSR_JOBS__')),jobs=listingJobs(listing);
-      trace('scrape.search.result',{platform:'hirehi',search:search.name,page,found:jobs.length});
+      context.trace('scrape.search.result',{platform:'hirehi',page,found:jobs.length});
       for(const job of jobs){const id=integer(job.id),category=plainText(job.category);if(id&&category)await collector.record({source:'hirehi',sourceId:String(id),
         url:hireHiCandidateUrl(id,category,canonicalUrls),searchName:search.name,title:plainText(job.title)||search.name,
         summary:[plainText(job.company),plainText(job.format),plainText(job.salary_display)].filter(Boolean).join(' '),
         publishedAt:plainText(job.created_at),payload:job},recipients);if(collector.complete)break;}
       if(collector.complete)break searches;if(!jobs.length||listing?.has_more===false)break;await pause();
-    }catch(error){console.error(`Failed to read HireHi search ${search.name} page ${page}: ${errorMessage(error)}`);break;}
+    }catch(error){console.error(`Failed to read HireHi search page ${page}: ${context.errorMessage(error)}`);break;}
   }
   return collector.result();
 }
@@ -110,8 +113,9 @@ export function hireHiVacancyPosting(html:string,sourceId:string):JsonObject|nul
   return posting;
 }
 
-export async function normalizeHireHiCandidate(candidate:VacancyCandidate):Promise<VacancyInput|null>{
-  const {html,url}=await fetchSourceHtml('hirehi',candidate.url);
+export async function normalizeHireHiCandidate(candidate:VacancyCandidate,
+  context:SourceContext):Promise<VacancyInput|null>{
+  const {html,url}=await context.http.fetchSourceHtml('hirehi',candidate.url);
   const canonicalId=url.match(/-(\d+)\/?(?:\?.*)?$/)?.[1];if(canonicalId!==candidate.sourceId)throw new Error('Unexpected HireHi canonical vacancy URL');
   const posting=hireHiVacancyPosting(html,candidate.sourceId);if(!posting)return null;
   let detail:JsonObject|null=null;try{detail=asObject(scriptJson(html,'vacancy-data-json'));}catch{/* JSON-LD remains authoritative. */}
@@ -129,4 +133,25 @@ export async function normalizeHireHiCandidate(candidate:VacancyCandidate):Promi
     schedule:plainText(posting.workHours),workFormat:format,description,keySkills:skills,url,
     publishedAt:plainText(posting.datePosted)||candidate.publishedAt,sourceQuery:candidate.searchName};
   return{...base,contentHash:createHash('sha256').update(JSON.stringify(base)).digest('hex')};
+}
+
+
+/** Application-owned HireHi provider using public source runtime ports. */
+export function hireHiSource(options: { maxPages?: number } = {}) {
+  return createSourceProvider({
+    ...hireHiPlatform,
+    async discover(plan, context) {
+      const result = await scrapeHireHi(plan, context, options.maxPages ?? 1);
+      const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
+      return { searches: plan.searches.length, users: users.size, ...result };
+    },
+    async normalize(candidates, context) {
+      const results = new Map<string, VacancyInput | null | Error>();
+      for (const candidate of candidates) {
+        try { results.set(candidate.sourceId, await normalizeHireHiCandidate(candidate, context)); }
+        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
+      }
+      return results;
+    },
+  });
 }

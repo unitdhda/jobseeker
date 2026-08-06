@@ -3,16 +3,15 @@
  * neither HTML parsing nor a browser. One request returns complete postings, and normalization reuses the payload.
  */
 import * as v from 'valibot';
-import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
-  VacancySearchCollector, type JsonObject } from './http.ts';
-import type { SearchPlan } from './contract.ts';
-import type { SearchPlatform } from './contract.ts';
+import {
+  asObject, createSourceProvider, hashedVacancy, htmlText, plainText, VacancySearchCollector,
+  type JsonObject, type SearchPlan, type SearchPlatform,
+} from '@jobseeker/sources';
 
 /** Federal region code; defaults to Москва, matching the default HH area. */
-export function trudvsemRegion(): string {
-  const raw = sourcesSettings().trudvsemRegion;
+export function trudvsemRegion(raw?: string): string {
   if (!raw) return '7700000000';
   if (!/^\d{11,13}$/.test(raw)) throw new Error('TRUDVSEM_REGION must be a numeric federal region code.');
   return raw;
@@ -71,7 +70,8 @@ function salaryOf(vacancy: JsonObject): Pick<VacancyInput, 'salaryFrom' | 'salar
   return { salaryFrom, salaryTo, salaryCurrency: salaryFrom || salaryTo ? 'RUR' : null, salaryGross: null };
 }
 
-export function trudvsemVacancyInput(vacancy: JsonObject, sourceQuery: string): VacancyInput | null {
+export function trudvsemVacancyInput(vacancy: JsonObject, sourceQuery: string,
+  validateUrl: (source: string, input: string) => string): VacancyInput | null {
   const sourceId = plainText(vacancy.id);
   const name = plainText(vacancy['job-name']);
   const description = htmlText(plainText(vacancy.duty));
@@ -89,31 +89,32 @@ export function trudvsemVacancyInput(vacancy: JsonObject, sourceQuery: string): 
     })(),
     employment: plainText(vacancy.employment), schedule: plainText(vacancy.schedule), workFormat: '',
     description, keySkills: [],
-    url: url ? safeVacancyUrl('trudvsem', url) : `https://trudvsem.ru/vacancy/card/${sourceId}`,
+    url: url ? validateUrl('trudvsem', url) : `https://trudvsem.ru/vacancy/card/${sourceId}`,
     publishedAt: plainText(vacancy['creation-date']) || plainText(vacancy.date_modify) || new Date().toISOString(),
     sourceQuery,
   });
 }
 
-export async function scrapeTrudvsem(
-  plan: SearchPlan<TrudvsemSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
-  const pagesPerSearch = Math.max(1, Math.min(sourcesSettings().additionalMaxPages,
-    Math.floor(sourcesSettings().searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
+export async function scrapeTrudvsem(plan: SearchPlan<TrudvsemSearch>, context: SourceContext,
+  maxPages: number, region?: string): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
+    context.recordListingCandidate);
+  const pagesPerSearch = Math.max(1, Math.min(maxPages,
+    Math.floor(context.limits.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
   searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
-      const url = trudvsemSearchUrl(search.query, page, trudvsemRegion());
+      const url = trudvsemSearchUrl(search.query, page, trudvsemRegion(region));
       try {
-        trace('scrape.search.request', { platform: 'trudvsem', search: search.name, query: search.query, page, url });
-        const vacancies = trudvsemVacancies(await fetchSourceJson('trudvsem', url));
-        trace('scrape.search.result', { platform: 'trudvsem', search: search.name, page, found: vacancies.length });
+        context.trace('scrape.search.request', { platform: 'trudvsem', page });
+        const vacancies = trudvsemVacancies(await context.http.fetchSourceJson('trudvsem', url));
+        context.trace('scrape.search.result', { platform: 'trudvsem', page, found: vacancies.length });
         for (const vacancy of vacancies) {
           const sourceId = plainText(vacancy.id);
           const name = plainText(vacancy['job-name']);
           if (!sourceId || !name) continue;
           const vacancyUrl = plainText(vacancy.vac_url);
           await collector.record({ source: 'trudvsem', sourceId,
-            url: vacancyUrl ? safeVacancyUrl('trudvsem', vacancyUrl) : `https://trudvsem.ru/vacancy/card/${sourceId}`,
+            url: vacancyUrl ? context.http.safeVacancyUrl('trudvsem', vacancyUrl) : `https://trudvsem.ru/vacancy/card/${sourceId}`,
             searchName: search.name, title: name,
             summary: htmlText(plainText(vacancy.duty)).slice(0, 1_000),
             publishedAt: plainText(vacancy['creation-date']), payload: vacancy }, recipients);
@@ -122,7 +123,7 @@ export async function scrapeTrudvsem(
         if (collector.complete) break searches;
         if (!vacancies.length) break;
       } catch (error) {
-        console.error(`Failed to read Работа России search ${search.name} page ${page}: ${errorMessage(error)}`);
+        console.error(`Failed to read Работа России search page ${page}: ${context.errorMessage(error)}`);
         break;
       }
     }
@@ -130,9 +131,31 @@ export async function scrapeTrudvsem(
   return collector.result();
 }
 
-export async function normalizeTrudvsemCandidate(candidate: VacancyCandidate): Promise<VacancyInput | null> {
+export async function normalizeTrudvsemCandidate(candidate: VacancyCandidate,
+  context: SourceContext): Promise<VacancyInput | null> {
   // The register returns complete postings during discovery, so the stored payload needs no second request.
   const vacancy = candidate.payload as JsonObject | null;
   if (!vacancy) return null;
-  return trudvsemVacancyInput(vacancy, candidate.searchName);
+  return trudvsemVacancyInput(vacancy, candidate.searchName, context.http.safeVacancyUrl);
+}
+
+
+/** Application-owned Работа России provider backed by the federal open register. */
+export function trudvsemSource(options: { maxPages?: number; region?: string } = {}) {
+  return createSourceProvider({
+    ...trudvsemPlatform,
+    async discover(plan, context) {
+      const result = await scrapeTrudvsem(plan, context, options.maxPages ?? 1, options.region);
+      const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
+      return { searches: plan.searches.length, users: users.size, ...result };
+    },
+    async normalize(candidates, context) {
+      const results = new Map<string, VacancyInput | null | Error>();
+      for (const candidate of candidates) {
+        try { results.set(candidate.sourceId, await normalizeTrudvsemCandidate(candidate, context)); }
+        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
+      }
+      return results;
+    },
+  });
 }

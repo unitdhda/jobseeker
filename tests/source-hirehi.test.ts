@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
 import { hireHiCandidateUrl, hireHiListingUrls, hireHiPlatform, hireHiSearchProfileSchema, hireHiSearchUrl,
-  hireHiVacancyPosting } from '../src/hirehi.ts';
-import { getSearchPlatform, searchPlatformIds } from '../src/registry.ts';
+  hireHiVacancyPosting, hireHiSource } from '../src/vacancies/providers/hirehi.ts';
+import { createSourceUrlPolicy } from '@jobseeker/sources';
+
+const provider = hireHiSource();
+const urlPolicy = createSourceUrlPolicy([provider]);
 
 test('HireHi adapter validates constrained SEO search profiles',()=>{
   const profile={version:1 as const,searches:[{name:'Frontend',rationale:'CV evidence',specialization:'frontend' as const,facet:'all' as const}]};
@@ -26,7 +29,7 @@ test('HireHi extracts safe canonical vacancy URLs from listing JSON-LD',()=>{
         {'@type':'ListItem',url:'https://hirehi.ru/development/queried-70002?ref=list'},
       ],
     }]})}</script>`;
-  const urls=hireHiListingUrls(html);
+  const urls=hireHiListingUrls(html,urlPolicy.sourceUrl);
   assert.deepEqual([...urls],[
     ['71268','https://hirehi.ru/development/frontend-razrabotchik-71268'],
     ['71199','https://www.hirehi.ru/development/backend-developer-71199'],
@@ -48,7 +51,6 @@ test('HireHi uses a canonical listing URL and retains the legacy fallback',()=>{
 
 
 test('HireHi is registered through the common vacancy-platform interface',()=>{
-  assert.ok(searchPlatformIds.includes('hirehi'));
-  const adapter=getSearchPlatform('hirehi');
+  const adapter = provider;
   assert.equal(adapter.id,'hirehi');assert.equal(typeof adapter.discover,'function');assert.equal(typeof adapter.normalize,'function');
 });

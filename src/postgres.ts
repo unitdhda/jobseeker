@@ -2,7 +2,7 @@
 import type { PoolConfig } from 'pg';
 import { createStore } from '@jobseeker/store';
 import { config } from './config.ts';
-import { safeVacancyUrl } from '@jobseeker/sources';
+import { enabledSourceProviderIds, sourceUrlPolicy } from './vacancies/providers.ts';
 
 function poolMaximum(): number {
   const raw = process.env.POSTGRES_POOL_MAX ?? '4';
@@ -32,9 +32,9 @@ export const store = createStore({
   settings: {
     telegramUserId: config.telegramUserId, telegramChatId: config.telegramChatId,
     accessRequestCooldownMinutes: config.accessRequestCooldownMinutes,
-    prefilterMaxAgeDays: config.prefilterMaxAgeDays, searchPlatforms: config.searchPlatforms,
+    prefilterMaxAgeDays: config.prefilterMaxAgeDays, searchPlatforms: enabledSourceProviderIds,
     digestMinScore: config.digestMinScore, alertScore: config.alertScore, timezone: config.timezone,
-    safeVacancyUrl,
+    safeVacancyUrl: sourceUrlPolicy.safeVacancyUrl,
   },
 });
 

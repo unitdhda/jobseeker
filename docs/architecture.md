@@ -44,14 +44,21 @@ The repository has four Bun workspaces composed by the executable application la
 |---|---|---|
 | `@jobseeker/engine` | Pipeline contracts, concurrency policy, identity, cadence, matching, prefiltering, budgets, loop | Database, environment, source implementations, CV files |
 | `@jobseeker/store` | Factory-owned PostgreSQL pool and all runtime repositories | Environment parsing, Telegram, source HTTP |
-| `@jobseeker/sources` | Factory-owned adapters, discovery/normalization, SSRF policy, HH browser | Persistence implementation, model calls |
+| `@jobseeker/sources` | Open provider runtime, contracts, SSRF/HTTP policy, reusable source drivers | Specific boards, persistence, browsers, model calls |
 | `@jobseeker/cv` | File extraction, structured CV coercion, Typst rendering | User state, model selection |
-| root `src/` | Configuration, factory composition, cross-domain workflows, AI and Telegram integrations | Reusable single-domain rules |
+| root `src/` | Vacancy providers, configuration, factory composition, cross-domain workflows, AI and Telegram integrations | Reusable package-level rules |
 
-`createStore` returns an isolated pool/repository instance; `createSourceRegistry` returns isolated settings,
-adapter pools, and browser state. The application owns one production instance of each. Source adapters report
-listings through an injected persistence port and never import PostgreSQL. CV-specific application generation stays
-in the root cross-domain workflow, so engine has no dependency on CV.
+`createStore` returns an isolated pool/repository instance. `createSources` returns an empty provider collection;
+provider factories register through `setProvider`. Collection options contain only shared limits and ports, while
+application-owned provider factories own page limits, regions, boards, and browser configuration/state. Discovery,
+normalization, and shutdown receive an explicit `SourceContext`; there is no ambient source runtime. Every concrete
+source lives under `src/vacancies/providers/` and uses the same public registration API. Reusable API, grouped ATS,
+company-site, and JSON-LD wrappers all return ordinary `createSourceProvider` providers without putting a source
+catalogue back inside the package. Ozon/RWB, ATS, Yandex, and GeekJob/Avito respectively demonstrate those four
+composition paths. The application owns one production store and source collection. Trusted provider metadata is assembled first so the
+store and executable collection receive equivalent immutable URL policies without a source/store import cycle.
+Source adapters report listings through an injected persistence port and never import PostgreSQL. CV-specific
+application generation stays in the root cross-domain workflow, so engine has no dependency on CV.
 
 ## Demand and search-unit identity
 
@@ -223,8 +230,9 @@ with a PostgreSQL transaction lock so rotating refresh tokens cannot be refreshe
 | `user_state` | Expiring sessions and encrypted operational state references |
 | `telegram_updates` | Durable webhook-update processing state |
 
-Source and platform IDs are validated by the application-owned source registry. PostgreSQL deliberately does not
-repeat that registry as an enum-style `CHECK`, so adding an adapter does not require another schema migration.
+Source and platform IDs are validated by the application-owned provider collection; `SEARCH_PLATFORMS` is checked
+against that collection's provider metadata rather than a second hard-coded ID list. PostgreSQL deliberately does
+not repeat the collection as an enum-style `CHECK`, so adding an adapter does not require another schema migration.
 
 ## Deployment surfaces
 

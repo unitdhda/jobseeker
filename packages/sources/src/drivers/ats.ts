@@ -4,35 +4,26 @@
  * lists a board and keeps the postings whose title matches a CV-derived query; there is no server-side search.
  */
 import * as v from 'valibot';
-import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { SourceContext } from '../context.ts';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
-  VacancySearchCollector, type JsonObject } from './http.ts';
-import type { SearchPlan } from './contract.ts';
-import type { SearchPlatform } from './contract.ts';
+import { asObject, hashedVacancy, htmlText, plainText, VacancySearchCollector, type JsonObject } from '../http.ts';
+import type { PlatformValidationTemplate, SearchPlan, SearchPlatform } from '../contract.ts';
+import { createSourceProvider } from '../sources.ts';
+import { postingMatchesQuery } from '../boards.ts';
+export { postingMatchesQuery } from '../boards.ts';
 
 export const atsProviders = ['greenhouse', 'lever', 'ashby', 'smartrecruiters'] as const;
 export type AtsProvider = typeof atsProviders[number];
 
 /**
  * Boards are configured rather than discovered: an ATS exposes no directory of its customers, and an unknown slug
- * is indistinguishable from a private board. Name boards through `ATS_BOARDS` as `provider:slug` entries.
- *
- * No board ships by default. The list used to carry US tech companies (stripe, databricks, netflix and the like),
- * which matched nothing this bot searches for and produced repeated 404s as those companies left their ATS. Until
- * boards worth reading are named, ATS discovery reads nothing and the Russian-market sources cover the search.
+ * is indistinguishable from a private board. Entries use `provider:slug` syntax.
  */
-const defaultBoards: Record<AtsProvider, string[]> = {
-  greenhouse: [], lever: [], ashby: [], smartrecruiters: [],
-};
-
-export function configuredBoards(entries: readonly string[] = sourcesSettings().atsBoards): Record<AtsProvider, string[]> {
-  const raw = entries;
-  if (!raw.length) return defaultBoards;
+export function configuredBoards(entries: readonly string[] = []): Record<AtsProvider, string[]> {
   const boards: Record<AtsProvider, string[]> = { greenhouse: [], lever: [], ashby: [], smartrecruiters: [] };
-  for (const entry of raw) {
+  for (const entry of entries) {
     const [provider, slug] = entry.split(':');
-    if (!provider || !slug) throw new Error(`ATS_BOARDS entry must be provider:slug, got ${entry}`);
+    if (!provider || !slug) throw new Error(`ATS board entry must be provider:slug, got ${entry}`);
     if (!atsProviders.includes(provider as AtsProvider)) throw new Error(`Unknown ATS provider: ${provider}`);
     boards[provider as AtsProvider].push(slug);
   }
@@ -51,42 +42,57 @@ export const atsSearchProfileSchema = v.strictObject({
 export type AtsSearchProfile = v.InferOutput<typeof atsSearchProfileSchema>;
 export type AtsSearch = AtsSearchProfile['searches'][number];
 
-export const atsPlatform: SearchPlatform<typeof atsSearchProfileSchema> = {
-  id: 'ats', name: 'Company ATS boards', schema: atsSearchProfileSchema,
-  // One adapter spans several ATS products, so both their APIs and the public posting pages they link to are listed.
-  hosts: [
-    'boards-api.greenhouse.io', 'boards.greenhouse.io', 'job-boards.greenhouse.io',
-    'api.lever.co', 'jobs.lever.co',
-    'api.ashbyhq.com', 'jobs.ashbyhq.com',
-    'api.smartrecruiters.com', 'jobs.smartrecruiters.com',
-  ],
-  // A board is read whole and matched by title, so one read serves every user's searches at once.
-  enumerates: true,
-  template: () => ({
-    platform: 'ats', version: 1,
-    purpose: 'Public applicant-tracking boards published by individual companies (Greenhouse, Lever, Ashby, SmartRecruiters).',
-    jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }] },
-    capabilities: {
-      query: 'One concise English role title; boards are matched by title text, not by a search engine',
-      maxSearches: 8,
-    },
-    rules: [
-      'Use English role titles because these boards are predominantly English.',
-      'Each query contains one role title without boolean syntax, slashes, or parentheses.',
-      'Prefer widely used titles over company-specific ones, because matching is on the posting title.',
-      'Do not add location, seniority punctuation, salary, or work-format terms.',
-    ],
-  }),
-};
+export const atsHosts = [
+  'boards-api.greenhouse.io', 'boards.greenhouse.io', 'job-boards.greenhouse.io',
+  'api.lever.co', 'jobs.lever.co',
+  'api.ashbyhq.com', 'jobs.ashbyhq.com',
+  'api.smartrecruiters.com', 'jobs.smartrecruiters.com',
+] as const;
 
-interface BoardPosting {
+export interface AtsSourceDefinition {
+  id: string;
+  name: string;
+  hosts?: readonly string[];
+  template?: () => PlatformValidationTemplate;
+}
+
+export function atsPlatform(definition: AtsSourceDefinition): SearchPlatform<typeof atsSearchProfileSchema> {
+  return {
+    id: definition.id,
+    name: definition.name,
+    schema: atsSearchProfileSchema,
+    hosts: definition.hosts ?? atsHosts,
+    enumerates: true,
+    template: definition.template ?? (() => ({
+      platform: definition.id,
+      version: 1,
+      purpose: 'Public applicant-tracking boards published through Greenhouse, Lever, Ashby, or SmartRecruiters.',
+      jsonShape: {
+        version: 1,
+        searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }],
+      },
+      capabilities: {
+        query: 'One concise English role title; boards are matched by title text, not by a search engine',
+        maxSearches: 8,
+      },
+      rules: [
+        'Use English role titles because these boards are predominantly English.',
+        'Each query contains one role title without boolean syntax, slashes, or parentheses.',
+        'Prefer widely used titles over company-specific ones, because matching is on the posting title.',
+        'Do not add location, seniority punctuation, salary, or work-format terms.',
+      ],
+    })),
+  };
+}
+
+export interface AtsBoardPosting {
   sourceId: string; url: string; title: string; description: string; employer: string;
   location: string; publishedAt: string; employment: string; remote: boolean;
 }
 
 function textOf(value: unknown): string { return htmlText(plainText(value)); }
 
-function greenhousePostings(slug: string, payload: JsonObject): BoardPosting[] {
+function greenhousePostings(slug: string, payload: JsonObject): AtsBoardPosting[] {
   const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
   return jobs.flatMap((entry) => {
     const job = asObject(entry); if (!job) return [];
@@ -105,7 +111,7 @@ function greenhousePostings(slug: string, payload: JsonObject): BoardPosting[] {
   });
 }
 
-function leverPostings(slug: string, payload: unknown): BoardPosting[] {
+function leverPostings(slug: string, payload: unknown): AtsBoardPosting[] {
   const jobs = Array.isArray(payload) ? payload : [];
   return jobs.flatMap((entry) => {
     const job = asObject(entry); if (!job) return [];
@@ -123,7 +129,7 @@ function leverPostings(slug: string, payload: unknown): BoardPosting[] {
   });
 }
 
-function ashbyPostings(slug: string, payload: JsonObject): BoardPosting[] {
+function ashbyPostings(slug: string, payload: JsonObject): AtsBoardPosting[] {
   const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
   return jobs.flatMap((entry) => {
     const job = asObject(entry); if (!job) return [];
@@ -138,7 +144,7 @@ function ashbyPostings(slug: string, payload: JsonObject): BoardPosting[] {
   });
 }
 
-function smartRecruitersPostings(slug: string, payload: JsonObject): BoardPosting[] {
+function smartRecruitersPostings(slug: string, payload: JsonObject): AtsBoardPosting[] {
   const jobs = Array.isArray(payload.content) ? payload.content : [];
   return jobs.flatMap((entry) => {
     const job = asObject(entry); if (!job) return [];
@@ -164,8 +170,9 @@ function boardUrl(provider: AtsProvider, slug: string): string {
   return `https://api.smartrecruiters.com/v1/companies/${encoded}/postings?limit=100`;
 }
 
-export async function readBoard(provider: AtsProvider, slug: string): Promise<BoardPosting[]> {
-  const payload = await fetchSourceJson('ats', boardUrl(provider, slug));
+export async function readBoard(sourceId: string, provider: AtsProvider, slug: string,
+  context: SourceContext): Promise<AtsBoardPosting[]> {
+  const payload = await context.http.fetchSourceJson(sourceId, boardUrl(provider, slug));
   if (provider === 'lever') return leverPostings(slug, payload);
   const object = asObject(payload);
   if (!object) throw new Error(`${provider} board ${slug} returned an unexpected payload`);
@@ -178,8 +185,9 @@ export async function readBoard(provider: AtsProvider, slug: string): Promise<Bo
  * SmartRecruiters' list endpoint carries no advert text, so a matched posting is completed from its detail
  * endpoint. Only matched postings are fetched, keeping this to a handful of requests per cycle.
  */
-export async function smartRecruitersDescription(slug: string, id: string): Promise<string> {
-  const payload = asObject(await fetchSourceJson('ats',
+export async function smartRecruitersDescription(sourceId: string, slug: string, id: string,
+  context: SourceContext): Promise<string> {
+  const payload = asObject(await context.http.fetchSourceJson(sourceId,
     `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings/${encodeURIComponent(id)}`));
   const sections = asObject(asObject(payload?.jobAd)?.sections);
   const parts = ['companyDescription', 'jobDescription', 'qualifications', 'additionalInformation']
@@ -187,27 +195,21 @@ export async function smartRecruitersDescription(slug: string, id: string): Prom
   return parts.join('\n\n');
 }
 
-/** Title matching stands in for the server-side search these boards do not offer. */
-export function postingMatchesQuery(title: string, query: string): boolean {
-  const words = query.toLowerCase().split(/[^\p{L}\p{N}+#]+/u).filter((word) => word.length > 2);
-  if (!words.length) return false;
-  const haystack = title.toLowerCase();
-  return words.every((word) => haystack.includes(word));
-}
-
-export async function scrapeAts(plan: SearchPlan<AtsSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
+export async function scrapeAts(sourceId: string, plan: SearchPlan<AtsSearch>, context: SourceContext,
+  boardEntries: readonly string[]): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
+    context.recordListingCandidate);
   if (!plan.searches.length) return collector.result();
-  const boards = configuredBoards();
+  const boards = configuredBoards(boardEntries);
   for (const provider of atsProviders) {
     for (const slug of boards[provider]) {
       if (collector.complete) return collector.result();
-      let postings: BoardPosting[];
+      let postings: AtsBoardPosting[];
       try {
-        postings = await readBoard(provider, slug);
-        trace('scrape.search.result', { platform: 'ats', provider, slug, found: postings.length });
+        postings = await readBoard(sourceId, provider, slug, context);
+        context.trace('scrape.search.result', { platform: sourceId, provider, slug, found: postings.length });
       } catch (error) {
-        console.error(`Failed to read ${provider} board ${slug}: ${errorMessage(error)}`);
+        console.error(`Failed to read ${provider} board ${slug}: ${context.errorMessage(error)}`);
         continue;
       }
       for (const posting of postings) {
@@ -215,10 +217,11 @@ export async function scrapeAts(plan: SearchPlan<AtsSearch>): Promise<{ seen: nu
         if (!planned || !posting.url || !posting.title) continue;
         if (provider === 'smartrecruiters' && !posting.description) {
           const id = posting.sourceId.split(':').at(-1) ?? '';
-          posting.description = await smartRecruitersDescription(slug, id)
-            .catch((error) => { console.error(`Failed to read SmartRecruiters posting ${id}: ${errorMessage(error)}`); return ''; });
+          posting.description = await smartRecruitersDescription(sourceId, slug, id, context)
+            .catch((error) => { console.error(`Failed to read SmartRecruiters posting ${id}: ${context.errorMessage(error)}`); return ''; });
         }
-        await collector.record({ source: 'ats', sourceId: posting.sourceId, url: safeVacancyUrl('ats', posting.url),
+        await collector.record({ source: sourceId, sourceId: posting.sourceId,
+          url: context.http.safeVacancyUrl(sourceId, posting.url),
           searchName: planned.search.name, title: posting.title, summary: posting.description.slice(0, 1_000),
           publishedAt: posting.publishedAt, payload: posting as unknown as JsonObject }, planned.recipients);
         if (collector.complete) return collector.result();
@@ -228,17 +231,39 @@ export async function scrapeAts(plan: SearchPlan<AtsSearch>): Promise<{ seen: nu
   return collector.result();
 }
 
-export async function normalizeAtsCandidate(candidate: VacancyCandidate): Promise<VacancyInput | null> {
+export async function normalizeAtsCandidate(sourceId: string, candidate: VacancyCandidate): Promise<VacancyInput | null> {
   // Board payloads are already complete, so normalization does not re-fetch a page that may need a browser.
-  const posting = candidate.payload as unknown as BoardPosting | null;
+  const posting = candidate.payload as unknown as AtsBoardPosting | null;
   if (!posting?.title) return null;
   const description = posting.description || posting.title;
   if (description.length < 20) return null;
   return hashedVacancy({
-    source: 'ats', sourceId: candidate.sourceId, name: posting.title, employer: posting.employer || 'Не указано',
+    source: sourceId, sourceId: candidate.sourceId, name: posting.title, employer: posting.employer || 'Не указано',
     area: posting.location || 'Не указано', salaryFrom: null, salaryTo: null, salaryCurrency: null, salaryGross: null,
     experience: '', employment: posting.employment ?? '', schedule: '', workFormat: posting.remote ? 'remote' : '',
     description, keySkills: [], url: candidate.url,
     publishedAt: posting.publishedAt || new Date().toISOString(), sourceQuery: candidate.searchName,
+  });
+}
+export interface AtsSourceOptions { boards?: readonly string[] }
+
+/** Creates a grouped ATS provider without embedding customer boards or application identity in the package. */
+export function createAtsSource(definition: AtsSourceDefinition, options: AtsSourceOptions = {}) {
+  const platform = atsPlatform(definition);
+  return createSourceProvider({
+    ...platform,
+    async discover(plan, context) {
+      const result = await scrapeAts(definition.id, plan, context, options.boards ?? []);
+      const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
+      return { searches: plan.searches.length, users: users.size, ...result };
+    },
+    async normalize(candidates) {
+      const results = new Map<string, VacancyInput | null | Error>();
+      for (const candidate of candidates) {
+        try { results.set(candidate.sourceId, await normalizeAtsCandidate(definition.id, candidate)); }
+        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
+      }
+      return results;
+    },
   });
 }

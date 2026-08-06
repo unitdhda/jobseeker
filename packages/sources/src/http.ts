@@ -2,11 +2,39 @@ import { isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
 import ipaddr from 'ipaddr.js';
 
-// Populated by the registry from each platform's own hosts declaration: adding a source no longer means editing
-// this file, and a host absent from an adapter's declaration still fails closed here.
-const sourceHosts = new Map<string, ReadonlySet<string>>();
-export function registerSourceHosts(source: string, hosts: readonly string[]): void {
-  sourceHosts.set(source, new Set(hosts));
+export interface SourceHostDeclaration { id: string; hosts: readonly string[] }
+export interface SourceUrlPolicy {
+  sourceUrl(source: string, input: string): URL;
+  safeVacancyUrl(source: string, input: string): string;
+}
+export interface SourceHttp extends SourceUrlPolicy {
+  fetchSourceResponse(source: string, input: string, init?: RequestInit): Promise<Response>;
+  fetchSourceText(source: string, input: string, init?: RequestInit, maximumBytes?: number):
+    Promise<{ text: string; url: string; contentType: string }>;
+  fetchSourceJson(source: string, input: string, init?: RequestInit, maximumBytes?: number): Promise<unknown>;
+  fetchSourceHtml(source: string, input: string, maximumBytes?: number): Promise<{ html: string; url: string }>;
+}
+
+/** Builds an immutable URL policy from trusted provider metadata. */
+export function createSourceUrlPolicy(providers: Iterable<SourceHostDeclaration> = []): SourceUrlPolicy {
+  const sourceHosts = new Map<string, ReadonlySet<string>>();
+  for (const provider of providers) {
+    sourceHosts.set(provider.id, new Set(provider.hosts.map((host) => host.trim().toLowerCase()).filter(Boolean)));
+  }
+  const sourceUrl = (source: string, input: string): URL => {
+    let url: URL;
+    try { url = new URL(input); } catch { throw new Error(`Invalid ${source} URL`); }
+    if (url.protocol !== 'https:' || url.username || url.password || url.port) {
+      throw new Error(`Unsafe ${source} URL`);
+    }
+    const allowed = sourceHosts.get(source);
+    if (!allowed?.has(url.hostname.toLowerCase())) throw new Error(`Unexpected ${source} URL host`);
+    return url;
+  };
+  return Object.freeze({
+    sourceUrl,
+    safeVacancyUrl: (source: string, input: string) => sourceUrl(source, input).toString(),
+  });
 }
 
 export function isPublicIpAddress(address: string): boolean {
@@ -15,21 +43,6 @@ export function isPublicIpAddress(address: string): boolean {
     const normalized=parsed instanceof ipaddr.IPv6&&parsed.isIPv4MappedAddress()?parsed.toIPv4Address():parsed;
     return normalized.range()==='unicast';
   } catch { return false; }
-}
-
-export function sourceUrl(source: string, input: string): URL {
-  let url: URL;
-  try { url = new URL(input); } catch { throw new Error(`Invalid ${source} URL`); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.port) {
-    throw new Error(`Unsafe ${source} URL`);
-  }
-  const allowed = sourceHosts.get(source);
-  if (!allowed?.has(url.hostname.toLowerCase())) throw new Error(`Unexpected ${source} URL host`);
-  return url;
-}
-
-export function safeVacancyUrl(source: string, input: string): string {
-  return sourceUrl(source, input).toString();
 }
 
 export async function assertPublicAddress(url: URL): Promise<void> {
@@ -69,8 +82,9 @@ export async function readResponseBytes(response: Response, maximumBytes: number
   return result;
 }
 
-export async function fetchSourceResponse(source: string, input: string, init: RequestInit = {}): Promise<Response> {
-  let current = sourceUrl(source, input);
+export async function fetchSourceResponse(policy: SourceUrlPolicy,
+  source: string, input: string, init: RequestInit = {}): Promise<Response> {
+  let current = policy.sourceUrl(source, input);
   for (let redirects = 0; ; redirects++) {
     await assertPublicAddress(current);
     const response = await fetch(current, { ...init, redirect: 'manual' });
@@ -79,24 +93,25 @@ export async function fetchSourceResponse(source: string, input: string, init: R
     const location = response.headers.get('location');
     await response.body?.cancel();
     if (!location) throw new Error('Source redirect has no location');
-    const next = sourceUrl(source, new URL(location, current).toString());
+    const next = policy.sourceUrl(source, new URL(location, current).toString());
     if (next.origin !== current.origin) throw new Error('Cross-origin source redirect was blocked');
     current = next;
   }
 }
 
-export async function fetchSourceText(source: string, input: string, init: RequestInit = {},
+export async function fetchSourceText(policy: SourceUrlPolicy,
+  source: string, input: string, init: RequestInit = {},
   maximumBytes = maximumSourceBytes): Promise<{ text: string; url: string; contentType: string }> {
-  const response = await fetchSourceResponse(source, input, init);
+  const response = await fetchSourceResponse(policy, source, input, init);
   if (!response.ok) throw new Error(`Source request failed (${response.status})`);
   const contentType = response.headers.get('content-type') ?? '';
   const bytes = await readResponseBytes(response, maximumBytes);
   return { text: new TextDecoder().decode(bytes), url: response.url, contentType };
 }
 
-export async function fetchSourceJson(source: string, input: string, init: RequestInit = {},
-  maximumBytes = maximumSourceBytes): Promise<unknown> {
-  const result = await fetchSourceText(source, input, init, maximumBytes);
+export async function fetchSourceJson(policy: SourceUrlPolicy,
+  source: string, input: string, init: RequestInit = {}, maximumBytes = maximumSourceBytes): Promise<unknown> {
+  const result = await fetchSourceText(policy, source, input, init, maximumBytes);
   if (result.contentType && !/(?:application|text)\/(?:[a-z0-9.+-]*\+)?json\b/i.test(result.contentType)) {
     throw new Error('Source returned an unexpected content type');
   }
@@ -109,9 +124,9 @@ import type { VacancyInput } from '@jobseeker/engine/contracts';
 export type JsonObject = Record<string, unknown>;
 export const sourceUserAgent = 'JobseekerVacancyMonitor/1.0';
 
-export async function fetchSourceHtml(source: string, url: string,
+export async function fetchSourceHtml(policy: SourceUrlPolicy, source: string, url: string,
   maximumBytes?: number): Promise<{ html: string; url: string }> {
-  const response = await fetchSourceText(source, url, {
+  const response = await fetchSourceText(policy, source, url, {
     headers: { accept: 'text/html,application/xhtml+xml,application/xml,text/xml', 'user-agent': sourceUserAgent },
     signal: AbortSignal.timeout(45_000),
   }, maximumBytes);
@@ -119,6 +134,20 @@ export async function fetchSourceHtml(source: string, url: string,
     throw new Error(`${source} returned an unexpected content type`);
   }
   return { html: response.text, url: response.url };
+}
+
+export function createSourceHttp(policy: SourceUrlPolicy): SourceHttp {
+  return Object.freeze({
+    ...policy,
+    fetchSourceResponse: (source: string, input: string, init?: RequestInit) =>
+      fetchSourceResponse(policy, source, input, init),
+    fetchSourceText: (source: string, input: string, init?: RequestInit, maximumBytes?: number) =>
+      fetchSourceText(policy, source, input, init, maximumBytes),
+    fetchSourceJson: (source: string, input: string, init?: RequestInit, maximumBytes?: number) =>
+      fetchSourceJson(policy, source, input, init, maximumBytes),
+    fetchSourceHtml: (source: string, input: string, maximumBytes?: number) =>
+      fetchSourceHtml(policy, source, input, maximumBytes),
+  });
 }
 
 export function asObject(value: unknown): JsonObject | null {
@@ -252,7 +281,6 @@ export function hashedVacancy(base: Omit<VacancyInput, 'contentHash'>): VacancyI
 }
 
 import type { VacancyCandidateInput } from '@jobseeker/engine/contracts';
-import { recordListingCandidate } from './config.ts';
 import type { SearchRecipient } from './contract.ts';
 
 export interface VacancySearchResult { seen: number; discovered: number; discoveredBySearch?: Record<string, number> }
@@ -271,7 +299,8 @@ export class VacancySearchCollector {
   readonly #bySearch = new Map<string, number>();
   #discovered = 0;
 
-  constructor(readonly newVacancyLimit: number) {}
+  constructor(readonly newVacancyLimit: number,
+    readonly recordListingCandidate: (input: VacancyCandidateInput) => Promise<boolean>) {}
 
   get complete(): boolean { return this.#discovered >= this.newVacancyLimit; }
 
@@ -281,7 +310,7 @@ export class VacancySearchCollector {
     if (this.complete || this.#seen.has(key)) return false;
     this.#seen.add(key);
     void recipients;
-    if (await recordListingCandidate(input)) {
+    if (await this.recordListingCandidate(input)) {
       this.#discovered++;
       this.#bySearch.set(input.searchName, (this.#bySearch.get(input.searchName) ?? 0) + 1);
     }

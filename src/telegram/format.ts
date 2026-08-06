@@ -14,9 +14,11 @@ export function escapeHtml(value: string): string {
 const sourceLabels: Record<string, string> = {
   hh: 'HH', habr: 'Habr Career', rabota: 'Работа.ру', hirehi: 'HireHi',
   geekjob: 'GeekJob', avito: 'Avito', trudvsem: 'Работа России', ats: 'ATS-борды компаний', yandex: 'Яндекс',
+  ozon: 'Ozon', rwb: 'RWB / Wildberries',
 };
 export function sourceLabel(source: string): string {
-  return sourceLabels[source] ?? 'источник';
+  if (sourceLabels[source]) return sourceLabels[source];
+  try { return getSearchPlatform(source).name; } catch { return 'источник'; }
 }
 // Search profiles are shown per platform, so an unlabelled platform falls back to its registry name instead of
 // the placeholder used for alert buttons.

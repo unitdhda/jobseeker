@@ -1,13 +1,14 @@
-export type { SourcesOptions, SourcesSettings } from './config.ts';
+export type { SourceContext, SourceLimits, SourcesOptions } from './context.ts';
 export type {
   PlanOptions, PlannedSearch, PlatformDiscoveryResult, PlatformProfile, PlatformSearch,
   PlatformValidationTemplate, SearchPlan, SearchPlatform, SearchRecipient, UserSearches, VacancyPlatform,
 } from './contract.ts';
-export { createSourceRegistry, type AnyVacancyPlatform, type SourceRegistry } from './registry.ts';
 export {
-  assertPublicAddress, fetchSourceHtml, fetchSourceJson, hashedVacancy, htmlText, jobPostings, plainText,
-  russianDate, safeVacancyUrl, sourceUrl, structuredVacancy, VacancySearchCollector, asObject, type JsonObject,
+  createSourceProvider, createSources, type AnySourceProvider, type AnyVacancyPlatform,
+  type CreateSourceProviderOptions, type MutableSources, type SourceProvider, type Sources,
+} from './sources.ts';
+export {
+  assertPublicAddress, createSourceHttp, createSourceUrlPolicy, fetchSourceHtml, fetchSourceJson, hashedVacancy, htmlText,
+  jobPostings, plainText, russianDate, sourceUserAgent, structuredVacancy, VacancySearchCollector, asObject, type JsonObject,
+  type SourceHostDeclaration, type SourceHttp, type SourceUrlPolicy,
 } from './http.ts';
-export { textSearchProfileSchema } from './additional.ts';
-export { companySearchProfileSchema } from './companies.ts';
-export { hhPublishedAt } from './hh.ts';

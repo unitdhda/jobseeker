@@ -124,7 +124,7 @@ private sidecar and set `CLAUDE_CLI_ENDPOINT` plus its bearer secret. See [Claud
 Start conservatively:
 
 ```dotenv
-SEARCH_PLATFORMS=hh,habr,rabota,hirehi,trudvsem
+SEARCH_PLATFORMS=hh,habr,rabota,hirehi,trudvsem,ozon,rwb
 ```
 
 Useful source-specific settings include:
@@ -137,10 +137,10 @@ TRUDVSEM_REGION=
 ATS_BOARDS=
 ```
 
-Optional `SEARCH_PLATFORMS` values include `geekjob`, `avito`, `ats`, and `yandex`. The Yandex adapter searches
-Yandex's first-party career API and normalizes its server-rendered vacancy pages; it is implemented through the
-shared company-site runner so another large employer can be added as a host/parser definition rather than a new
-pipeline.
+Optional `SEARCH_PLATFORMS` values include `geekjob`, `avito`, `ats`, and `yandex`. Every concrete adapter is
+application-owned under `src/vacancies/providers/` and registered through the public `@jobseeker/sources` API.
+Yandex uses the shared company-site driver; the default-enabled Ozon and RWB providers use `job-api.ozon.ru` and
+`career.rwb.ru` JSON APIs respectively.
 
 Do not enable every adapter merely because it exists. Some boards block particular egress networks or return no
 listings. `/scraper` exposes the actual funnel after startup.

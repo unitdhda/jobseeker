@@ -17,6 +17,7 @@
         "hono": "4.12.32",
         "pdfjs-dist": "6.2.108",
         "pg": "^8.22.0",
+        "playwright": "1.62.0",
         "valibot": "1.4.2",
       },
       "devDependencies": {
@@ -50,7 +51,6 @@
       "dependencies": {
         "@jobseeker/engine": "workspace:*",
         "ipaddr.js": "2.5.0",
-        "playwright": "1.62.0",
         "valibot": "1.4.2",
       },
     },

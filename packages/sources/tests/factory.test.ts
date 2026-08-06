@@ -1,18 +1,29 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createSourceRegistry, type SourcesOptions } from '../src/index.ts';
+import * as v from 'valibot';
+import { createSourceProvider, createSources, type SourcesOptions } from '../src/index.ts';
 
-function options(area:string):SourcesOptions{return{
-  settings:{searchNewVacancyLimit:1,searchPageBudgetPerPlatform:3,hhMaxPages:1,hhAreaId:area,
-    hhBrowserDataPath:`/tmp/jobseeker-source-test-${area}`,hhOperationTimeoutSeconds:30,hireHiMaxPages:1,
-    additionalMaxPages:1,playwrightHeadless:true,playwrightChromiumPath:undefined,timezone:'UTC',
-    browserEnvironment:{lang:'C.UTF-8',path:'/usr/bin:/bin',tmpdir:'/tmp'},atsBoards:[],trudvsemRegion:undefined},
-  trace:()=>undefined,errorMessage:String,recordListingCandidate:async()=>true,
-};}
+function coreOptions(limit: number): SourcesOptions { return {
+  limits: { searchNewVacancyLimit: limit, searchPageBudgetPerPlatform: 3 },
+  trace: () => undefined, errorMessage: String, recordListingCandidate: async () => true,
+}; }
 
-test('source registries keep settings and lifecycle isolated',async()=>{
-  const first=createSourceRegistry(options('1')),second=createSourceRegistry(options('2'));
-  assert.equal((first.getPlatform('hh').template().capabilities as {configuredDefaultArea:string}).configuredDefaultArea,'1');
-  assert.equal((second.getPlatform('hh').template().capabilities as {configuredDefaultArea:string}).configuredDefaultArea,'2');
-  await Promise.all([first.close(),second.close()]);
+test('open provider registration passes collection runtime through an explicit context', async () => {
+  const schema = v.strictObject({ version: v.literal(1), searches: v.array(v.object({ query: v.string() })) });
+  let observedLimit = 0;
+  const source = createSourceProvider({
+    id: 'runtime-test', name: 'Runtime test', hosts: ['runtime.example'], schema,
+    template: () => ({ platform: 'runtime-test', version: 1, purpose: 'Test.', jsonShape: {},
+      capabilities: {}, rules: [] }),
+    discover: async (_plan, context) => {
+      observedLimit = context.limits.searchNewVacancyLimit;
+      return { searches: 0, users: 0, seen: 0, discovered: 0 };
+    },
+    normalize: async () => new Map(),
+  });
+  const sources = createSources(coreOptions(7));
+  sources.setProvider(source);
+  await sources.getPlatform('runtime-test').discover({ searches: [] });
+  assert.equal(observedLimit, 7);
+  await sources.close();
 });

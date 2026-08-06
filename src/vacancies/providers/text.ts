@@ -1,5 +1,5 @@
 import * as v from 'valibot';
-import type { SearchPlatform } from './contract.ts';
+import type { SearchPlatform } from '@jobseeker/sources';
 
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
 export const textSearchProfileSchema = v.strictObject({
@@ -43,11 +43,12 @@ export const rabotaPlatform = textPlatform('rabota', 'Работа.ру', [
   'Use Russian role titles because the query becomes an SEO path segment.',
 ]);
 
-import { errorMessage, sourcesSettings, trace } from './config.ts';
+import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, russianDate, structuredVacancy, type JsonObject } from './http.ts';
-import { VacancySearchCollector } from './http.ts';
-import type { SearchPlan } from './contract.ts';
+import {
+  asObject, htmlText, jobPostings, plainText, russianDate, structuredVacancy, VacancySearchCollector,
+  type JsonObject, type SearchPlan,
+} from '@jobseeker/sources';
 
 type TextSearch = TextSearchProfile['searches'][number];
 
@@ -92,10 +93,11 @@ export function habrListings(html: string, base: string): HabrListing[] {
   return [...listings.values()];
 }
 
-export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
-  const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().additionalMaxPages,
-    Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+export async function scrapeHabr(plan: SearchPlan<TextSearch>, context: SourceContext,
+  maxPages: number): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
+  const pagesPerSearch=Math.max(1,Math.min(maxPages,
+    Math.floor(context.limits.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
   searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       const url = new URL('/vacancies', 'https://career.habr.com');
@@ -103,8 +105,8 @@ export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: 
       url.searchParams.set('type', 'all');
       if (page > 1) url.searchParams.set('page', String(page));
       try {
-        trace('scrape.search.request', { platform: 'habr', search: search.name, query: search.query, page, url: url.toString() });
-        const { html } = await fetchSourceHtml('habr', url.toString());
+        context.trace('scrape.search.request', { platform: 'habr', page });
+        const { html } = await context.http.fetchSourceHtml('habr', url.toString());
         const listings = habrListings(html, url.toString());
         for (const listing of listings) {
           await collector.record({ source: 'habr', sourceId: listing.sourceId, url: listing.url,
@@ -113,13 +115,13 @@ export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: 
           if (collector.complete) break;
         }
         const found = listings.length;
-        trace('scrape.search.result', { platform: 'habr', search: search.name, page, found,
+        context.trace('scrape.search.result', { platform: 'habr', page, found,
           dated: listings.filter((listing) => listing.publishedAt).length });
         if (collector.complete) break searches;
         if (!found) break;
         await pause();
       } catch (error) {
-        console.error(`Failed to read Habr search ${search.name} page ${page}: ${errorMessage(error)}`);
+        console.error(`Failed to read Habr search page ${page}: ${context.errorMessage(error)}`);
         break;
       }
     }
@@ -127,19 +129,20 @@ export async function scrapeHabr(plan: SearchPlan<TextSearch>): Promise<{ seen: 
   return collector.result();
 }
 
-export async function scrapeRabota(plan: SearchPlan<TextSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
-  const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().additionalMaxPages,
-    Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+export async function scrapeRabota(plan: SearchPlan<TextSearch>, context: SourceContext,
+  maxPages: number): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
+  const pagesPerSearch=Math.max(1,Math.min(maxPages,
+    Math.floor(context.limits.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
   searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
       try {
         const url = new URL(`/vacancy/${encodeURIComponent(search.query)}/`, 'https://www.rabota.ru');
         if (page > 1) url.searchParams.set('page', String(page));
-        trace('scrape.search.request', { platform: 'rabota', search: search.name, query: search.query, page, url: url.toString() });
-        const { html } = await fetchSourceHtml('rabota', url.toString());
+        context.trace('scrape.search.request', { platform: 'rabota', page });
+        const { html } = await context.http.fetchSourceHtml('rabota', url.toString());
         const postings = jobPostings(html);
-        trace('scrape.search.result', { platform: 'rabota', search: search.name, page, found: postings.length });
+        context.trace('scrape.search.result', { platform: 'rabota', page, found: postings.length });
         for (const posting of postings) {
           const postingUrl = plainText(posting.url);
           const sourceId = postingUrl.match(/\/vacancy\/(\d+)/)?.[1] ?? plainText(asObject(posting.identifier)?.value);
@@ -153,7 +156,7 @@ export async function scrapeRabota(plan: SearchPlan<TextSearch>): Promise<{ seen
         if (!postings.length) break;
         await pause();
       } catch (error) {
-        console.error(`Failed to read Работа.ру search ${search.name} page ${page}: ${errorMessage(error)}`);
+        console.error(`Failed to read Работа.ру search page ${page}: ${context.errorMessage(error)}`);
         break;
       }
     }
@@ -161,9 +164,10 @@ export async function scrapeRabota(plan: SearchPlan<TextSearch>): Promise<{ seen
   return collector.result();
 }
 
-export async function normalizeAdditionalCandidate(candidate: VacancyCandidate): Promise<VacancyInput | null> {
+export async function normalizeAdditionalCandidate(candidate: VacancyCandidate,
+  context: SourceContext): Promise<VacancyInput | null> {
   if (candidate.source === 'habr') {
-    const page = await fetchSourceHtml('habr', candidate.url);
+    const page = await context.http.fetchSourceHtml('habr', candidate.url);
     const posting = jobPostings(page.html)[0];
     if (!posting) return null;
     return structuredVacancy('habr', candidate.sourceId, page.url, candidate.searchName, posting);

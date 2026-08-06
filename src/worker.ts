@@ -6,6 +6,7 @@ import { getCvHash, requireApprovedUser, usageInLast24Hours } from './postgres.t
 import type { JobWorkerMessage, JobWorkerRequest, RefreshUserResult, SerializedApplication } from './worker-client.ts';
 import { errorMessage } from './observability.ts';
 import { KeyedTaskScheduler } from '@jobseeker/engine/concurrency';
+import { enabledSourceProviderIds } from './vacancies/registry.ts';
 
 const userScheduler = new KeyedTaskScheduler(config.userWorkflowConcurrency);
 let stopping = false;
@@ -20,7 +21,7 @@ async function execute(request: JobWorkerRequest): Promise<unknown> {
       await requireApprovedUser(request.userId);
       if (await getCvHash(request.userId) !== request.cvHash) throw new Error('CV changed before profile refresh; using the newest queued version.');
       const used = await usageInLast24Hours(request.userId, 'search-profile');
-      if (used + config.searchPlatforms.length > config.userDailySearchProfileLimit) {
+      if (used + enabledSourceProviderIds.length > config.userDailySearchProfileLimit) {
         throw new Error(`Daily search-profile limit (${config.userDailySearchProfileLimit}) reached.`);
       }
       const profiles = await ensureCvAndSearchProfiles(request.userId, true, request.cvHash);

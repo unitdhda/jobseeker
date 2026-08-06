@@ -6,7 +6,7 @@ import {
   getSearchProfile, getVacancy, markApplicationReady, recordUsage, requireApprovedUser, saveScore, saveSearchProfile,
   transitionMatch, usageInLast24Hours, type ApplicationArtifact, type Vacancy,
 } from './postgres.ts';
-import { getSearchPlatform, platformSearches } from './vacancies/registry.ts';
+import { enabledSourceProviderIds, getSearchPlatform, platformSearches } from './vacancies/registry.ts';
 import { compileDemand, type DemandInput } from '@jobseeker/engine';
 import { activeUnitQueries, applyDemand, existingCompiledUnits } from './postgres.ts';
 import * as v from 'valibot';
@@ -78,7 +78,7 @@ export async function ensureCvAndSearchProfiles(userId: string, force = false,
   await ensureCareerProfile(userId, cv.cvText, hash, force);
   const profiles: Record<string, unknown> = {};
 
-  for (const platformId of config.searchPlatforms) {
+  for (const platformId of enabledSourceProviderIds) {
     await requireApprovedUser(userId);
     if (await getCvHash(userId) !== hash) throw new Error('CV changed during profile generation.');
     const platform = getSearchPlatform(platformId);
@@ -142,7 +142,7 @@ export function existingUnitsAdvisory(queries: readonly unknown[], limit = advis
 
 export async function compileUserDemand(userId: string): Promise<{ units: number; subscriptions: number }> {
   const demands: DemandInput[] = [];
-  for (const platformId of config.searchPlatforms) {
+  for (const platformId of enabledSourceProviderIds) {
     const profile = await getSearchProfile<unknown>(userId, platformId);
     if (!profile) continue;
     try {
@@ -159,11 +159,11 @@ export async function compileUserDemand(userId: string): Promise<{ units: number
 }
 
 export async function missingSearchProfiles(userId:string):Promise<string[]>{
-  const cv=await getCvSource(userId);if(!cv)return[careerProfilePlatformId,...config.searchPlatforms];
+  const cv=await getCvSource(userId);if(!cv)return[careerProfilePlatformId,...enabledSourceProviderIds];
   const missing:string[]=[];
   const career=parseStoredCareerProfile(await getSearchProfile<StoredCareerProfile>(userId,careerProfilePlatformId),cv.cvSha256);
   if(!career)missing.push(careerProfilePlatformId);
-  for(const platformId of config.searchPlatforms){
+  for(const platformId of enabledSourceProviderIds){
     const platform=getSearchPlatform(platformId),profile=await getSearchProfile<unknown>(userId,platformId);
     if(!v.safeParse(platform.schema,profile).success)missing.push(platformId);
   }

@@ -3,7 +3,8 @@ import test from 'node:test';
 import { careerProfileSchema, prefilterVacancy, vacancyRecency, type CareerProfile } from '@jobseeker/engine';
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
-import { hhPublishedAt, textSearchProfileSchema } from '@jobseeker/sources';
+import { textSearchProfileSchema } from '../src/vacancies/providers/habr.ts';
+import { hhPublishedAt } from '../src/vacancies/providers/hh.ts';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 

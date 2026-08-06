@@ -1,8 +1,9 @@
 import * as v from 'valibot';
 import {
-  currentSourcesRuntime, errorMessage, sourcesSettings, trace, type SourcesRuntime,
-} from './config.ts';
-import type { SearchPlatform } from './contract.ts';
+  assertPublicAddress, createSourceProvider, jobPostings, plainText, russianDate, VacancySearchCollector,
+  type SearchPlan, type SearchPlatform, type SourceContext,
+} from '@jobseeker/sources';
+import { AdaptiveTaskPool } from '@jobseeker/engine/concurrency';
 
 const id = v.pipe(v.string(), v.regex(/^\d+$/, 'Expected a numeric HH identifier'));
 const shortText = v.pipe(v.string(), v.minLength(1), v.maxLength(240));
@@ -52,7 +53,8 @@ export const hhSearchProfileSchema = v.strictObject({
 export type HhSearchProfile = v.InferOutput<typeof hhSearchProfileSchema>;
 export type HhSearch = HhSearchProfile['searches'][number];
 
-export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
+export function hhPlatform(areaId: string): SearchPlatform<typeof hhSearchProfileSchema> {
+  return {
   id: 'hh',
   name: 'hh.ru browser search',
   hosts: ['hh.ru', 'www.hh.ru'],
@@ -68,11 +70,11 @@ export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
       searches: [{
         name: 'CV-derived track', rationale: 'CV evidence for this role search',
         text: 'название профессии из карьерного профиля', searchFields: ['name', 'description'],
-        areas: [sourcesSettings().hhAreaId], periodDays: 7, orderBy: 'publication_time',
+        areas: [areaId], periodDays: 7, orderBy: 'publication_time',
       }],
     },
     capabilities: {
-      configuredDefaultArea: sourcesSettings().hhAreaId,
+      configuredDefaultArea: areaId,
       searchFields, experiences, employmentForms, workFormats, workSchedules: schedules,
       workingHours: hours, labels, currencies,
       education: ['not_required_or_not_specified', 'special_secondary', 'higher'],
@@ -91,7 +93,8 @@ export const hhPlatform: SearchPlatform<typeof hhSearchProfileSchema> = {
       'Use strict filters only when they are explicit in the CV or operator input; recall matters.',
     ],
   }),
-};
+  };
+}
 
 function appendMany(params: URLSearchParams, name: string, values?: readonly string[]): void {
   for (const value of values ?? []) params.append(name, value);
@@ -129,9 +132,6 @@ import { createHash } from 'node:crypto';
 
 import { chromium, type BrowserContext, type Page } from 'playwright';
 import { type VacancyCandidate, type VacancyInput } from '@jobseeker/engine/contracts';
-import { VacancySearchCollector } from './http.ts';
-import { assertPublicAddress, jobPostings, plainText, russianDate, sourceUrl } from './http.ts';
-import type { SearchPlan } from './contract.ts';
 
 /**
  * The advert's own publication date.
@@ -183,11 +183,12 @@ function parseSalary(text: string): Pick<VacancyInput, 'salaryFrom' | 'salaryTo'
   return { salaryFrom, salaryTo, salaryCurrency, salaryGross };
 }
 
-async function stripVacancy(page: Page, url: string, sourceQuery: string): Promise<VacancyInput> {
-  const safe = sourceUrl('hh', url); await assertPublicAddress(safe);
+async function stripVacancy(page: Page, url: string, sourceQuery: string,
+  sourceContext: SourceContext): Promise<VacancyInput> {
+  const safe = sourceContext.http.sourceUrl('hh', url); await assertPublicAddress(safe);
   const safeUrl = safe.toString();
   await page.goto(safeUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-  sourceUrl('hh', page.url());
+  sourceContext.http.sourceUrl('hh', page.url());
   await assertSearchPage(page);
   // A closed or removed vacancy renders no title at all; classify it before paying the 20-second wait for one.
   const closedMarker = /вакансия (закрыта|в архиве|не найдена)|page not found/i;
@@ -230,40 +231,18 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
   return { ...base, contentHash: createHash('sha256').update(JSON.stringify(base)).digest('hex') };
 }
 
-const sharedContexts = new WeakMap<SourcesRuntime, BrowserContext>();
-
-async function launchContext(): Promise<BrowserContext> {
-  const browserData = sourcesSettings().hhBrowserDataPath;
-  const context=await chromium.launchPersistentContext(browserData, {
-    executablePath: sourcesSettings().playwrightChromiumPath,
-    headless: sourcesSettings().playwrightHeadless,
-    locale: 'ru-RU',
-    timezoneId: sourcesSettings().timezone,
-    viewport: { width: 1440, height: 1000 },
-    chromiumSandbox: true,
-    env: {
-      HOME: browserData,
-      LANG: sourcesSettings().browserEnvironment.lang,
-      PATH: sourcesSettings().browserEnvironment.path,
-      TMPDIR: sourcesSettings().browserEnvironment.tmpdir,
-    },
-    args: ['--disable-dev-shm-usage'],
-    serviceWorkers:'block',
-  });
-  await context.route('**/*',route=>
-    ['image','media','font'].includes(route.request().resourceType())?route.abort():route.continue());
-  return context;
+export interface HhBrowserOptions {
+  browserDataPath: string;
+  operationTimeoutSeconds: number;
+  playwrightHeadless: boolean;
+  playwrightChromiumPath?: string;
+  timezone: string;
+  browserEnvironment: { lang: string; path: string; tmpdir: string };
 }
 
-async function openContext():Promise<BrowserContext>{
-  const owner=currentSourcesRuntime(),existing=sharedContexts.get(owner);
-  if(existing)return existing;
-  let lastError:unknown;
-  for(let attempt=1;attempt<=3;attempt++){
-    try{const created=await launchContext();sharedContexts.set(owner,created);return created;}
-    catch(error){lastError=error;if(attempt<3)await new Promise(resolve=>setTimeout(resolve,2_000*attempt));}
-  }
-  throw lastError;
+export interface HhBrowserRuntime {
+  run<T>(operationName: string, operation: (context: BrowserContext) => Promise<T>): Promise<T>;
+  close(): Promise<void>;
 }
 
 async function closeContextBounded(context:BrowserContext):Promise<void>{
@@ -272,47 +251,77 @@ async function closeContextBounded(context:BrowserContext):Promise<void>{
   finally{if(timer)clearTimeout(timer);}
 }
 
-export async function closeHhBrowser():Promise<void>{
-  const owner=currentSourcesRuntime(),context=sharedContexts.get(owner);sharedContexts.delete(owner);
-  if(context)await closeContextBounded(context);
-}
-
-async function withHhDeadline<T>(operationName:string,operation:(context:BrowserContext)=>Promise<T>):Promise<T>{
-  const owner=currentSourcesRuntime(),context=await openContext(),timeoutMessage=
-    `HH browser ${operationName} exceeded ${sourcesSettings().hhOperationTimeoutSeconds} seconds.`;
-  let deadline:ReturnType<typeof setTimeout>|undefined;
-  const timedOut=new Promise<never>((_resolve,reject)=>{deadline=setTimeout(()=>{
-    if(sharedContexts.get(owner)===context)sharedContexts.delete(owner);
-    void context.close({reason:timeoutMessage}).catch(()=>undefined);reject(new Error(timeoutMessage));
-  },sourcesSettings().hhOperationTimeoutSeconds*1_000);});
-  try{return await Promise.race([operation(context),timedOut]);}
-  catch(error){
-    if(/closed|crashed|disconnected/i.test(error instanceof Error?error.message:String(error))&&sharedContexts.get(owner)===context){
-      sharedContexts.delete(owner);await closeContextBounded(context);
+export function createHhBrowser(options: HhBrowserOptions): HhBrowserRuntime {
+  let browserContext: BrowserContext | undefined;
+  const launchContext = async (): Promise<BrowserContext> => {
+    const browserData = options.browserDataPath;
+    const context=await chromium.launchPersistentContext(browserData, {
+      executablePath: options.playwrightChromiumPath,
+      headless: options.playwrightHeadless,
+      locale: 'ru-RU', timezoneId: options.timezone, viewport: { width: 1440, height: 1000 },
+      chromiumSandbox: true,
+      env: { HOME: browserData, LANG: options.browserEnvironment.lang,
+        PATH: options.browserEnvironment.path, TMPDIR: options.browserEnvironment.tmpdir },
+      args: ['--disable-dev-shm-usage'], serviceWorkers:'block',
+    });
+    await context.route('**/*',route=>
+      ['image','media','font'].includes(route.request().resourceType())?route.abort():route.continue());
+    return context;
+  };
+  const openContext = async (): Promise<BrowserContext> => {
+    if(browserContext)return browserContext;
+    let lastError:unknown;
+    for(let attempt=1;attempt<=3;attempt++){
+      try{browserContext=await launchContext();return browserContext;}
+      catch(error){lastError=error;if(attempt<3)await new Promise(resolve=>setTimeout(resolve,2_000*attempt));}
     }
-    throw error;
-  }finally{if(deadline)clearTimeout(deadline);}
+    throw lastError;
+  };
+  return {
+    async close() {
+      const context=browserContext;browserContext=undefined;
+      if(context)await closeContextBounded(context);
+    },
+    async run<T>(operationName:string,operation:(context:BrowserContext)=>Promise<T>):Promise<T>{
+      const context=await openContext(),timeoutMessage=
+        `HH browser ${operationName} exceeded ${options.operationTimeoutSeconds} seconds.`;
+      let deadline:ReturnType<typeof setTimeout>|undefined;
+      const timedOut=new Promise<never>((_resolve,reject)=>{deadline=setTimeout(()=>{
+        if(browserContext===context)browserContext=undefined;
+        void context.close({reason:timeoutMessage}).catch(()=>undefined);reject(new Error(timeoutMessage));
+      },options.operationTimeoutSeconds*1_000);});
+      try{return await Promise.race([operation(context),timedOut]);}
+      catch(error){
+        if(/closed|crashed|disconnected/i.test(error instanceof Error?error.message:String(error))&&browserContext===context){
+          browserContext=undefined;await closeContextBounded(context);
+        }
+        throw error;
+      }finally{if(deadline)clearTimeout(deadline);}
+    },
+  };
 }
 
-export async function scrapeHh(plan: SearchPlan<HhSearch>): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(sourcesSettings().searchNewVacancyLimit);
-  try{await withHhDeadline('search',async context=>{
+export async function scrapeHh(plan: SearchPlan<HhSearch>, sourceContext: SourceContext,
+  browser: HhBrowserRuntime, maxPages: number): Promise<{ seen: number; discovered: number }> {
+  const collector = new VacancySearchCollector(sourceContext.limits.searchNewVacancyLimit,
+    sourceContext.recordListingCandidate);
+  try{await browser.run('search',async context=>{
     const page = context.pages()[0] ?? await context.newPage();
-    const pagesPerSearch=Math.max(1,Math.min(sourcesSettings().hhMaxPages,
-      Math.floor(sourcesSettings().searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
+    const pagesPerSearch=Math.max(1,Math.min(maxPages,
+      Math.floor(sourceContext.limits.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
     searches: for (const { search, recipients } of plan.searches) {
       for (let pageNumber = 0; pageNumber < pagesPerSearch; pageNumber++) {
-        const safeSearchUrl = sourceUrl('hh', hhSearchUrl(search, pageNumber)); await assertPublicAddress(safeSearchUrl);
+        const safeSearchUrl = sourceContext.http.sourceUrl('hh', hhSearchUrl(search, pageNumber)); await assertPublicAddress(safeSearchUrl);
         const searchUrl = safeSearchUrl.toString();
-        trace('scrape.search.request', { platform: 'hh', search: search.name, page: pageNumber + 1, url: searchUrl });
+        sourceContext.trace('scrape.search.request', { platform: 'hh', page: pageNumber + 1 });
         await page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 45_000 });
-        sourceUrl('hh', page.url());
+        sourceContext.http.sourceUrl('hh', page.url());
         await assertSearchPage(page);
         const found = await page.locator('[data-qa="serp-item__title"]').evaluateAll((anchors) =>
           anchors.map((anchor) => ({ href: (anchor as HTMLAnchorElement).href, title: anchor.textContent?.trim() ?? '' })));
         // hh search cards carry no publication date, so a candidate has none until it is normalized. The search
         // itself bounds the age instead: `period` is capped at 30 days and defaults to 7.
-        trace('scrape.search.result', { platform: 'hh', search: search.name, page: pageNumber + 1, found: found.length });
+        sourceContext.trace('scrape.search.result', { platform: 'hh', page: pageNumber + 1, found: found.length });
         for (const item of found) {
           const id = new URL(item.href).pathname.match(/\/vacancy\/(\d+)/)?.[1];
           if (id) await collector.record({ source: 'hh', sourceId: id, url: `https://hh.ru/vacancy/${id}`,
@@ -332,7 +341,8 @@ export async function scrapeHh(plan: SearchPlan<HhSearch>): Promise<{ seen: numb
   return collector.result();
 }
 
-export async function normalizeHhCandidates(candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | Error>> {
+export async function normalizeHhCandidates(candidates: VacancyCandidate[], sourceContext: SourceContext,
+  browser: HhBrowserRuntime): Promise<Map<string, VacancyInput | Error>> {
   const results = new Map<string, VacancyInput | Error>();
   if (!candidates.length) return results;
   try{
@@ -340,9 +350,9 @@ export async function normalizeHhCandidates(candidates: VacancyCandidate[]): Pro
     // large one must cost slow candidates their own retry, never brand the unprocessed tail as timed out.
     for (const candidate of candidates) {
       try {
-        await withHhDeadline('normalization',async context=>{
+        await browser.run('normalization',async context=>{
           const page = context.pages()[0] ?? await context.newPage();
-          results.set(candidate.sourceId, await stripVacancy(page, candidate.url, candidate.searchName));
+          results.set(candidate.sourceId, await stripVacancy(page, candidate.url, candidate.searchName, sourceContext));
         });
         await pause(500, 1_200);
       } catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
@@ -352,4 +362,34 @@ export async function normalizeHhCandidates(candidates: VacancyCandidate[]): Pro
     for(const candidate of candidates)if(!results.has(candidate.sourceId))results.set(candidate.sourceId,failure);
   }
   return results;
+}
+
+
+export interface HhSourceOptions extends HhBrowserOptions {
+  areaId: string;
+  maxPages: number;
+}
+
+const hhDefaults: HhSourceOptions = {
+  areaId: '1', maxPages: 1, browserDataPath: '/tmp/jobseeker-hh-browser', operationTimeoutSeconds: 180,
+  playwrightHeadless: true, timezone: 'Europe/Moscow',
+  browserEnvironment: { lang: 'C.UTF-8', path: '/usr/local/bin:/usr/bin:/bin', tmpdir: '/tmp' },
+};
+
+/** Application-owned HH provider with one serialized pool and one persistent browser context. */
+export function hhSource(input: Partial<HhSourceOptions> = {}) {
+  const options = { ...hhDefaults, ...input,
+    browserEnvironment: { ...hhDefaults.browserEnvironment, ...input.browserEnvironment } };
+  const pool = new AdaptiveTaskPool(1, 1);
+  const browser = createHhBrowser(options);
+  return createSourceProvider({
+    ...hhPlatform(options.areaId),
+    async discover(plan, context) {
+      const result = await pool.run(() => scrapeHh(plan, context, browser, options.maxPages));
+      const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
+      return { searches: plan.searches.length, users: users.size, ...result };
+    },
+    normalize: (candidates, context) => normalizeHhCandidates(candidates, context, browser),
+    close: () => browser.close(),
+  });
 }

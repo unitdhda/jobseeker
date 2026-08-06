@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { VacancyCandidate } from '@jobseeker/engine/contracts';
+import { companyPlatform, companyVacancyInput, mainVacancyText } from '@jobseeker/sources/drivers/company-site';
+import { createCompanySiteSource } from '@jobseeker/sources/drivers/company-site';
+import { createSources } from '@jobseeker/sources';
 import {
-  companyPlatform, companySites, companyVacancyInput, mainVacancyText, yandexCursor, yandexListingPage,
-  yandexSearchUrl,
-} from '../src/companies.ts';
-import { getSearchPlatform, searchPlatformIds } from '../src/registry.ts';
-import { sourceUrl } from '../src/http.ts';
+  yandexCompanySite, yandexCursor, yandexListingPage, yandexSearchUrl, yandexSource,
+} from '../src/vacancies/providers/yandex.ts';
+import { createSourceUrlPolicy } from '@jobseeker/sources';
+
+const yandexUrlPolicy = createSourceUrlPolicy([yandexSource()]);
 
 const yandexPayload = {
   next: 'http://femida.yandex-team.ru/_api/jobs/publications/?cursor=bz0xOCZwPTI%3D&page_size=20',
@@ -79,7 +82,8 @@ test('generic company detail normalization produces a complete deterministic vac
     title: listing.title,
     description: `${listing.title}\nВам предстоит развивать продуктовые метрики и проводить исследования.\nМы ждём, что вы\nРаботали аналитиком от 3 лет\nЗнаете SQL`,
   });
-  const vacancy = companyVacancyInput(companySites.yandex, candidate, html);
+  const vacancy = companyVacancyInput(yandexCompanySite, candidate, html, candidate.url,
+    yandexUrlPolicy.safeVacancyUrl);
   assert.ok(vacancy);
   assert.equal(vacancy.name, listing.title);
   assert.equal(vacancy.employer, 'Яндекс');
@@ -90,17 +94,34 @@ test('generic company detail normalization produces a complete deterministic vac
   assert.equal(vacancy.publishedAt, candidate.publishedAt);
   assert.equal(vacancy.contentHash.length, 64);
   assert.ok(!vacancy.description.includes('Текст футера'));
-  assert.equal(companyVacancyInput(companySites.yandex, candidate, '<main><h1>Only a title</h1></main>'), null);
+  assert.equal(companyVacancyInput(yandexCompanySite, candidate, '<main><h1>Only a title</h1></main>', candidate.url,
+    yandexUrlPolicy.safeVacancyUrl), null);
 });
 
 test('Yandex is registered through the common company-site VacancyPlatform and closed host allowlist', () => {
-  assert.ok(searchPlatformIds.includes('yandex'));
-  const adapter = getSearchPlatform('yandex');
+  const adapter = yandexSource();
   assert.equal(adapter.id, 'yandex');
   assert.equal(typeof adapter.discover, 'function');
   assert.equal(typeof adapter.normalize, 'function');
-  assert.match(String(companyPlatform('yandex').template().capabilities.query), /role title/i);
-  assert.equal(sourceUrl('yandex', 'https://yandex.ru/jobs/vacancies/example-1').hostname, 'yandex.ru');
-  assert.throws(() => sourceUrl('yandex', 'https://jobs.s3.yandex.net/private'), /Unexpected/);
-  assert.throws(() => sourceUrl('yandex', 'https://example.com/jobs'), /Unexpected/);
+  assert.match(String(companyPlatform(yandexCompanySite).template().capabilities.query), /role title/i);
+  assert.notEqual(yandexSource(), yandexSource(), 'the provider factory returns fresh provider instances');
+  assert.equal(yandexUrlPolicy.sourceUrl('yandex', 'https://yandex.ru/jobs/vacancies/example-1').hostname, 'yandex.ru');
+  assert.throws(() => yandexUrlPolicy.sourceUrl('yandex', 'https://jobs.s3.yandex.net/private'), /Unexpected/);
+  assert.throws(() => yandexUrlPolicy.sourceUrl('yandex', 'https://example.com/jobs'), /Unexpected/);
+});
+
+test('a company definition registers without changing a central company id map', () => {
+  const sources = createSources();
+  sources.setProvider(createCompanySiteSource({
+    ...yandexCompanySite,
+    id: 'example-careers',
+    name: 'Example Careers',
+    employer: 'Example',
+    hosts: ['careers.example.com'],
+    searchUrl: (query) => `https://careers.example.com/jobs?q=${encodeURIComponent(query)}`,
+  }));
+  assert.equal(sources.getProvider('example-careers')?.name, 'Example Careers');
+  assert.equal(sources.urlPolicy.sourceUrl('example-careers', 'https://careers.example.com/jobs/42').hostname,
+    'careers.example.com');
+  assert.throws(() => sources.urlPolicy.sourceUrl('example-careers', 'https://example.com/jobs/42'), /Unexpected/);
 });

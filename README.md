@@ -105,6 +105,8 @@ without another model call; uploading a new CV invalidates the cached version na
 | Geekjob and Avito | Optional adapters |
 | Greenhouse, Lever, Ashby, SmartRecruiters | Configurable company ATS boards |
 | Yandex Careers | First-party company career-site adapter |
+| Ozon Careers | Public first-party JSON API |
+| RWB / Wildberries | Public first-party JSON API |
 
 Source availability depends on network egress and the source's current behavior. An adapter being built in does not
 mean it should be enabled in every deployment; probe it from the machine that will actually scrape it.
@@ -118,9 +120,9 @@ boundaries; the root application composes them.
 |---|---|
 | `packages/engine` | Pipeline contracts, bounded concurrency, identity, matching, budgets, and loop policy |
 | `packages/store` | Factory-owned PostgreSQL pool and repositories |
-| `packages/sources` | Factory-owned vacancy adapters, parsing, browser state, and network allowlists |
+| `packages/sources` | Open provider runtime, contracts, SSRF policy, HTTP utilities, and reusable source drivers |
 | `packages/cv` | CV extraction, structured documents, and Typst PDF rendering |
-| `src/` | Configuration, factory composition, cross-domain workflows, AI, Telegram, workers, and entrypoints |
+| `src/` | Vacancy providers, configuration, factory composition, cross-domain workflows, AI, Telegram, workers, and entrypoints |
 
 The [workspace dependency graph](docs/dependency-graph.md) documents and enforces the allowed import directions.
 PostgreSQL is the only runtime database. `search_units.next_run_at` owns the discovery schedule, and exactly one
@@ -158,8 +160,10 @@ validation, verify /health and /ready, and stop for approval before pushing or d
 
 ```text
 Add <source name and URL> to Jobseeker. First read packages/sources/README.md,
-packages/sources/src/contract.ts, packages/engine/src/contracts.ts, packages/sources/src/registry.ts, and the closest
-adapter and tests. Follow the VacancyPlatform contracts, injected factory configuration, package boundaries, and
+packages/sources/src/contract.ts, packages/sources/src/sources.ts, packages/engine/src/contracts.ts,
+src/vacancies/providers.ts, and the closest provider factory, adapter, and tests. Prefer an application-owned
+provider under src/ when the source is deployment-specific; change @jobseeker/sources only for reusable package
+functionality. Follow the VacancyPlatform contracts, injected factory configuration, package boundaries, and
 source URL/SSRF helpers; add deterministic tests and documentation, run the validation baseline, and stop for
 approval before committing, pushing, deploying, or enabling it.
 ```

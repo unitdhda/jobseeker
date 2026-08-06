@@ -18,6 +18,7 @@ import { maximumCvBytes } from '../cv.ts';
 import { readResponseBytes } from '../http.ts';
 import { errorMessage } from '../observability.ts';
 import { getBot, targetChat } from './api.ts';
+import { enabledSourceProviderIds } from '../vacancies/registry.ts';
 import {
   artifactLabels,
   platformLabel,
@@ -127,7 +128,7 @@ export async function searchProfileResult(userId: string): Promise<{ text: strin
     await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256,
   );
   const platforms: SearchProfilePlatformView[] = [];
-  for (const platformId of config.searchPlatforms) {
+  for (const platformId of enabledSourceProviderIds) {
     platforms.push({ label: platformLabel(platformId), terms: profileSearchTerms(await getSearchProfile(userId, platformId)) });
   }
   const text = searchProfileMessage({ filename: cv.originalFilename,

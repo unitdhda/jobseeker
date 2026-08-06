@@ -43,20 +43,14 @@ function telegramModeEnv(): TelegramMode {
   return value as TelegramMode;
 }
 
-const supportedSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi', 'geekjob', 'avito', 'trudvsem', 'ats', 'yandex'] as const;
-// geekjob, avito, ats, and yandex are supported but off by default. The first three have either read nothing from
-// production egress or need explicit boards; Yandex is new and must be probed before it is enabled. Name an optional
-// adapter in SEARCH_PLATFORMS only after a probe from the scraping host shows that it reads useful listings.
-const defaultSearchPlatforms: SearchPlatformId[] = ['hh', 'habr', 'rabota', 'hirehi', 'trudvsem'];
-type SearchPlatformId = typeof supportedSearchPlatforms[number];
-
-function platformEnv(): SearchPlatformId[] {
+// Optional adapters stay off by default until production-egress probes show useful listings. This parser owns only
+// operator intent; the provider composition validates requested ids against what was actually registered.
+const defaultSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi', 'trudvsem', 'ozon', 'rwb'];
+function platformEnv(): string[] {
   const requested = (process.env.SEARCH_PLATFORMS ?? defaultSearchPlatforms.join(','))
     .split(',').map((value) => value.trim()).filter(Boolean);
-  const unknown = requested.filter((value) => !supportedSearchPlatforms.includes(value as SearchPlatformId));
-  if (unknown.length) throw new Error(`Unknown SEARCH_PLATFORMS values: ${unknown.join(', ')}`);
   if (!requested.length) throw new Error('SEARCH_PLATFORMS must contain at least one platform.');
-  return [...new Set(requested)] as SearchPlatformId[];
+  return [...new Set(requested)];
 }
 
 const digestMinScore = integerEnv('DIGEST_MIN_SCORE', 50, 0, 99);
