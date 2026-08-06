@@ -6,7 +6,7 @@
  * that safe. Stages stay failure-isolated within a lane, and like engine-runtime everything is expressed over
  * ports.
  */
-import type { TickReport } from './engine-runtime.ts';
+import type { TickReport } from './runtime.ts';
 
 export interface NormalizeReport {
   vacancyIds: number[]; failed: number; closed: number;

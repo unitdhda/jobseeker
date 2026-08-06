@@ -1,6 +1,7 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { Pool, type PoolClient, type QueryResultRow, type PoolConfig } from 'pg';
 
-/** The knobs the repositories read at query time. The app snapshots them from its config at composition. */
+/** The knobs repositories read through their owning store instance. */
 export interface StoreSettings {
   telegramUserId?: string;
   telegramChatId?: string;
@@ -9,36 +10,42 @@ export interface StoreSettings {
   searchPlatforms: readonly string[];
   digestMinScore: number;
   alertScore: number;
-  normalizationPerSourceQuota: number;
   timezone: string;
-  /** URL hygiene belongs to the sources domain; the store only applies whatever guard the app provides. */
+  /** URL hygiene belongs to sources; persistence applies the injected guard defensively. */
   safeVacancyUrl(source: string, url: string): string;
 }
 
 export interface StoreOptions {
-  /** May be empty at configure time; its absence only fails when the pool is first needed. */
+  /** May be empty at construction; absence only fails when the pool is first needed. */
   databaseUrl: string;
   poolMax: number;
   ssl: PoolConfig['ssl'];
   settings: StoreSettings;
 }
 
-let pool: Pool | undefined;
-let options: StoreOptions | undefined;
+export interface StoreRuntime {
+  readonly options: StoreOptions;
+  pool?: Pool;
+}
 
-/**
- * Module-level rather than a closure factory, deliberately: the repositories are consumed as plain imports by
- * eighteen files, and threading an instance through them is exactly the churn this extraction avoids. First call
- * wins; both app shims configure at load so no import order can reach the pool unconfigured. Dissolves when the
- * engine's ports replace direct repository imports.
- */
-export function configureStore(provided: StoreOptions): void {
-  options ??= provided;
+const currentStore = new AsyncLocalStorage<StoreRuntime>();
+
+export function createStoreRuntime(options: StoreOptions): StoreRuntime {
+  return { options };
+}
+
+export function runWithStore<T>(runtime: StoreRuntime, operation: () => T): T {
+  return currentStore.run(runtime, operation);
+}
+
+export function currentStoreRuntime(): StoreRuntime {
+  const value = currentStore.getStore();
+  if (!value) throw new Error('A store repository was called outside its createStore instance.');
+  return value;
 }
 
 export function storeSettings(): StoreSettings {
-  if (!options) throw new Error('configureStore must run before the store is used.');
-  return options.settings;
+  return currentStoreRuntime().options.settings;
 }
 
 function errorCode(error: unknown): string {
@@ -58,27 +65,23 @@ export function transientPostgresError(error: unknown): boolean {
 const wait=(milliseconds:number)=>new Promise(resolve=>setTimeout(resolve,milliseconds));
 
 export function getPostgresPool(): Pool {
-  if (!options) throw new Error('configureStore must run before the store is used.');
-  const connectionString = options.databaseUrl;
+  const owner = currentStoreRuntime();
+  const connectionString = owner.options.databaseUrl;
   if (!connectionString) throw new Error('DATABASE_URL is required for Postgres persistence.');
-  if(pool)return pool;
+  if(owner.pool)return owner.pool;
   const created=new Pool({
     connectionString,
-    max: options.poolMax,
-    // AI and document work can run for several minutes between database writes.
-    // Keep the session-pooler connection alive instead of reconnecting at the end of each long task.
+    max: owner.options.poolMax,
     idleTimeoutMillis: 15 * 60_000,
     connectionTimeoutMillis: 10_000,
     keepAlive:true,
     keepAliveInitialDelayMillis:10_000,
-    ssl: options.ssl,
+    ssl: owner.options.ssl,
   });
-  // pg emits transport failures outside the query promise for checked-out and idle clients.
-  // Always consume those events so a temporary network reset cannot terminate the worker process.
   created.on('connect',(client)=>client.on('error',(error)=>
     console.warn(`PostgreSQL client connection error: ${errorText(error)}`)));
   created.on('error',(error)=>console.warn(`PostgreSQL idle connection error: ${errorText(error)}`));
-  pool=created;
+  owner.pool=created;
   return created;
 }
 
@@ -113,13 +116,21 @@ export async function withPostgresTransaction<T>(fn: (client: PoolClient) => Pro
   }
 }
 
+export function withPostgresAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  if (!key) throw new Error('PostgreSQL advisory-lock key is required.');
+  return withPostgresTransaction(async (client) => {
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', [key]);
+    return fn();
+  });
+}
+
 export async function persistenceReady(): Promise<'postgres'> {
   await postgresQuery('select 1');
   return 'postgres';
 }
 
-export async function closePostgresPool(): Promise<void> {
-  const current = pool;
-  pool = undefined;
+export async function closeStoreRuntime(owner: StoreRuntime): Promise<void> {
+  const current = owner.pool;
+  owner.pool = undefined;
   await current?.end();
 }

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import '../src/postgres.ts';
-import * as d from '@jobseeker/store';
-import * as sessions from '../src/telegram-state.ts';
+import { store } from '../src/postgres.ts';
+const d = store;
+const sessions = store;
+const postgresQuery = store.admin.postgresQuery;
 import { activeUserWorkflow, claimUserWorkflow } from '../src/telegram/workflow-lock.ts';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for the Postgres integration test.');
@@ -11,11 +12,11 @@ const sourceId = `integration-${suffix}`;
 const chatId = `integration-chat-${suffix}`;
 let vacancyId: number | undefined;
 try {
-  const legacyTables = await d.postgresQuery<{ table_name: string }>(`select table_name from information_schema.tables
+  const legacyTables = await postgresQuery<{ table_name: string }>(`select table_name from information_schema.tables
     where table_schema='public' and table_name=any($1::text[]) order by table_name`,
     [['user_vacancies','profiles','scores','pending_deliveries']]);
   assert.deepEqual(legacyTables, []);
-  const matchColumns = await d.postgresQuery<{ column_name: string; data_type: string }>(`select column_name,data_type
+  const matchColumns = await postgresQuery<{ column_name: string; data_type: string }>(`select column_name,data_type
     from information_schema.columns where table_schema='public' and table_name='matches'`);
   assert.equal(matchColumns.find((column) => column.column_name === 'llm_score')?.data_type, 'integer');
   assert.equal(matchColumns.find((column) => column.column_name === 'application_artifacts')?.data_type, 'jsonb');
@@ -92,7 +93,7 @@ try {
   assert.equal((await d.getTelegramUser(userId))?.status, 'approved'); // access identity remains by design
   console.info('Postgres business repository integration passed.');
 } finally {
-  await d.postgresQuery('delete from users where user_id=$1', [userId]).catch(() => undefined);
-  if (vacancyId != null) await d.postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
+  await postgresQuery('delete from users where user_id=$1', [userId]).catch(() => undefined);
+  if (vacancyId != null) await postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
   await d.closePostgresPool();
 }

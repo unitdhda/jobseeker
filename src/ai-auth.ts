@@ -11,7 +11,7 @@ import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { Credential, CredentialInfo, CredentialStore } from '@earendil-works/pi-ai';
 import { getEncryptedRuntimeState, putEncryptedRuntimeState } from './runtime-state.ts';
-import { withPostgresTransaction } from '@jobseeker/store';
+import { withPostgresAdvisoryLock } from './postgres.ts';
 
 // The cloud object predates the generalized store and already holds a provider-keyed document; renaming it would
 // orphan deployed credentials.
@@ -72,8 +72,7 @@ export function createCredentialStore(): CredentialStore {
         ({ providerId, type: credential.type }));
     },
     modify(providerId, fn): Promise<Credential | undefined> {
-      return enqueue(providerId, () => withPostgresTransaction(async (client) => {
-        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`jobseeker-ai-auth:${providerId}`]);
+      return enqueue(providerId, () => withPostgresAdvisoryLock(`jobseeker-ai-auth:${providerId}`, async () => {
         const document = await readDocument();
         const updated = await fn(document[providerId]);
         if (updated === undefined) return document[providerId];
@@ -83,8 +82,7 @@ export function createCredentialStore(): CredentialStore {
       }));
     },
     async delete(providerId: string): Promise<void> {
-      await enqueue(providerId, () => withPostgresTransaction(async (client) => {
-        await client.query('select pg_advisory_xact_lock(hashtext($1))', [`jobseeker-ai-auth:${providerId}`]);
+      await enqueue(providerId, () => withPostgresAdvisoryLock(`jobseeker-ai-auth:${providerId}`, async () => {
         const document = await readDocument();
         if (providerId in document) { delete document[providerId]; await writeDocument(document); }
         return undefined;

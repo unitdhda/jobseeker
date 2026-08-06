@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { adaptiveConcurrency, AdaptiveTaskPool, aggregateOrderedProgress, KeyedTaskScheduler, mapConcurrent } from '@jobseeker/sources';
+import {
+  adaptiveConcurrency, AdaptiveTaskPool, aggregateOrderedProgress, KeyedTaskScheduler, mapConcurrent,
+} from '@jobseeker/engine/concurrency';
 
 test('LLM scoring concurrency scales from five to ten with queued load', () => {
   assert.equal(adaptiveConcurrency(0, 5, 10), 0);

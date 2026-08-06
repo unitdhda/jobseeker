@@ -4,7 +4,7 @@
  */
 import * as v from 'valibot';
 import { errorMessage, sourcesSettings, trace } from './config.ts';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
   VacancySearchCollector, type JsonObject } from './http.ts';
 import type { SearchPlan } from './contract.ts';
@@ -46,8 +46,8 @@ export const trudvsemPlatform: SearchPlatform<typeof trudvsemSearchProfileSchema
   }),
 };
 
-export function trudvsemSearchUrl(query: string, page: number): string {
-  const url = new URL(`/api/v1/vacancies/region/${trudvsemRegion()}`, 'https://opendata.trudvsem.ru');
+export function trudvsemSearchUrl(query: string, page: number, region = '7700000000'): string {
+  const url = new URL(`/api/v1/vacancies/region/${region}`, 'https://opendata.trudvsem.ru');
   url.searchParams.set('text', query);
   url.searchParams.set('limit', '50');
   if (page > 1) url.searchParams.set('offset', String((page - 1) * 50));
@@ -102,7 +102,7 @@ export async function scrapeTrudvsem(
     Math.floor(sourcesSettings().searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
   searches: for (const { search, recipients } of plan.searches) {
     for (let page = 1; page <= pagesPerSearch; page++) {
-      const url = trudvsemSearchUrl(search.query, page);
+      const url = trudvsemSearchUrl(search.query, page, trudvsemRegion());
       try {
         trace('scrape.search.request', { platform: 'trudvsem', search: search.name, query: search.query, page, url });
         const vacancies = trudvsemVacancies(await fetchSourceJson('trudvsem', url));

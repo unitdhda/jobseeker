@@ -1,11 +1,11 @@
 import { InlineKeyboard } from 'grammy';
 import { type RichBlockTableCell, type RichText } from 'grammy/types';
 import { config } from '../config.ts';
-import { type ScoredVacancy, type ScraperHour, type ScraperSummary, type TelegramUser, type UsageHour } from '@jobseeker/store';
+import { type ScoredVacancy, type ScraperHour, type ScraperSummary, type TelegramUser, type UsageHour } from '../postgres.ts';
 import { getSearchPlatform } from '../vacancies/registry.ts';
 import { jobWorkerStatus } from '../worker-client.ts';
-import { type ApplicationArtifact } from '@jobseeker/store';
-import { engineLoopStatus } from '../engine-loop.ts';
+import { type ApplicationArtifact } from '../postgres.ts';
+import { engineLoopStatus } from '@jobseeker/engine';
 
 
 export function escapeHtml(value: string): string {

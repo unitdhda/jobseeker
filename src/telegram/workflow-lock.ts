@@ -4,7 +4,7 @@ import {
   getTelegramSession,
   releaseClaimedTelegramSession,
   updateClaimedTelegramSession,
-} from '../telegram-state.ts';
+} from '../postgres.ts';
 import { errorMessage } from '../observability.ts';
 
 export type UserWorkflowKind = 'cv-import' | 'profile-refresh' | 'tailored-cv' | 'cover-letter';

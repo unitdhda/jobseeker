@@ -5,7 +5,7 @@
  */
 import * as v from 'valibot';
 import { errorMessage, sourcesSettings, trace } from './config.ts';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 import { asObject, fetchSourceJson, hashedVacancy, htmlText, plainText, safeVacancyUrl,
   VacancySearchCollector, type JsonObject } from './http.ts';
 import type { SearchPlan } from './contract.ts';

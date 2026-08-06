@@ -44,7 +44,7 @@ export const rabotaPlatform = textPlatform('rabota', 'Работа.ру', [
 ]);
 
 import { errorMessage, sourcesSettings, trace } from './config.ts';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, russianDate, structuredVacancy, type JsonObject } from './http.ts';
 import { VacancySearchCollector } from './http.ts';
 import type { SearchPlan } from './contract.ts';

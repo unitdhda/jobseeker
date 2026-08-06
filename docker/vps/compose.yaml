@@ -84,7 +84,6 @@ services:
       AI_SCORING_THINKING_LEVEL: "${AI_SCORING_THINKING_LEVEL:-medium}"
       CLAUDE_CLI_ENDPOINT: "http://claude-cli:8787"
       # A 2-vCPU host cannot sustain the Cloud Run concurrency settings.
-      SCRAPE_CONCURRENCY: "${SCRAPE_CONCURRENCY:-3}"
       USER_WORKFLOW_CONCURRENCY: "${USER_WORKFLOW_CONCURRENCY:-2}"
       SCORE_AGENT_CONCURRENCY_MIN: "2"
       SCORE_AGENT_CONCURRENCY_MAX: "4"

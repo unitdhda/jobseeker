@@ -72,9 +72,9 @@ export function extractCvDocumentIsolated(filename: string, mediaType: string | 
 }
 
 import { createHash } from 'node:crypto';
-import { clearSearchProfile, requireApprovedUser, saveCvSource } from '@jobseeker/store';
+import { clearSearchProfile, requireApprovedUser, saveCvSource } from './postgres.ts';
 import { searchPlatformIds } from './vacancies/registry.ts';
-import { careerProfilePlatformId } from './prefilter.ts';
+import { careerProfilePlatformId } from '@jobseeker/engine';
 
 export async function importCvSource(userId: string, filename: string,
   mediaType: string | undefined, bytes: Uint8Array): Promise<void> {

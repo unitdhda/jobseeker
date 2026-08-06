@@ -2,10 +2,10 @@
 import './postgres.ts';
 import { ensureCvAndSearchProfiles, tailorApplication } from './workflows.ts';
 import { config } from './config.ts';
-import { getCvHash, requireApprovedUser, usageInLast24Hours } from '@jobseeker/store';
+import { getCvHash, requireApprovedUser, usageInLast24Hours } from './postgres.ts';
 import type { JobWorkerMessage, JobWorkerRequest, RefreshUserResult, SerializedApplication } from './worker-client.ts';
 import { errorMessage } from './observability.ts';
-import { KeyedTaskScheduler } from '@jobseeker/sources';
+import { KeyedTaskScheduler } from '@jobseeker/engine/concurrency';
 
 const userScheduler = new KeyedTaskScheduler(config.userWorkflowConcurrency);
 let stopping = false;

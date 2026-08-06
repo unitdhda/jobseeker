@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import * as v from 'valibot';
 import { errorMessage, sourcesSettings, trace } from './config.ts';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 import { asObject, fetchSourceHtml, htmlText, jobPostings, plainText, sourceUrl, type JsonObject, VacancySearchCollector } from './http.ts';
 import type { SearchPlan } from './contract.ts';
 import type { SearchPlatform } from './contract.ts';

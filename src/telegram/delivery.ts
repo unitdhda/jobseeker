@@ -7,7 +7,7 @@ import {
   replaceDigestSnapshot,
   unsentHighScoreVacancies,
   type AlertVacancy,
-} from '@jobseeker/store';
+} from '../postgres.ts';
 import { getBot, targetChat, telegramRetryAfter } from './api.ts';
 import { applicationKeyboard, digestPageMessage, digestPageSize, escapeHtml, salary, sourceLabel } from './format.ts';
 

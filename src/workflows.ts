@@ -5,21 +5,20 @@ import {
   applicationAgents, beginApplication, claimForScoring, failApplication, getCvHash, getCvSource, getScoredVacancy,
   getSearchProfile, getVacancy, markApplicationReady, recordUsage, requireApprovedUser, saveScore, saveSearchProfile,
   transitionMatch, usageInLast24Hours, type ApplicationArtifact, type Vacancy,
-} from '@jobseeker/store';
+} from './postgres.ts';
 import { getSearchPlatform, platformSearches } from './vacancies/registry.ts';
 import { compileDemand, type DemandInput } from '@jobseeker/engine';
-import { activeUnitQueries, applyDemand, existingCompiledUnits } from '@jobseeker/store';
+import { activeUnitQueries, applyDemand, existingCompiledUnits } from './postgres.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
 import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '@jobseeker/cv/pdf';
 import { trace } from './observability.ts';
-import { prefilterVacancy } from './prefilter.ts';
 import { errorMessage } from './observability.ts';
-import { adaptiveConcurrency, AdaptiveTaskPool } from '@jobseeker/sources';
+import { adaptiveConcurrency, AdaptiveTaskPool } from '@jobseeker/engine/concurrency';
 import {
   careerProfilePlatformId, careerProfileSchema, normalizeCareerProfileJson, parseStoredCareerProfile, vacancyRecency,
   type CareerProfile, type StoredCareerProfile,
-} from './prefilter.ts';
+} from '@jobseeker/engine';
 import { compileCvDocument } from './documents.ts';
 import { detectCvLanguage } from './cv.ts';
 
@@ -208,7 +207,8 @@ function scoringApiFallbackConfigured(): boolean {
 async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provider: 'subscription' | 'api',
   signal:AbortSignal): Promise<void> {
   const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
-  const contexts=vacancies.map(vacancy=>{const recency=vacancyRecency(vacancy);return{vacancyId:vacancy.id,
+  const contexts=vacancies.map(vacancy=>{const recency=vacancyRecency(
+    vacancy,Date.now(),config.prefilterMaxAgeDays);return{vacancyId:vacancy.id,
     language:detectCvLanguage(`${vacancy.name}\n${vacancy.description}`),
     source:vacancy.source,name:vacancy.name,employer:vacancy.employer,area:vacancy.area,salaryFrom:vacancy.salaryFrom,
     salaryTo:vacancy.salaryTo,salaryCurrency:vacancy.salaryCurrency,salaryGross:vacancy.salaryGross,experience:vacancy.experience,

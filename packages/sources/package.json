@@ -4,7 +4,8 @@
   "type": "module",
   "exports": { ".": "./src/index.ts" },
   "dependencies": {
-    "@jobseeker/store": "workspace:*",
+    "@jobseeker/engine": "workspace:*",
+    "ipaddr.js": "2.5.0",
     "playwright": "1.62.0",
     "valibot": "1.4.2"
   }

@@ -20,7 +20,8 @@ export const careerProfileSchema = v.strictObject({
 export type CareerTrack = v.InferOutput<typeof careerTrackSchema>;
 export type CareerProfile = v.InferOutput<typeof careerProfileSchema>;
 
-export { careerProfilePlatformId } from '@jobseeker/store';
+/** Storage key for the CV-derived career profile shared by matching and profile workflows. */
+export const careerProfilePlatformId = '__career-profile-v1';
 
 export interface StoredCareerProfile {
   cvHash: string;
@@ -64,8 +65,7 @@ export function parseStoredCareerProfile(value: unknown, expectedCvHash: string)
   return parsed.success ? parsed.output : null;
 }
 
-import { config } from './config.ts';
-import type { Vacancy } from '@jobseeker/store';
+import type { VacancyContent } from './contracts.ts';
 
 const stop = new Set([
   'and','the','with','for','from','that','this','into','или','для','как','что','при','это','его','она','они',
@@ -116,7 +116,7 @@ function fallbackCareerProfile(cvText: string): CareerProfile {
   }] };
 }
 
-function trackEvidence(track: CareerTrack, vacancy: Vacancy): { role: number; skills: number; similarity: number; matchedSkills: string[] } {
+function trackEvidence(track: CareerTrack, vacancy: VacancyContent): { role: number; skills: number; similarity: number; matchedSkills: string[] } {
   const titleVariants = track.titleVariants.flatMap((variant) => variant.split(/\s+\/\s+/).map((title) => title.trim()).filter(Boolean));
   const similarity = Math.max(0, ...titleVariants.map((variant) => titleSimilarity(variant, vacancy.name)));
   const role = Math.round(similarity ** 2 * 75);
@@ -174,13 +174,13 @@ const recencyBands: readonly { band: RecencyBand; withinDays: number; weight: nu
 
 export interface VacancyRecency { band: RecencyBand; days: number; weight: number; expired: boolean; label: string }
 
-export function vacancyRecency(vacancy: Pick<Vacancy, 'publishedAt'>, now = Date.now()): VacancyRecency {
+export function vacancyRecency(vacancy: Pick<VacancyContent, 'publishedAt'>, now = Date.now(), maxAgeDays = 30): VacancyRecency {
   const published = Date.parse(vacancy.publishedAt);
   // An unparseable or future date says nothing, so it is treated as current rather than rejected on a guess.
   const days = Number.isFinite(published) ? Math.max(0, (now - published) / 86_400_000) : 0;
   const band = recencyBands.find((entry) => days < entry.withinDays) ?? recencyBands.at(-1)!;
   return { band: band.band, days: Math.floor(days), weight: band.weight,
-    expired: days >= config.prefilterMaxAgeDays, label: `published ${band.label}` };
+    expired: days >= maxAgeDays, label: `published ${band.label}` };
 }
 
 export interface PrefilterResult {
@@ -192,12 +192,12 @@ export interface PrefilterResult {
   reasons: string[];
 }
 
-export function vacancySemanticText(vacancy: Vacancy): string {
+export function vacancySemanticText(vacancy: VacancyContent): string {
   return `${vacancy.name}\n${vacancy.employer}\n${vacancy.description}\n${vacancy.keySkills.join(' ')}`;
 }
 
-export function prefilterVacancy(cvText: string, vacancy: Vacancy, minimumScore: number,
-  careerProfile?: CareerProfile): PrefilterResult {
+export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimumScore: number,
+  careerProfile?: CareerProfile, maxAgeDays = 30): PrefilterResult {
   const profile = careerProfile ?? fallbackCareerProfile(cvText);
   const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy) }))
     .sort((left, right) => right.role + right.skills - left.role - left.skills);
@@ -210,7 +210,7 @@ export function prefilterVacancy(cvText: string, vacancy: Vacancy, minimumScore:
   const cleanCv = relevanceCvText(cvText);
   const lexicalCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(`${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`));
   const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
-  const recency = vacancyRecency(vacancy);
+  const recency = vacancyRecency(vacancy, Date.now(), maxAgeDays);
   let combinedScore = Math.round(regexScore * 0.75 + lexicalScore * 0.25);
   if (recency.weight < 1) {
     combinedScore = Math.round(combinedScore * recency.weight);
@@ -224,7 +224,7 @@ export function prefilterVacancy(cvText: string, vacancy: Vacancy, minimumScore:
   // An advert this old is treated as filled whatever it matches, so the evidence score is kept for calibration
   // but no longer decides admission.
   const filtered = recency.expired || combinedScore < minimumScore;
-  if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${config.prefilterMaxAgeDays}-day limit`);
+  if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${maxAgeDays}-day limit`);
   else if (filtered) reasons.push(`combined score below ${minimumScore}`);
   return { regexScore, lexicalCosine, lexicalScore, combinedScore, filtered, reasons };
 }

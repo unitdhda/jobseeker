@@ -2,5 +2,13 @@
   "name": "@jobseeker/engine",
   "private": true,
   "type": "module",
-  "exports": { ".": "./src/index.ts" }
+  "exports": {
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts.ts",
+    "./concurrency": "./src/concurrency.ts"
+  },
+  "dependencies": {
+    "p-limit": "7.3.1",
+    "valibot": "1.4.2"
+  }
 }

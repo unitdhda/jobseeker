@@ -3,11 +3,9 @@
  * so the planner produces what the adapters declare they accept, not the other way round.
  */
 import type { BaseIssue, BaseSchema, InferOutput } from 'valibot';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
+import type { SearchPlan, VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 
-export interface SearchRecipient { userId: string; searchName: string }
-export interface PlannedSearch<T> { search: T; recipients: SearchRecipient[] }
-export interface SearchPlan<T> { searches: PlannedSearch<T>[] }
+export type { PlannedSearch, SearchPlan, SearchRecipient } from '@jobseeker/engine/contracts';
 export interface UserSearches<T> { userId: string; searches: readonly T[] }
 export interface PlanOptions {
   /** The platform lists everything it has whatever the query, so one job covers every cluster. */

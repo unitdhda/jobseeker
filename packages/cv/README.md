@@ -1,6 +1,6 @@
 # @jobseeker/cv
 
-Everything about the CV as a document, in two deliberately separate subpaths — there is no root barrel, because
+Everything about CV files and structured documents, in two deliberately separate subpaths — there is no root barrel, because
 the two halves have different dependency weights and consumers:
 
 - **`@jobseeker/cv/extract`** — turns an uploaded PDF/DOCX/Markdown into authoritative text plus a normalized

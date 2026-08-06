@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { careerProfileSchema, vacancyRecency, type CareerProfile } from '../src/prefilter.ts';
-import { prefilterVacancy } from '../src/prefilter.ts';
+import { careerProfileSchema, prefilterVacancy, vacancyRecency, type CareerProfile } from '@jobseeker/engine';
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
 import { hhPublishedAt, textSearchProfileSchema } from '@jobseeker/sources';
@@ -81,7 +80,9 @@ await test('age is reported in bands from the advert’s own publication date', 
 });
 
 await test('an advert past the age limit is rejected however well it matches', () => {
-  const strong = ['Senior Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity']] as const;
+  const strong: [string, string, string[]] = [
+    'Senior Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity'],
+  ];
   const fresh = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(0)), 20, designerProfile);
   const expired = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(45)), 20, designerProfile);
   assert.equal(fresh.filtered, false);
@@ -91,7 +92,9 @@ await test('an advert past the age limit is rejected however well it matches', (
 });
 
 await test('inside the limit age discounts a match without letting it outrank fit', () => {
-  const strong = ['Senior Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity']] as const;
+  const strong: [string, string, string[]] = [
+    'Senior Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity'],
+  ];
   const fresh = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(0)), 20, designerProfile);
   const ageing = prefilterVacancy(designerCv, vacancy(...strong, daysAgo(20)), 20, designerProfile);
   assert.equal(ageing.filtered, false);

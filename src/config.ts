@@ -94,33 +94,21 @@ export const config = {
   hireHiMaxPages: integerEnv('HIREHI_MAX_PAGES', 1, 1, 20),
   searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),
   searchQueriesPerCycle: integerEnv('SEARCH_QUERIES_PER_CYCLE', 1, 1, 8),
-  searchRotationMinutes: integerEnv('SEARCH_ROTATION_MINUTES', 30, 5, 1_440),
   searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
   // Token overlap, as a percentage, at which two users' searches count as one query and are fetched once.
   // Lower merges more aggressively and broadens each fetch; 100 merges only identical queries.
   searchClusterSimilarity: integerEnv('SEARCH_CLUSTER_SIMILARITY', 60, 0, 100),
-  // Vacancies the shared store already holds that are linked to each user per cycle. Zero disables the store source.
-  storeLinkLimitPerUser: integerEnv('STORE_LINK_LIMIT_PER_USER', 50, 0, 1_000),
   // How long a vacancy is kept after it stops appearing in searches, and the oldest the store will serve.
   vacancyRetentionDays: integerEnv('VACANCY_RETENTION_DAYS', 30, 7, 365),
   // Rows deleted per retention pass, so one cycle cannot spend itself purging a large backlog.
   vacancyPurgeBatchSize: integerEnv('VACANCY_PURGE_BATCH_SIZE', 500, 0, 20_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
-  // Best candidates each source is guaranteed per user before leftover slots are filled by score alone.
-  // Zero spreads the batch evenly across the configured platforms.
-  normalizationPerSourceQuota: integerEnv('NORMALIZATION_PER_SOURCE_QUOTA', 0, 0, 1_000),
-  candidatePrefilterBatchSize: integerEnv('CANDIDATE_PREFILTER_BATCH_SIZE', 1_000, 1, 20_000),
   candidateRefreshBatchSize: integerEnv('CANDIDATE_REFRESH_BATCH_SIZE', 2, 0, 1_000),
   candidateRefreshDays: integerEnv('CANDIDATE_REFRESH_DAYS', 7, 1, 365),
-  prefilterEnabled: booleanEnv('PREFILTER_ENABLED', true),
-  prefilterBatchSize: integerEnv('PREFILTER_BATCH_SIZE', 500, 1, 20_000),
   prefilterMinScore: integerEnv('PREFILTER_MIN_SCORE', 20, 0, 100),
   // An advert older than this is rejected outright, however well it matches: it is almost certainly filled.
   // Measured against the advert's own publication date, which every adapter reads from the source.
   prefilterMaxAgeDays: integerEnv('PREFILTER_MAX_AGE_DAYS', 30, 1, 365),
-  prefilterAuditPercent: integerEnv('PREFILTER_AUDIT_PERCENT', 5, 0, 100),
-  prefilterAuditSlots: integerEnv('PREFILTER_AUDIT_SLOTS', 1, 0, 100),
-  prefilterCalibrationMinLabels: integerEnv('PREFILTER_CALIBRATION_MIN_LABELS', 100, 1, 100_000),
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
@@ -138,7 +126,6 @@ export const config = {
   userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 24, 1, 100),
   maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),
   userWorkflowConcurrency: integerEnv('USER_WORKFLOW_CONCURRENCY', 5, 1, 20),
-  scrapeConcurrency: integerEnv('SCRAPE_CONCURRENCY', 8, 1, 40),
   deliveryConcurrency: integerEnv('DELIVERY_CONCURRENCY', 5, 1, 20),
   accessRequestCooldownMinutes: integerEnv('ACCESS_REQUEST_COOLDOWN_MINUTES', 60, 1, 43_200),
   cvUploadSessionCooldownMinutes: integerEnv('CV_UPLOAD_SESSION_COOLDOWN_MINUTES', 15, 1, 1_440),

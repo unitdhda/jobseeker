@@ -4,7 +4,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { handleCloudTask, type CloudTaskRequest } from './cloud-tasks.ts';
 import { errorMessage } from './observability.ts';
-import { persistenceReady } from '@jobseeker/store';
+import { persistenceReady } from './postgres.ts';
 
 const executionSecret = process.env.TASK_EXECUTION_SECRET?.trim() ?? '';
 if (!/^[A-Za-z0-9_-]{32,256}$/.test(executionSecret)) throw new Error('TASK_EXECUTION_SECRET is invalid.');
@@ -42,7 +42,7 @@ app.post('/tasks/execute', async (c) => {
 
 
 import { serve } from '@hono/node-server';
-import { closePostgresPool } from '@jobseeker/store';
+import { closePostgresPool } from './postgres.ts';
 import { initializeTelegramWebhookMode } from './telegram/bot.ts';
 
 await initializeTelegramWebhookMode();

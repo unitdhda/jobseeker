@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { matchVacancy, nextWakeMs, runSchedulerTick, type TickPorts } from '../src/engine-runtime.ts';
+import { matchVacancy, nextWakeMs, runSchedulerTick, type TickPorts } from '@jobseeker/engine';
 
 const policy = { floorMinutes: 30, ceilingMinutes: 720 };
 
@@ -22,7 +22,7 @@ function fixture(overrides: Partial<TickPorts> = {}): { ports: TickPorts; ran: u
     discover: async (platform, plan) => {
       ran.push({ platform, searches: plan.searches.map((entry) => entry.search) });
       // hh yields only for the ML search; habr is quiet.
-      const discoveredBySearch = platform === 'hh' ? { ML: 2, Design: 0 } : {};
+      const discoveredBySearch: Record<string, number> = platform === 'hh' ? { ML: 2, Design: 0 } : {};
       const discovered = Object.values(discoveredBySearch).reduce((sum, n) => sum + n, 0);
       return { searches: plan.searches.length, users: 0, seen: 10, discovered, discoveredBySearch };
     },

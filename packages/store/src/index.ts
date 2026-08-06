@@ -1,6 +1,5 @@
-export {
-  closePostgresPool, configureStore, getPostgresPool, persistenceReady, postgresQuery, storeSettings,
-  transientPostgresError, withPostgresTransaction, type StoreOptions, type StoreSettings,
-} from './client.ts';
-export * from './repos.ts';
-export * from './engine-repos.ts';
+export { createStore, type Store } from './store.ts';
+export { applicationAgents } from './repos.ts';
+export type { StoreOptions, StoreSettings } from './client.ts';
+export type * from './repos.ts';
+export type * from './engine-repos.ts';

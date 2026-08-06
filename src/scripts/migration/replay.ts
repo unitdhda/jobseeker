@@ -5,15 +5,16 @@
  */
 import { Pool } from 'pg';
 import { nextCadence, pickDueUnits } from '@jobseeker/engine';
-import { configureStore, claimForScoring, createMatches, digestVacancies, dueUnits, recordUnitRun,
-  transitionMatch, unsentHighScoreVacancies } from '@jobseeker/store';
+import { createStore } from '@jobseeker/store';
 
 const url = process.env.SCRATCH_DATABASE_URL;
 if (!url) throw new Error('SCRATCH_DATABASE_URL is required.');
-configureStore({ databaseUrl: url, poolMax: 2, ssl: false, settings: {
+const store = createStore({ databaseUrl: url, poolMax: 2, ssl: false, settings: {
   accessRequestCooldownMinutes: 0, prefilterMaxAgeDays: 30, searchPlatforms: [], digestMinScore: 50, alertScore: 80,
-  normalizationPerSourceQuota: 0, timezone: 'UTC', safeVacancyUrl: (_source, value) => value,
+  timezone: 'UTC', safeVacancyUrl: (_source, value) => value,
 } });
+const { claimForScoring, createMatches, digestVacancies, dueUnits, recordUnitRun,
+  transitionMatch, unsentHighScoreVacancies } = store;
 const pool = new Pool({ connectionString: url, max: 2, ssl: false });
 const policy = { floorMinutes: 30, ceilingMinutes: 720 };
 const failures: string[] = [];
@@ -115,4 +116,4 @@ if (someUser) {
 
 console.log(failures.length ? `\nGATE F FAILED: ${failures.join(', ')}` : '\nGATE F PASSED');
 process.exitCode = failures.length ? 1 : 0;
-await pool.end();
+await Promise.all([pool.end(), store.closePostgresPool()]);

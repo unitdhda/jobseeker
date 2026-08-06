@@ -1,6 +1,6 @@
 import { contentText, type ModelThinkingLevel, type Usage } from '@earendil-works/pi-ai';
 import * as v from 'valibot';
-import { postgresQuery } from '@jobseeker/store';
+import { recordLlmUsageEvent } from './postgres.ts';
 
 function modelParts(value:string):[string,string]{
   const slash=value.indexOf('/');
@@ -144,9 +144,10 @@ export async function recordLlmUsage(userId: string, agent: string, model: strin
   let modelTotals=byModel.get(model);
   if(!modelTotals){modelTotals=emptyTotals();byModel.set(model,modelTotals);}
   add(modelTotals,usage);
-  await postgresQuery(`insert into usage_events(user_id,kind,occurred_at,agent,model,input_tokens,output_tokens,
-    cache_read_tokens,cache_write_tokens,total_tokens,cost_usd) values($1,'llm',now(),$2,$3,$4,$5,$6,$7,$8,$9)`,
-    [userId,agent,model,usage.input,usage.output,usage.cacheRead,usage.cacheWrite,usage.totalTokens,usage.cost.total]);
+  await recordLlmUsageEvent(userId, agent, model, {
+    input: usage.input, output: usage.output, cacheRead: usage.cacheRead, cacheWrite: usage.cacheWrite,
+    totalTokens: usage.totalTokens, costUsd: usage.cost.total,
+  });
 }
 
 function copy(source: LlmUsageTotals): LlmUsageTotals {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
-import { careerProfileSchema, normalizeCareerProfileJson } from '../src/prefilter.ts';
+import { careerProfileSchema, normalizeCareerProfileJson } from '@jobseeker/engine';
 import { describeValidationIssues } from '../src/ai.ts';
 
 const packed = {

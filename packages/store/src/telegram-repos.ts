@@ -1,4 +1,4 @@
-import { postgresQuery, withPostgresTransaction } from '@jobseeker/store';
+import { currentStoreRuntime, postgresQuery, withPostgresTransaction, type StoreRuntime } from './client.ts';
 
 function validKind(kind:string):void{
   if(!/^[a-z][a-z0-9-]{0,63}$/.test(kind))throw new Error('Telegram session kind is invalid.');
@@ -42,7 +42,7 @@ export async function deleteTelegramSession(userId:string,kind:string):Promise<v
   validKind(kind);await postgresQuery('delete from user_state where user_id=$1 and kind=$2',[userId,kind]);
 }
 
-let lastCleanup=0;
+const lastCleanup = new WeakMap<StoreRuntime, number>();
 export async function claimTelegramUpdate(updateId:number,retryProcessing=false):Promise<boolean>{
   if(!Number.isSafeInteger(updateId)||updateId<0)throw new Error('Telegram update_id is invalid.');
   const claimed=await withPostgresTransaction(async client=>{
@@ -54,7 +54,8 @@ export async function claimTelegramUpdate(updateId:number,retryProcessing=false)
       and (state='failed' or (state='processing' and (lease_expires_at<now() or $2))) returning update_id`,[updateId,retryProcessing]);
     return Boolean(retried.rowCount);
   });
-  if(Date.now()-lastCleanup>3_600_000){lastCleanup=Date.now();void postgresQuery("delete from telegram_updates where received_at<now()-interval '7 days'").catch(()=>undefined);}
+  const owner=currentStoreRuntime(),last=lastCleanup.get(owner)??0;
+  if(Date.now()-last>3_600_000){lastCleanup.set(owner,Date.now());void postgresQuery("delete from telegram_updates where received_at<now()-interval '7 days'").catch(()=>undefined);}
   return claimed;
 }
 export async function completeTelegramUpdate(updateId:number):Promise<void>{

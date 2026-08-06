@@ -1,7 +1,13 @@
 import { createHash, randomInt } from 'node:crypto';
 import type { PoolClient, QueryResultRow } from 'pg';
 import type { CanonicalCvDocument, CvSourceFormat, ExtractedCvDocument } from '@jobseeker/cv/extract';
-import { storeSettings } from './client.ts';
+import type {
+  VacancyCandidate as VacancyCandidateContract, VacancyCandidateInput, VacancyContent, VacancyInput,
+} from '@jobseeker/engine/contracts';
+import { careerProfilePlatformId } from '@jobseeker/engine';
+import { currentStoreRuntime, storeSettings, type StoreRuntime } from './client.ts';
+
+export type { VacancyCandidateInput, VacancyInput } from '@jobseeker/engine/contracts';
 
 
 export type UserStatus = 'unregistered' | 'pending' | 'approved' | 'rejected' | 'revoked';
@@ -21,13 +27,11 @@ export interface LlmUsageSummary {
   turns24h:number;turnsTotal:number;tokens24h:number;tokensTotal:number;cost24hUsd:number;costTotalUsd:number;
   hourlyTimeline:UsageHour[];
 }
-export interface Vacancy {
-  id: number; source: string; sourceId: string; applyId: string; name: string; employer: string; area: string;
-  salaryFrom: number | null; salaryTo: number | null; salaryCurrency: string | null; salaryGross: boolean | null;
-  experience: string; employment: string; schedule: string; workFormat: string; description: string; keySkills: string[];
-  url: string; publishedAt: string; sourceQuery: string; contentHash: string; decision: string;
+export interface Vacancy extends VacancyContent {
+  id: number;
+  applyId: string;
+  decision: string;
 }
-export interface VacancyInput extends Omit<Vacancy, 'id' | 'applyId' | 'decision'> {}
 export interface CvSource {
   cvSha256: string; cvText: string; document: CanonicalCvDocument;
   sourceFormat: CvSourceFormat; originalFilename: string; mediaType: string; parserName: string; parserVersion: string;
@@ -35,22 +39,7 @@ export interface CvSource {
 export interface DeliverySettings {
   startMinutes: number; endMinutes: number; digestMinutes: number; timezone: string; lastDigestAt: string | null;
 }
-export interface VacancyCandidateInput {
-  source: string; sourceId: string; url: string; searchName: string; title: string;
-  summary?: string; publishedAt?: string; payload?: unknown;
-}
-export interface VacancyCandidate extends Omit<VacancyCandidateInput, 'summary' | 'publishedAt'> {
-  summary: string; publishedAt: string; listingHash: string; status: string; attempts: number; combinedScore: number | null;
-}
-export interface PrefilterScoreInput {
-  regexScore: number; lexicalCosine: number; lexicalScore: number; combinedScore: number;
-  filtered: boolean; auditSelected: boolean; reasons: string[];
-}
-export interface PrefilteredVacancy extends Vacancy { prefilterScore: number; auditSelected: boolean }
-export interface PrefilterCalibration {
-  compared: number; correlation: number | null; audited: number; auditFalseNegatives: number;
-  applied: number; skipped: number; feedbackLabels: number; readyForAdjustment: boolean;
-}
+export interface VacancyCandidate extends VacancyCandidateContract {}
 export interface ScoredVacancy extends Vacancy { userId: string; score: number }
 export interface AlertVacancy extends ScoredVacancy {
   primaryTrack: string; summary: string; reasons: string[]; gaps: string[];
@@ -58,8 +47,6 @@ export interface AlertVacancy extends ScoredVacancy {
 
 import { postgresQuery, withPostgresTransaction } from './client.ts';
 
-/** Keys the career profile's row in profiles.search_profiles; a storage convention, so the store owns it. */
-export const careerProfilePlatformId = '__career-profile-v1';
 const safeVacancyUrl = (source: string, url: string): string => storeSettings().safeVacancyUrl(source, url);
 
 type Row = QueryResultRow & Record<string, unknown>;
@@ -69,17 +56,23 @@ const one = async <T extends Row = Row>(text: string, params: unknown[] = []): P
 const txq = async <T extends Row = Row>(client: PoolClient, text: string, params: unknown[] = []): Promise<T[]> =>
   (await client.query<T>(text, params)).rows;
 
-// Lazy rather than an import-time IIFE: settings arrive via configureStore after this module evaluates, and a
-// database write on mere import was never a reasonable side effect anyway.
-let initialization: Promise<void> | undefined;
-const ready = (): Promise<void> => initialization ??= (async () => {
-  if (!storeSettings().telegramUserId) return;
-  const timestamp = now();
-  await q(`insert into users(user_id,chat_id,display_name,status,is_owner,approved_at,updated_at)
-    values ($1,$2,'Owner','approved',1,$3,$3) on conflict(user_id) do update set chat_id=excluded.chat_id,
-    status='approved',is_owner=1,approved_at=coalesce(users.approved_at,excluded.approved_at),updated_at=excluded.updated_at`,
-    [storeSettings().telegramUserId, storeSettings().telegramChatId ?? storeSettings().telegramUserId, timestamp]);
-})();
+// Lazy per store instance: constructing repositories never performs a database write.
+const initializations = new WeakMap<StoreRuntime, Promise<void>>();
+const ready = (): Promise<void> => {
+  const owner = currentStoreRuntime();
+  const existing = initializations.get(owner);
+  if (existing) return existing;
+  const created = (async () => {
+    if (!storeSettings().telegramUserId) return;
+    const timestamp = now();
+    await q(`insert into users(user_id,chat_id,display_name,status,is_owner,approved_at,updated_at)
+      values ($1,$2,'Owner','approved',1,$3,$3) on conflict(user_id) do update set chat_id=excluded.chat_id,
+      status='approved',is_owner=1,approved_at=coalesce(users.approved_at,excluded.approved_at),updated_at=excluded.updated_at`,
+      [storeSettings().telegramUserId, storeSettings().telegramChatId ?? storeSettings().telegramUserId, timestamp]);
+  })();
+  initializations.set(owner, created);
+  return created;
+};
 function jsonValue<T>(value: unknown): T { return (typeof value === 'string' ? JSON.parse(value) : value) as T; }
 function isoTimestamp(value: unknown): string { return value instanceof Date ? value.toISOString() : String(value); }
 function optionalIsoTimestamp(value: unknown): string | null { return value == null ? null : isoTimestamp(value); }
@@ -159,6 +152,23 @@ async function hasCv(userId: string, client?: PoolClient): Promise<boolean> {
 export async function recordUsage(userId: string, kind: UsageKind): Promise<void> {
   await ready(); if (!await hasCv(userId)) throw new Error('An authoritative CV source is required.');
   await q('insert into usage_events(user_id,kind,occurred_at) values ($1,$2,$3)', [userId, kind, now()]);
+}
+
+export interface LlmUsageInput {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  costUsd: number;
+}
+
+export async function recordLlmUsageEvent(userId: string, agent: string, model: string,
+  usage: LlmUsageInput): Promise<void> {
+  await ready();
+  await q(`insert into usage_events(user_id,kind,occurred_at,agent,model,input_tokens,output_tokens,
+    cache_read_tokens,cache_write_tokens,total_tokens,cost_usd) values($1,'llm',now(),$2,$3,$4,$5,$6,$7,$8,$9)`,
+    [userId,agent,model,usage.input,usage.output,usage.cacheRead,usage.cacheWrite,usage.totalTokens,usage.costUsd]);
 }
 /**
  * The tailored CV and the cover letter are separate deliverables with separate daily budgets. They are told apart

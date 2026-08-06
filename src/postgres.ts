@@ -1,10 +1,6 @@
-/**
- * The store composition root: turns the environment into store options exactly once. Entrypoints import this
- * module for its effect before anything touches a repository; everything else imports @jobseeker/store directly.
- * Env-shape validation lives here because it is the app's job; the package receives plain values.
- */
+/** Application-owned PostgreSQL store instance. The package itself has no global pool or configuration. */
 import type { PoolConfig } from 'pg';
-import { configureStore } from '@jobseeker/store';
+import { createStore } from '@jobseeker/store';
 import { config } from './config.ts';
 import { safeVacancyUrl } from '@jobseeker/sources';
 
@@ -29,7 +25,7 @@ function sslConfig(): PoolConfig['ssl'] {
   throw new Error('POSTGRES_SSL must be disable, require, or verify-full.');
 }
 
-configureStore({
+export const store = createStore({
   databaseUrl: process.env.DATABASE_URL ?? '',
   poolMax: poolMaximum(),
   ssl: sslConfig(),
@@ -37,8 +33,31 @@ configureStore({
     telegramUserId: config.telegramUserId, telegramChatId: config.telegramChatId,
     accessRequestCooldownMinutes: config.accessRequestCooldownMinutes,
     prefilterMaxAgeDays: config.prefilterMaxAgeDays, searchPlatforms: config.searchPlatforms,
-    digestMinScore: config.digestMinScore, alertScore: config.alertScore,
-    normalizationPerSourceQuota: config.normalizationPerSourceQuota, timezone: config.timezone,
+    digestMinScore: config.digestMinScore, alertScore: config.alertScore, timezone: config.timezone,
     safeVacancyUrl,
   },
 });
+
+export const {
+  activeUnitQueries, addSpend, addressableDigestPage, applyDemand, approvedUsers, beginApplication,
+  candidatesDueForRefresh, claimForScoring, claimTelegramSession, claimTelegramUpdate, clearSearchProfile,
+  closePostgresPool, completeTelegramUpdate, createMatches, deleteTelegramSession, deleteUserData,
+  deliveredArtifact, digestVacancies, dueUnits, existingCompiledUnits, exportUserData, failApplication,
+  failTelegramUpdate, getCvHash, getCvSource, getDeliverySettings, getScoredVacancy,
+  getScoredVacancyByApplyId, getSearchProfile, getTelegramSession, getTelegramUser, getVacancy,
+  isApprovedUser, listTelegramUsers, llmUsageSummary, markAlerted, markApplicationDelivered,
+  markApplicationReady, markCandidateClosed, markCandidateFailed, markCandidateNormalized, nextUnitDueAt,
+  persistenceReady, purgeExpiredVacancies, queuedListings, recordListingCandidate, recordLlmUsageEvent,
+  recordUnitRun, recordUsage, releaseClaimedTelegramSession, replaceDigestSnapshot, requestAccess,
+  requireApprovedUser, saveCvSource, saveDeliveredArtifact, saveDeliverySettings, saveScore,
+  saveSearchProfile, scoredVacanciesByApplyIdPrefix, scraperSummary, searchScoredVacancies,
+  setTelegramSession, setUserStatus, skipVacancy, spentToday, touchTelegramUser, transitionMatch,
+  unsentHighScoreVacancies, updateClaimedTelegramSession, upsertVacancy, usageInLast24Hours, userUsageSummaries,
+  withPostgresAdvisoryLock,
+} = store;
+
+export { applicationAgents } from '@jobseeker/store';
+export type {
+  AlertVacancy, ApplicationArtifact, DeliverySettings, ScoredVacancy, ScraperHour, ScraperSummary,
+  TelegramIdentity, TelegramUser, UsageHour, Vacancy, VacancyInput,
+} from '@jobseeker/store';

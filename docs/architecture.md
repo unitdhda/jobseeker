@@ -37,18 +37,21 @@ For the product overview, start with the [README](../README.md). For deployment 
 
 ## Repository boundaries
 
-The repository is a Bun-workspaces monorepo with four domain packages and one thin application layer.
+The repository has four Bun workspaces composed by the executable application layer. See the
+[dependency graph](dependency-graph.md) for allowed import directions and factory ownership.
 
 | Workspace | Owns | Does not own |
 |---|---|---|
-| `@jobseeker/engine` | Pure identity, demand compilation, cadence, fair picking, match-state rules | Database, environment, network |
-| `@jobseeker/store` | PostgreSQL client and all repositories | Environment parsing, Telegram, source HTTP |
-| `@jobseeker/sources` | Adapter contract, discovery/normalization, SSRF allowlists | Persistence, model calls |
+| `@jobseeker/engine` | Pipeline contracts, concurrency policy, identity, cadence, matching, prefiltering, budgets, loop | Database, environment, source implementations, CV files |
+| `@jobseeker/store` | Factory-owned PostgreSQL pool and all runtime repositories | Environment parsing, Telegram, source HTTP |
+| `@jobseeker/sources` | Factory-owned adapters, discovery/normalization, SSRF policy, HH browser | Persistence implementation, model calls |
 | `@jobseeker/cv` | File extraction, structured CV coercion, Typst rendering | User state, model selection |
-| root `src/` | Configuration and dependency composition | Reusable package-domain rules |
+| root `src/` | Configuration, factory composition, cross-domain workflows, AI and Telegram integrations | Reusable single-domain rules |
 
-Packages receive dependencies and settings explicitly. Application entrypoints import `src/postgres.ts` first to
-configure the store, then compose workflows, adapters, Telegram, and model providers.
+`createStore` returns an isolated pool/repository instance; `createSourceRegistry` returns isolated settings,
+adapter pools, and browser state. The application owns one production instance of each. Source adapters report
+listings through an injected persistence port and never import PostgreSQL. CV-specific application generation stays
+in the root cross-domain workflow, so engine has no dependency on CV.
 
 ## Demand and search-unit identity
 

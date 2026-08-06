@@ -5,23 +5,24 @@
  * this loop owns discovery.
  */
 import { config } from './config.ts';
-import { createEngineLoop, drainScoring, type EngineLoop, type LoopPorts } from './engine-loop.ts';
-import { matchVacancy, nextWakeMs, runSchedulerTick, type TickDiscovery } from './engine-runtime.ts';
+import {
+  createEngineLoop, drainScoring, matchVacancy, nextWakeMs, runSchedulerTick,
+  type EngineLoop, type LoopPorts, type TickDiscovery,
+} from '@jobseeker/engine';
 import {
   addSpend, approvedUsers, createMatches, dueUnits, getCvSource, getSearchProfile, getVacancy, nextUnitDueAt,
   recordUnitRun, spentToday, type Vacancy,
-} from '@jobseeker/store';
+} from './postgres.ts';
 import { deliverDueNotifications, normalizeListings } from './vacancies/jobs.ts';
-import { getSearchPlatform, type SearchPlan } from './vacancies/registry.ts';
+import { closeSources, getSearchPlatform, type SearchPlan } from './vacancies/registry.ts';
 import {
   careerProfilePlatformId, parseStoredCareerProfile, prefilterVacancy, type CareerProfile, type StoredCareerProfile,
-} from './prefilter.ts';
+} from '@jobseeker/engine';
 import { scorePendingVacancies } from './workflows.ts';
 import { llmUsageSince, llmUsageSnapshot } from './ai.ts';
 import { errorMessage } from './observability.ts';
 import { persistHhBrowserState, restoreHhBrowserState } from './runtime-state.ts';
 import { enqueueDueDeliveryTasks } from './cloud-tasks.ts';
-import { closeHhBrowser } from '@jobseeker/sources';
 
 const cadencePolicy = { floorMinutes: config.unitCadenceFloorMinutes, ceilingMinutes: config.unitCadenceCeilingMinutes };
 
@@ -48,7 +49,9 @@ async function matchOne(lenses: UserLens[], vacancy: Vacancy, now: Date): Promis
     approvedUserIds: async () => lenses.map((lens) => lens.userId),
     lexicalScore: async (userId) => {
       const lens = lenses.find((entry) => entry.userId === userId)!;
-      const result = prefilterVacancy(lens.cvText, vacancy, config.prefilterMinScore, lens.profile);
+      const result = prefilterVacancy(
+        lens.cvText, vacancy, config.prefilterMinScore, lens.profile, config.prefilterMaxAgeDays,
+      );
       // The prefilter already folds the floor and recency into `filtered`; a filtered vacancy never matches.
       return result.filtered ? -1 : Math.max(0, Math.round(result.combinedScore));
     },
@@ -126,7 +129,7 @@ export function startEngineLoop(): void {
   loopDone = (async () => {
     await restoreHhBrowserState().catch((error) => console.error(`Could not restore HH browser state: ${errorMessage(error)}`));
     try { await loop!.run(); } finally {
-      await closeHhBrowser().catch(() => undefined);
+      await closeSources().catch(() => undefined);
       await persistHhBrowserState().catch((error) => console.error(`Could not persist HH browser state: ${errorMessage(error)}`));
     }
   })();

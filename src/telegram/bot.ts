@@ -22,12 +22,14 @@ import {
   type ScoredVacancy,
   type TelegramUser,
   addressableDigestPage,
-} from '@jobseeker/store';
+} from '../postgres.ts';
 import { importCvSource } from '../cv.ts';
-import { type ApplicationArtifact } from '@jobseeker/store';
+import { type ApplicationArtifact } from '../postgres.ts';
 import { maximumCvBytes } from '../cv.ts';
 import { errorMessage } from '../observability.ts';
-import { claimTelegramSession, deleteTelegramSession, getTelegramSession, setTelegramSession } from '../telegram-state.ts';
+import {
+  claimTelegramSession, deleteTelegramSession, getTelegramSession, setTelegramSession,
+} from '../postgres.ts';
 import {
   deliverySettingsStatus,
   normalizeUtcOffset,

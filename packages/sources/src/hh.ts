@@ -1,5 +1,7 @@
 import * as v from 'valibot';
-import { errorMessage, sourcesSettings, trace } from './config.ts';
+import {
+  currentSourcesRuntime, errorMessage, sourcesSettings, trace, type SourcesRuntime,
+} from './config.ts';
 import type { SearchPlatform } from './contract.ts';
 
 const id = v.pipe(v.string(), v.regex(/^\d+$/, 'Expected a numeric HH identifier'));
@@ -126,7 +128,7 @@ export function hhSearchUrl(search: HhSearch, page: number): string {
 import { createHash } from 'node:crypto';
 
 import { chromium, type BrowserContext, type Page } from 'playwright';
-import { type VacancyCandidate, type VacancyInput } from '@jobseeker/store';
+import { type VacancyCandidate, type VacancyInput } from '@jobseeker/engine/contracts';
 import { VacancySearchCollector } from './http.ts';
 import { assertPublicAddress, jobPostings, plainText, russianDate, sourceUrl } from './http.ts';
 import type { SearchPlan } from './contract.ts';
@@ -228,7 +230,7 @@ async function stripVacancy(page: Page, url: string, sourceQuery: string): Promi
   return { ...base, contentHash: createHash('sha256').update(JSON.stringify(base)).digest('hex') };
 }
 
-let sharedContext:BrowserContext|undefined;
+const sharedContexts = new WeakMap<SourcesRuntime, BrowserContext>();
 
 async function launchContext(): Promise<BrowserContext> {
   const browserData = sourcesSettings().hhBrowserDataPath;
@@ -241,9 +243,9 @@ async function launchContext(): Promise<BrowserContext> {
     chromiumSandbox: true,
     env: {
       HOME: browserData,
-      LANG: process.env.LANG ?? 'C.UTF-8',
-      PATH: process.env.PATH ?? '/usr/local/bin:/usr/bin:/bin',
-      TMPDIR: '/tmp',
+      LANG: sourcesSettings().browserEnvironment.lang,
+      PATH: sourcesSettings().browserEnvironment.path,
+      TMPDIR: sourcesSettings().browserEnvironment.tmpdir,
     },
     args: ['--disable-dev-shm-usage'],
     serviceWorkers:'block',
@@ -254,10 +256,11 @@ async function launchContext(): Promise<BrowserContext> {
 }
 
 async function openContext():Promise<BrowserContext>{
-  if(sharedContext)return sharedContext;
+  const owner=currentSourcesRuntime(),existing=sharedContexts.get(owner);
+  if(existing)return existing;
   let lastError:unknown;
   for(let attempt=1;attempt<=3;attempt++){
-    try{return sharedContext=await launchContext();}
+    try{const created=await launchContext();sharedContexts.set(owner,created);return created;}
     catch(error){lastError=error;if(attempt<3)await new Promise(resolve=>setTimeout(resolve,2_000*attempt));}
   }
   throw lastError;
@@ -270,22 +273,22 @@ async function closeContextBounded(context:BrowserContext):Promise<void>{
 }
 
 export async function closeHhBrowser():Promise<void>{
-  const context=sharedContext;sharedContext=undefined;
+  const owner=currentSourcesRuntime(),context=sharedContexts.get(owner);sharedContexts.delete(owner);
   if(context)await closeContextBounded(context);
 }
 
 async function withHhDeadline<T>(operationName:string,operation:(context:BrowserContext)=>Promise<T>):Promise<T>{
-  const context=await openContext(),timeoutMessage=
+  const owner=currentSourcesRuntime(),context=await openContext(),timeoutMessage=
     `HH browser ${operationName} exceeded ${sourcesSettings().hhOperationTimeoutSeconds} seconds.`;
   let deadline:ReturnType<typeof setTimeout>|undefined;
   const timedOut=new Promise<never>((_resolve,reject)=>{deadline=setTimeout(()=>{
-    if(sharedContext===context)sharedContext=undefined;
+    if(sharedContexts.get(owner)===context)sharedContexts.delete(owner);
     void context.close({reason:timeoutMessage}).catch(()=>undefined);reject(new Error(timeoutMessage));
   },sourcesSettings().hhOperationTimeoutSeconds*1_000);});
   try{return await Promise.race([operation(context),timedOut]);}
   catch(error){
-    if(/closed|crashed|disconnected/i.test(error instanceof Error?error.message:String(error))&&sharedContext===context){
-      sharedContext=undefined;await closeContextBounded(context);
+    if(/closed|crashed|disconnected/i.test(error instanceof Error?error.message:String(error))&&sharedContexts.get(owner)===context){
+      sharedContexts.delete(owner);await closeContextBounded(context);
     }
     throw error;
   }finally{if(deadline)clearTimeout(deadline);}

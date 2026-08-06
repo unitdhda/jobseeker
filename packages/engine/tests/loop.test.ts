@@ -3,7 +3,7 @@ import test from 'node:test';
 import {
   createEngineLoop, drainScoring, runDiscoveryIteration, runJudgmentIteration,
   type DiscoveryPorts, type JudgmentPorts, type LoopPorts, type ScoringPorts,
-} from '../src/engine-loop.ts';
+} from '@jobseeker/engine';
 
 function discoveryFixture(overrides: Partial<DiscoveryPorts> = {}): { ports: DiscoveryPorts; calls: string[] } {
   const calls: string[] = [];

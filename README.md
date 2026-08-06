@@ -110,16 +110,18 @@ mean it should be enabled in every deployment; probe it from the machine that wi
 
 ## Technical overview
 
-Jobseeker is a Bun-workspaces monorepo. Four packages contain domain code; the root application composes them.
+Jobseeker is a Bun-workspaces monorepo. Domain and infrastructure packages stay behind explicit dependency
+boundaries; the root application composes them.
 
 | Workspace | Responsibility |
 |---|---|
-| `packages/engine` | Search identity, demand compilation, adaptive cadence, fair scheduling, match-state rules |
-| `packages/store` | PostgreSQL client and repositories |
-| `packages/sources` | Vacancy adapters, contracts, parsing, and network allowlists |
-| `packages/cv` | CV extraction and Typst PDF rendering |
-| `src/` | Engine runtime, Telegram, workflows, model wiring, workers, and deployment entrypoints |
+| `packages/engine` | Pipeline contracts, bounded concurrency, identity, matching, budgets, and loop policy |
+| `packages/store` | Factory-owned PostgreSQL pool and repositories |
+| `packages/sources` | Factory-owned vacancy adapters, parsing, browser state, and network allowlists |
+| `packages/cv` | CV extraction, structured documents, and Typst PDF rendering |
+| `src/` | Configuration, factory composition, cross-domain workflows, AI, Telegram, workers, and entrypoints |
 
+The [workspace dependency graph](docs/dependency-graph.md) documents and enforces the allowed import directions.
 PostgreSQL is the only runtime database. `search_units.next_run_at` owns the discovery schedule, and exactly one
 process may run with `RUN_JOBS=true`. There is no scheduler lock that makes a second engine loop safe.
 

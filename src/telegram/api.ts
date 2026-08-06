@@ -1,6 +1,6 @@
 import { Bot, type Context } from 'grammy';
 import { config } from '../config.ts';
-import { getTelegramUser, type TelegramIdentity } from '@jobseeker/store';
+import { getTelegramUser, type TelegramIdentity } from '../postgres.ts';
 
 
 let bot: Bot | undefined;

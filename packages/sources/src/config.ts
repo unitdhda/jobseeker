@@ -1,4 +1,6 @@
-/** The knobs and app services the adapters use. The app snapshots settings from its config at composition. */
+import { AsyncLocalStorage } from 'node:async_hooks';
+import type { VacancyCandidateInput } from '@jobseeker/engine/contracts';
+
 export interface SourcesSettings {
   searchNewVacancyLimit: number;
   searchPageBudgetPerPlatform: number;
@@ -11,38 +13,40 @@ export interface SourcesSettings {
   playwrightHeadless: boolean;
   playwrightChromiumPath: string | undefined;
   timezone: string;
-  /** Parsed by the app from ATS_BOARDS; empty means the adapter discovers nothing. */
+  browserEnvironment: { lang: string; path: string; tmpdir: string };
   atsBoards: readonly string[];
-  /** Parsed by the app from TRUDVSEM_REGION. */
   trudvsemRegion: string | undefined;
 }
 
 export interface SourcesOptions {
   settings: SourcesSettings;
-  /** Observability stays an app concern; adapters only emit through what they are given. */
   trace(event: string, data?: unknown): void;
-  /** Redacting formatter — security-sensitive, so it is injected rather than duplicated. */
   errorMessage(error: unknown): string;
+  recordListingCandidate(input: VacancyCandidateInput): Promise<boolean>;
 }
 
-let options: SourcesOptions | undefined;
+export interface SourcesRuntime { readonly options: SourcesOptions }
+const currentSources = new AsyncLocalStorage<SourcesRuntime>();
 
-/** Same init-once contract as the store: first call wins, and use before configuration throws. */
-export function configureSources(provided: SourcesOptions): void {
-  options ??= provided;
+export function createSourcesRuntime(options: SourcesOptions): SourcesRuntime {
+  return { options };
+}
+
+export function runWithSources<T>(runtime: SourcesRuntime, operation: () => T): T {
+  return currentSources.run(runtime, operation);
+}
+
+export function currentSourcesRuntime(): SourcesRuntime {
+  const value = currentSources.getStore();
+  if (!value) throw new Error('A source adapter was called outside its createSourceRegistry instance.');
+  return value;
 }
 
 export function sourcesSettings(): SourcesSettings {
-  if (!options) throw new Error('configureSources must run before the sources are used.');
-  return options.settings;
+  return currentSourcesRuntime().options.settings;
 }
 
-export const trace = (event: string, data?: unknown): void => {
-  if (!options) throw new Error('configureSources must run before the sources are used.');
-  options.trace(event, data);
-};
-
-export const errorMessage = (error: unknown): string => {
-  if (!options) throw new Error('configureSources must run before the sources are used.');
-  return options.errorMessage(error);
-};
+export const trace = (event: string, data?: unknown): void => currentSourcesRuntime().options.trace(event, data);
+export const errorMessage = (error: unknown): string => currentSourcesRuntime().options.errorMessage(error);
+export const recordListingCandidate = (input: VacancyCandidateInput): Promise<boolean> =>
+  currentSourcesRuntime().options.recordListingCandidate(input);

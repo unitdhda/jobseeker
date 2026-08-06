@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import { CloudTasksClient, protos } from '@google-cloud/tasks';
 import { config } from './config.ts';
-import { approvedUsers } from '@jobseeker/store';
-import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './telegram-state.ts';
-import { mapConcurrent } from '@jobseeker/sources';
+import { approvedUsers } from './postgres.ts';
+import {
+  claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate,
+} from './postgres.ts';
+import { mapConcurrent } from '@jobseeker/engine/concurrency';
 
 export type CloudTaskRequest =
   | { key: string; kind: 'telegram'; update: unknown }

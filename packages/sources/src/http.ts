@@ -1,5 +1,6 @@
 import { isIP } from 'node:net';
 import { lookup } from 'node:dns/promises';
+import ipaddr from 'ipaddr.js';
 
 // Populated by the registry from each platform's own hosts declaration: adding a source no longer means editing
 // this file, and a host absent from an adapter's declaration still fails closed here.
@@ -8,22 +9,12 @@ export function registerSourceHosts(source: string, hosts: readonly string[]): v
   sourceHosts.set(source, new Set(hosts));
 }
 
-function privateIpv4(address: string): boolean {
-  const parts = address.split('.').map(Number);
-  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
-  const [a, b] = parts;
-  return a === 0 || a === 10 || a === 127 || a >= 224
-    || (a === 100 && b >= 64 && b <= 127)
-    || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19));
-}
-
-function privateIpv6(address: string): boolean {
-  const normalized = address.toLowerCase().split('%')[0];
-  return normalized === '::' || normalized === '::1' || normalized.startsWith('fc') || normalized.startsWith('fd')
-    || /^fe[89ab]/.test(normalized) || normalized.startsWith('ff')
-    || normalized.startsWith('::ffff:127.') || normalized.startsWith('::ffff:10.')
-    || normalized.startsWith('::ffff:192.168.');
+export function isPublicIpAddress(address: string): boolean {
+  try {
+    const parsed=ipaddr.parse(address);
+    const normalized=parsed instanceof ipaddr.IPv6&&parsed.isIPv4MappedAddress()?parsed.toIPv4Address():parsed;
+    return normalized.range()==='unicast';
+  } catch { return false; }
 }
 
 export function sourceUrl(source: string, input: string): URL {
@@ -44,7 +35,7 @@ export function safeVacancyUrl(source: string, input: string): string {
 export async function assertPublicAddress(url: URL): Promise<void> {
   if (isIP(url.hostname)) throw new Error('Source URL must use an approved DNS hostname');
   const addresses = await lookup(url.hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some(({ address, family }) => family === 4 ? privateIpv4(address) : privateIpv6(address))) {
+  if (!addresses.length || addresses.some(({ address }) => !isPublicIpAddress(address))) {
     throw new Error(`Source host ${url.hostname} resolved to a non-public address`);
   }
 }
@@ -113,7 +104,7 @@ export async function fetchSourceJson(source: string, input: string, init: Reque
 }
 
 import { createHash } from 'node:crypto';
-import type { VacancyInput } from '@jobseeker/store';
+import type { VacancyInput } from '@jobseeker/engine/contracts';
 
 export type JsonObject = Record<string, unknown>;
 export const sourceUserAgent = 'JobseekerVacancyMonitor/1.0';
@@ -260,7 +251,8 @@ export function hashedVacancy(base: Omit<VacancyInput, 'contentHash'>): VacancyI
   return { ...base, contentHash: createHash('sha256').update(JSON.stringify(base)).digest('hex') };
 }
 
-import { recordListingCandidate, type VacancyCandidateInput } from '@jobseeker/store';
+import type { VacancyCandidateInput } from '@jobseeker/engine/contracts';
+import { recordListingCandidate } from './config.ts';
 import type { SearchRecipient } from './contract.ts';
 
 export interface VacancySearchResult { seen: number; discovered: number; discoveredBySearch?: Record<string, number> }

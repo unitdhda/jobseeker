@@ -5,8 +5,9 @@ import { Hono } from 'hono';
 import { closeCloudTasksClient, enqueueTelegramUpdateTask } from './cloud-tasks.ts';
 import { config } from './config.ts';
 import { errorMessage } from './observability.ts';
-import { closePostgresPool, persistenceReady } from '@jobseeker/store';
-import { claimTelegramUpdate, completeTelegramUpdate, failTelegramUpdate } from './telegram-state.ts';
+import {
+  claimTelegramUpdate, closePostgresPool, completeTelegramUpdate, failTelegramUpdate, persistenceReady,
+} from './postgres.ts';
 
 const app=new Hono();
 app.get('/health',c=>c.json({ok:true}));

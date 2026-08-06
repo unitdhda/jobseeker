@@ -3,12 +3,12 @@ import {
   approvedUsers, candidatesDueForRefresh, getDeliverySettings, markCandidateClosed, markCandidateFailed,
   markCandidateNormalized, purgeExpiredVacancies, queuedListings, saveDeliverySettings, upsertVacancy,
   type VacancyInput,
-} from '@jobseeker/store';
+} from '../postgres.ts';
 import { normalizePlatformCandidates } from './registry.ts';
 import { trace } from '../observability.ts';
 import { errorMessage } from '../observability.ts';
-import { mapConcurrent } from '@jobseeker/sources';
-import type { DeliverySettings } from '@jobseeker/store';
+import { mapConcurrent } from '@jobseeker/engine/concurrency';
+import type { DeliverySettings } from '../postgres.ts';
 
 export interface NormalizeListingsResult { expired: number; selected: number; refreshed: number; normalized: number;
   failed: number; closed: number; vacancyIds: number[]; bySource: Record<string, number> }

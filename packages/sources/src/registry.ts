@@ -1,9 +1,12 @@
 import * as v from 'valibot';
 import type { BaseIssue, BaseSchema } from 'valibot';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/store';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 import type { PlatformDiscoveryResult, SearchPlan, VacancyPlatform } from './contract.ts';
 
-import { AdaptiveTaskPool } from './concurrency.ts';
+import { AdaptiveTaskPool } from '@jobseeker/engine/concurrency';
+import {
+  createSourcesRuntime, currentSourcesRuntime, runWithSources, type SourcesOptions, type SourcesRuntime,
+} from './config.ts';
 import { registerSourceHosts } from './http.ts';
 import { normalizeAdditionalCandidate, scrapeHabr, scrapeRabota } from './additional.ts';
 import { normalizeHhCandidates, scrapeHh } from './hh.ts';
@@ -15,7 +18,12 @@ import { boardPlatform, normalizeJsonLdCandidate, scrapeJsonLdBoard, type JsonLd
 import { normalizeTrudvsemCandidate, scrapeTrudvsem, trudvsemPlatform } from './trudvsem.ts';
 
 export type AnyVacancyPlatform = VacancyPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>;
-const hhPool = new AdaptiveTaskPool(1, 1);
+const hhPools = new WeakMap<SourcesRuntime, AdaptiveTaskPool>();
+function hhPool(): AdaptiveTaskPool {
+  const owner=currentSourcesRuntime(),existing=hhPools.get(owner);
+  if(existing)return existing;
+  const created=new AdaptiveTaskPool(1,1);hhPools.set(owner,created);return created;
+}
 
 async function normalizeIndividually(candidates: VacancyCandidate[],
   normalize:(candidate:VacancyCandidate)=>Promise<VacancyInput|null>): Promise<Map<string, VacancyInput | null | Error>> {
@@ -36,7 +44,7 @@ function planned<T>(plan: SearchPlan<T>, result: { seen: number; discovered: num
 const hhAdapter: VacancyPlatform<typeof hhPlatform.schema> = {
   ...hhPlatform,
   async discover(plan) {
-    return planned(plan, await hhPool.run(() => scrapeHh(plan)));
+    return planned(plan, await hhPool().run(() => scrapeHh(plan)));
   },
   normalize: normalizeHhCandidates,
 };
@@ -97,4 +105,43 @@ export function platformSearches(id: string, profile: unknown): unknown[] {
 export function normalizePlatformCandidates(source: string,
   candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | null | Error>> {
   return getSearchPlatform(source).normalize(candidates);
+}
+
+export interface SourceRegistry {
+  readonly platformIds: readonly string[];
+  getPlatform(id: string): AnyVacancyPlatform;
+  platformSearches(id: string, profile: unknown): unknown[];
+  normalize(source: string, candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | null | Error>>;
+  close(): Promise<void>;
+}
+
+/** Creates one isolated adapter registry, including its browser context, pools, settings, and injected listing sink. */
+export function createSourceRegistry(options: SourcesOptions): SourceRegistry {
+  const owner=createSourcesRuntime(options);
+  const bound=new Map<string,AnyVacancyPlatform>();
+  for(const platform of registeredPlatforms){
+    const wrapped={...platform,
+      template:()=>runWithSources(owner,()=>platform.template()),
+      discover:(plan:SearchPlan<never>)=>runWithSources(owner,()=>platform.discover(plan)),
+      normalize:(candidates:VacancyCandidate[])=>runWithSources(owner,()=>platform.normalize(candidates)),
+    } as AnyVacancyPlatform;
+    bound.set(platform.id,wrapped);
+  }
+  const get=(id:string):AnyVacancyPlatform=>{
+    const platform=bound.get(id);if(!platform)throw new Error(`Unknown search platform: ${id}`);return platform;
+  };
+  return {
+    platformIds:[...searchPlatformIds],
+    getPlatform:get,
+    platformSearches(id,profile){
+      const platform=get(id),parsed=v.safeParse(platform.schema,profile);
+      if(!parsed.success)throw new Error(`${platform.name} search profile is invalid.`);
+      return (parsed.output as {searches:unknown[]}).searches;
+    },
+    normalize:(source,candidates)=>get(source).normalize(candidates),
+    close:()=>runWithSources(owner,async()=>{
+      const {closeHhBrowser}=await import('./hh.ts');
+      await closeHhBrowser();hhPools.delete(owner);
+    }),
+  };
 }

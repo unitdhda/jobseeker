@@ -9,13 +9,13 @@ import {
   markApplicationDelivered,
   type ScoredVacancy,
   deliveredArtifact, saveDeliveredArtifact,
-} from '@jobseeker/store';
-import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from '../prefilter.ts';
+} from '../postgres.ts';
+import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from '@jobseeker/engine';
 import { refreshUserInWorker, tailorApplicationInWorker } from '../worker-client.ts';
-import { type ApplicationArtifact } from '@jobseeker/store';
+import { type ApplicationArtifact } from '../postgres.ts';
 import { clearApplicationArtifacts } from '../documents.ts';
 import { maximumCvBytes } from '../cv.ts';
-import { readResponseBytes } from '@jobseeker/sources';
+import { readResponseBytes } from '../http.ts';
 import { errorMessage } from '../observability.ts';
 import { getBot, targetChat } from './api.ts';
 import {

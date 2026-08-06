@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readResponseBytes } from '@jobseeker/sources';
+import { readResponseBytes } from '../src/http.ts';
 import { safeVacancyUrl, sourceUrl } from '@jobseeker/sources';
 import { errorMessage } from '../src/observability.ts';
 

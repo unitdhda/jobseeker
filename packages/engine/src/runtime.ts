@@ -3,8 +3,9 @@
  * The app wires the ports to the store repositories and the source adapters; the loop entrypoint drives
  * runSchedulerTick and sleeps until the next unit is due.
  */
-import { nextCadence, pickDueUnits, type CadencePolicy } from '@jobseeker/engine';
-import type { SearchPlan, SearchRecipient } from '@jobseeker/sources';
+import { nextCadence, type CadencePolicy } from './cadence.ts';
+import { pickDueUnits } from './pick.ts';
+import type { SearchPlan, SearchRecipient } from './contracts.ts';
 
 export interface TickUnit {
   unitId: string;
