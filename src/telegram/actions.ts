@@ -27,11 +27,9 @@ import {
   type SearchProfilePlatformView,
 } from './format.ts';
 import { startEditableIndicator, type ApplicationLoader, type EditableIndicator } from './indicators.ts';
+import { type UserWorkflowLease } from './workflow-lock.ts';
 
 
-export const activeCvImports = new Set<string>();
-export const applicationJobs = new Set<string>();
-export const pendingRefreshHashes = new Map<string, string>();
 export const refreshingUsers = new Set<string>();
 async function startApplicationLoader(userId: string, applyId: string,
   artifact: ApplicationArtifact): Promise<ApplicationLoader | null> {
@@ -50,10 +48,8 @@ function applicationFailureMessage(error:unknown,retryId:string,artifact:Applica
   return `Не удалось подготовить ${noun} для вакансии ${retryId}. Пришлите ID ещё раз или нажмите кнопку.`;
 }
 async function generateAndSendApplication(userId: string, vacancyId: number, chat: string,
-  artifact: ApplicationArtifact): Promise<void> {
-  const jobKey = `${userId}:${vacancyId}:${artifact}`;
-  if (applicationJobs.has(jobKey)) return;
-  applicationJobs.add(jobKey); let loader: ApplicationLoader | null = null; let vacancy: ScoredVacancy | null = null;
+  artifact: ApplicationArtifact, lease: UserWorkflowLease): Promise<void> {
+  let loader: ApplicationLoader | null = null; let vacancy: ScoredVacancy | null = null;
   try {
     vacancy = await getScoredVacancy(userId, vacancyId);
     if (!vacancy) throw new Error('Vacancy not found.');
@@ -98,11 +94,13 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
       { reply_markup: keyboard }).catch((notificationError)=>
       console.error(`Could not send application failure notice: ${errorMessage(notificationError)}`));
   } finally {
-    applicationJobs.delete(jobKey); clearApplicationArtifacts(userId, vacancyId);
+    clearApplicationArtifacts(userId, vacancyId);
+    await lease.release().catch((releaseError)=>console.warn(`Could not release application workflow: ${errorMessage(releaseError)}`));
   }
 }
-export async function runApplication(userId:string,vacancyId:number,chat:string,artifact:ApplicationArtifact):Promise<void>{
-  const task=generateAndSendApplication(userId,vacancyId,chat,artifact);
+export async function runApplication(userId:string,vacancyId:number,chat:string,artifact:ApplicationArtifact,
+  lease:UserWorkflowLease):Promise<void>{
+  const task=generateAndSendApplication(userId,vacancyId,chat,artifact,lease);
   if(config.telegramMode==='webhook'){await task;return;}
   void task.catch((error)=>console.error(`Detached application task failed: ${errorMessage(error)}`));
 }
@@ -147,66 +145,51 @@ export async function finishNotice(userId: string, indicator: EditableIndicator 
   await getBot().api.sendMessage(await targetChat(userId), text,
     { parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: true } });
 }
-// The refresh loop outlives the request that started it, so the indicator it must turn into a result is
-// handed over here rather than captured by the caller.
-const refreshIndicators = new Map<string, EditableIndicator>();
-async function deliverRefreshResult(userId: string, text: string, keyboard?: InlineKeyboard): Promise<void> {
-  const indicator = refreshIndicators.get(userId) ?? null;
-  refreshIndicators.delete(userId);
-  await finishNotice(userId, indicator, text, keyboard);
-}
-
-/** Takes ownership of the indicator, so it always ends as a result and never keeps spinning after a failure. */
-export async function refreshSearchesAfterCvUpload(userId: string, indicator: EditableIndicator | null = null): Promise<void> {
-  if (indicator) {
-    const previous = refreshIndicators.get(userId);
-    refreshIndicators.set(userId, indicator);
-    if (previous) await previous.stop().catch((error) => console.warn(`Could not stop CV indicator: ${errorMessage(error)}`));
-  }
+/** Takes ownership of both the indicator and lease; each always ends when the detached refresh does. */
+export async function refreshSearchesAfterCvUpload(userId: string, indicator: EditableIndicator | null,
+  lease: UserWorkflowLease): Promise<void> {
+  const deliver = async (text: string, keyboard?: InlineKeyboard): Promise<void> => {
+    const current = indicator; indicator = null;
+    await finishNotice(userId, current, text, keyboard);
+  };
   let cvHash: string | null = null;
   let readFailed = false;
   try { cvHash = await getCvHash(userId); }
   catch (error) { readFailed = true; console.error(`Could not read the stored CV of user ${userId}: ${errorMessage(error)}`); }
   if (!cvHash) {
-    await deliverRefreshResult(userId, readFailed
+    await deliver(readFailed
       ? 'Не удалось прочитать сохранённое резюме. Попробуйте ещё раз.'
       : 'Резюме не найдено. Загрузите файл заново командой /cv.',
       cvRetryKeyboard(readFailed ? 'cv:refresh' : 'cv:retry'));
+    await lease.release().catch((error) => console.warn(`Could not release profile workflow: ${errorMessage(error)}`));
     return;
   }
-  pendingRefreshHashes.set(userId, cvHash);
-  if (refreshingUsers.has(userId)) return;
+  // The durable lease is the real exclusion mechanism. This local check is only a last line of defence if a lease
+  // expires while a worker is still returning.
+  if (refreshingUsers.has(userId)) {
+    await deliver('Поисковые настройки уже готовятся. Дождитесь итогового сообщения.');
+    await lease.release().catch((error) => console.warn(`Could not release duplicate profile workflow: ${errorMessage(error)}`));
+    return;
+  }
   refreshingUsers.add(userId);
   void (async () => {
     try {
-      while (await isApprovedUser(userId)) {
-        const requestedHash = pendingRefreshHashes.get(userId);
-        if (!requestedHash) break;
-        pendingRefreshHashes.delete(userId);
-        try {
-          await refreshUserInWorker(userId, requestedHash);
-          if (!pendingRefreshHashes.has(userId) && await isApprovedUser(userId) && await getCvHash(userId) === requestedHash) {
-            const result = await searchProfileResult(userId);
-            await deliverRefreshResult(userId, result.text, result.complete ? undefined : cvRetryKeyboard('cv:refresh'));
-          }
-        } catch (error) {
-          if (!pendingRefreshHashes.has(userId) && await isApprovedUser(userId) && await getCvHash(userId)) {
-            console.error(`Search-profile refresh failed for user ${userId}`,
-              error instanceof Error ? error.message : String(error));
-            await deliverRefreshResult(userId,
-              'Резюме сохранено, но поисковые настройки пока не удалось обновить. Бот повторит попытку в следующем цикле, когда позволит лимит.',
-              cvRetryKeyboard('cv:refresh'));
-          }
-        }
+      await refreshUserInWorker(userId, cvHash);
+      if (await isApprovedUser(userId) && await getCvHash(userId) === cvHash) {
+        const result = await searchProfileResult(userId);
+        await deliver(result.text, result.complete ? undefined : cvRetryKeyboard('cv:refresh'));
+      }
+    } catch (error) {
+      if (await isApprovedUser(userId) && await getCvHash(userId)) {
+        console.error(`Search-profile refresh failed for user ${userId}`,
+          error instanceof Error ? error.message : String(error));
+        await deliver('Резюме сохранено, но поисковые настройки пока не удалось обновить. Бот повторит попытку в следующем цикле, когда позволит лимит.',
+          cvRetryKeyboard('cv:refresh'));
       }
     } finally {
-      pendingRefreshHashes.delete(userId);
       refreshingUsers.delete(userId);
-      const leftover = refreshIndicators.get(userId);
-      if (leftover) {
-        refreshIndicators.delete(userId);
-        await leftover.stop().catch((error) => console.warn(`Could not stop CV indicator: ${errorMessage(error)}`));
-      }
+      await indicator?.stop().catch((error) => console.warn(`Could not stop CV indicator: ${errorMessage(error)}`));
+      await lease.release().catch((error) => console.warn(`Could not release profile workflow: ${errorMessage(error)}`));
     }
   })();
 }

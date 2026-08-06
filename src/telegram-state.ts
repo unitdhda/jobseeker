@@ -16,13 +16,27 @@ export async function setTelegramSession(userId:string,kind:string,state:unknown
     on conflict(user_id,kind) do update set state=excluded.state,expires_at=excluded.expires_at,updated_at=excluded.updated_at`,
     [userId,kind,JSON.stringify(state),expiry(ttlMs)]);
 }
-export async function claimTelegramSession(userId:string,kind:string,state:unknown,ttlMs:number):Promise<{claimed:boolean;expiresAt:Date}>{
-  validKind(kind);const expiresAt=expiry(ttlMs);const rows=await postgresQuery<{expires_at:Date}>(`insert into user_state(user_id,kind,state,expires_at,updated_at)
+export async function claimTelegramSession<T=unknown>(userId:string,kind:string,state:T,ttlMs:number):Promise<{
+  claimed:boolean;expiresAt:Date;state:T;
+}>{
+  validKind(kind);const expiresAt=expiry(ttlMs);const rows=await postgresQuery<{expires_at:Date;state:T}>(`insert into user_state(user_id,kind,state,expires_at,updated_at)
     values($1,$2,$3::jsonb,$4,now()) on conflict(user_id,kind) do update set state=excluded.state,expires_at=excluded.expires_at,updated_at=excluded.updated_at
-    where user_state.expires_at<=now() returning expires_at`,[userId,kind,JSON.stringify(state),expiresAt]);
-  if(rows[0])return{claimed:true,expiresAt:new Date(rows[0].expires_at)};
-  const current=await postgresQuery<{expires_at:Date}>('select expires_at from user_state where user_id=$1 and kind=$2',[userId,kind]);
-  return{claimed:false,expiresAt:new Date(current[0]!.expires_at)};
+    where user_state.expires_at<=now() returning expires_at,state`,[userId,kind,JSON.stringify(state),expiresAt]);
+  if(rows[0])return{claimed:true,expiresAt:new Date(rows[0].expires_at),state:rows[0].state};
+  const current=await postgresQuery<{expires_at:Date;state:T}>('select expires_at,state from user_state where user_id=$1 and kind=$2',[userId,kind]);
+  // A concurrent owner may have released the row between the failed insert and this read. Retry rather than
+  // reporting a phantom busy job.
+  if(!current[0])return claimTelegramSession(userId,kind,state,ttlMs);
+  return{claimed:false,expiresAt:new Date(current[0].expires_at),state:current[0].state};
+}
+export async function updateClaimedTelegramSession(userId:string,kind:string,token:string,state:unknown,ttlMs:number):Promise<boolean>{
+  validKind(kind);const rows=await postgresQuery(`update user_state set state=$4::jsonb,expires_at=$5,updated_at=now()
+    where user_id=$1 and kind=$2 and state->>'token'=$3 returning user_id`,
+  [userId,kind,token,JSON.stringify(state),expiry(ttlMs)]);return rows.length===1;
+}
+export async function releaseClaimedTelegramSession(userId:string,kind:string,token:string):Promise<boolean>{
+  validKind(kind);const rows=await postgresQuery(`delete from user_state where user_id=$1 and kind=$2
+    and state->>'token'=$3 returning user_id`,[userId,kind,token]);return rows.length===1;
 }
 export async function deleteTelegramSession(userId:string,kind:string):Promise<void>{
   validKind(kind);await postgresQuery('delete from user_state where user_id=$1 and kind=$2',[userId,kind]);

@@ -55,17 +55,20 @@ import {
 import { sendDailyDigest } from './delivery.ts';
 import { startEditableIndicator, type EditableIndicator } from './indicators.ts';
 import {
-  activeCvImports,
-  applicationJobs,
   cvRetryKeyboard,
   cvStatus,
   downloadTelegramFile,
   finishNotice,
-  pendingRefreshHashes,
   refreshSearchesAfterCvUpload,
-  refreshingUsers,
   runApplication,
 } from './actions.ts';
+import {
+  activeUserWorkflow,
+  claimUserWorkflow,
+  userWorkflowBusyMessage,
+  type UserWorkflowKind,
+  type UserWorkflowLease,
+} from './workflow-lock.ts';
 
 
 const latestUserPages = new Map<string, string[]>();
@@ -164,12 +167,10 @@ async function deletePersonalData(ctx: Context, confirmation: string): Promise<v
       'Общая база вакансий останется. Для подтверждения отправьте /delete_me confirm.');
     return;
   }
-  if ([...applicationJobs].some((key) => key.startsWith(`${userId}:`)) || activeCvImports.has(userId)
-    || refreshingUsers.has(userId)) {
-    await ctx.reply('Сейчас выполняется задача с вашим резюме или откликом. Дождитесь её завершения и повторите удаление.'); return;
+  if (await activeUserWorkflow(userId)) {
+    await ctx.reply('Сейчас выполняется задача с вашим резюме или откликом. Дождитесь её итогового сообщения и повторите удаление.'); return;
   }
   await Promise.all(['cv-upload', 'cv-cooldown', 'window-setup'].map((kind) => deleteTelegramSession(userId, kind)));
-  pendingRefreshHashes.delete(userId);
   await deleteUserData(userId);
   await ctx.reply('Ваши персональные данные удалены. Доступ к боту сохранён — загрузить новое резюме можно командой /cv.');
 }
@@ -279,7 +280,6 @@ function configureTelegramBot(): Bot | null {
     if (user.isOwner) { await ctx.reply('Нельзя отозвать доступ у владельца.'); return; }
     await setUserStatus(user.userId, 'revoked');
     await Promise.all(['cv-upload', 'window-setup'].map((kind) => deleteTelegramSession(user.userId, kind)));
-    pendingRefreshHashes.delete(user.userId);
     await ctx.reply(`Доступ пользователя ${user.userId} отозван.`);
     await getBot().api.sendMessage(user.chatId, 'Ваш доступ к боту отозван. Позже можно снова отправить /request.');
   });
@@ -379,6 +379,8 @@ function configureTelegramBot(): Bot | null {
   instance.command('cv', async (ctx) => {
     const userId = String(ctx.from!.id);
     if (ctx.match.trim()) { await ctx.reply('Просто отправьте команду /cv без дополнительных параметров.'); return; }
+    const active = await activeUserWorkflow(userId);
+    if (active) { await ctx.reply(userWorkflowBusyMessage(active, 'cv-import')); return; }
     if (!await getTelegramSession(userId, 'cv-upload')) {
       const cooldownMs = config.cvUploadSessionCooldownMinutes * 60_000;
       const cooldown = await claimTelegramSession(userId, 'cv-cooldown', {}, cooldownMs);
@@ -395,12 +397,12 @@ function configureTelegramBot(): Bot | null {
   instance.on('message:document', async (ctx) => {
     const userId = String(ctx.from.id);
     if (!await getTelegramSession(userId, 'cv-upload')) { await ctx.reply('Сначала отправьте /cv, затем прикрепите файл с резюме.'); return; }
-    if (activeCvImports.has(userId)) { await ctx.reply('Предыдущий файл ещё проверяется. Пожалуйста, подождите.'); return; }
-    activeCvImports.add(userId);
+    const document = ctx.message.document;
+    const filename = document.file_name ?? 'cv';
     let indicator: EditableIndicator | null = null;
+    let lease: UserWorkflowLease | null = null;
+    let leaseHandedOver = false;
     try {
-      const document = ctx.message.document;
-      const filename = document.file_name ?? 'cv';
       if (document.file_size != null && document.file_size > maximumCvBytes) {
         await ctx.reply('Файл больше 20 МБ. Пришлите файл меньшего размера.'); return;
       }
@@ -411,24 +413,37 @@ function configureTelegramBot(): Bot | null {
       if (unsupportedExtension || (!supportedExtension && !supportedMediaType)) {
         await ctx.reply('Поддерживаются только PDF, Markdown, TXT и DOCX.'); return;
       }
+      const claim = await claimUserWorkflow(userId, 'cv-import');
+      if (!claim.claimed) { await ctx.reply(userWorkflowBusyMessage(claim.active, 'cv-import')); return; }
+      lease = claim.lease;
       indicator = await startEditableIndicator(userId, 'Загружаю файл');
       const bytes = await downloadTelegramFile(document.file_id, document.file_size);
       indicator?.setLabel('Разбираю резюме');
       await importCvSource(userId, filename, document.mime_type, bytes);
       await deleteTelegramSession(userId, 'cv-upload');
       indicator?.setLabel('Резюме сохранено · готовлю поисковые запросы');
+      await lease.setKind('profile-refresh');
       const handedOver = indicator; indicator = null;
-      await refreshSearchesAfterCvUpload(userId, handedOver);
+      await refreshSearchesAfterCvUpload(userId, handedOver, lease);
+      leaseHandedOver = true;
     } catch (error) {
       console.error(`CV import failed for user ${userId}: ${errorMessage(error)}`);
       if (await isApprovedUser(userId)) {
         await finishNotice(userId, indicator, 'Не удалось обработать файл. Проверьте формат и размер, затем попробуйте снова.',
           cvRetryKeyboard('cv:retry'));
       } else await indicator?.stop().catch((stopError) => console.warn(`Could not stop CV indicator: ${errorMessage(stopError)}`));
-    } finally { activeCvImports.delete(userId); }
+    } finally {
+      if (lease && !leaseHandedOver) await lease.release().catch((error) =>
+        console.warn(`Could not release CV workflow: ${errorMessage(error)}`));
+    }
   });
   instance.callbackQuery('cv:retry', async (ctx) => {
     const userId = String(ctx.from.id);
+    const active = await activeUserWorkflow(userId);
+    if (active) {
+      await ctx.answerCallbackQuery({ text: 'Сначала дождитесь текущей задачи' });
+      await ctx.reply(userWorkflowBusyMessage(active, 'cv-import')); return;
+    }
     await ctx.answerCallbackQuery();
     await ctx.editMessageReplyMarkup().catch(() => undefined);
     // The upload cooldown was already claimed for this attempt, so a retry only re-arms the upload session.
@@ -437,9 +452,18 @@ function configureTelegramBot(): Bot | null {
   });
   instance.callbackQuery('cv:refresh', async (ctx) => {
     const userId = String(ctx.from.id);
+    const claim = await claimUserWorkflow(userId, 'profile-refresh');
+    if (!claim.claimed) {
+      await ctx.answerCallbackQuery({ text: 'Сначала дождитесь текущей задачи' });
+      await ctx.reply(userWorkflowBusyMessage(claim.active, 'profile-refresh')); return;
+    }
     await ctx.answerCallbackQuery({ text: 'Готовлю поисковые запросы…' });
     await ctx.editMessageReplyMarkup().catch(() => undefined);
-    await refreshSearchesAfterCvUpload(userId, await startEditableIndicator(userId, 'Готовлю поисковые запросы'));
+    try {
+      await refreshSearchesAfterCvUpload(userId, await startEditableIndicator(userId, 'Готовлю поисковые запросы'), claim.lease);
+    } catch (error) {
+      await claim.lease.release().catch(() => undefined); throw error;
+    }
   });
   instance.hears(/^\s*([a-zA-Z]{1,6})\s*$/, async (ctx) => {
     if (!ctx.from) return;
@@ -450,9 +474,6 @@ function configureTelegramBot(): Bot | null {
     if (!matches.length) { await ctx.reply(`Нет оценённой вакансии с ID ${reference}.`); return; }
     if (matches.length > 1) { await ctx.reply(`Префикс ${reference} подходит к нескольким вакансиям. Пришлите больше букв.`); return; }
     const vacancy = matches[0];
-    if ([...applicationJobs].some((key) => key.startsWith(`${userId}:${vacancy.id}:`))) {
-      await ctx.reply(`Документы для ${vacancy.applyId} уже готовятся.`); return;
-    }
     // An ID no longer starts a generation on its own: the user picks which deliverable they want.
     await ctx.reply(`<b>${escapeHtml(vacancy.name)}</b>\n${escapeHtml(vacancy.employer)} · <code>${vacancy.applyId}</code>`,
       { parse_mode: 'HTML', reply_markup: applicationKeyboard(vacancy, false), link_preview_options: { is_disabled: true } });
@@ -484,13 +505,26 @@ function configureTelegramBot(): Bot | null {
   instance.callbackQuery(/^(cv|letter):(\d+)$/, async (ctx) => {
     const userId = String(ctx.from.id); const artifact = ctx.match[1] as ApplicationArtifact;
     const id = Number(ctx.match[2]);
-    await ctx.answerCallbackQuery({ text: `${artifactLabels[artifact].loader}…` });
-    const vacancy = await getScoredVacancy(userId, id);
-    // The other deliverable stays on offer, so asking for a CV does not take the letter away. The second artifact
-    // request finds the markup already in that state, and an unchanged-markup error must not cost the generation.
-    if (vacancy) await ctx.editMessageReplyMarkup({ reply_markup: applicationKeyboard(vacancy, false) })
-      .catch((error) => { if (!isUnchangedMessageError(error)) throw error; });
-    await runApplication(userId,id,String(ctx.chat?.id??ctx.from.id),artifact);
+    const kind: UserWorkflowKind = artifact === 'cv' ? 'tailored-cv' : 'cover-letter';
+    const claim = await claimUserWorkflow(userId, kind);
+    if (!claim.claimed) {
+      await ctx.answerCallbackQuery({ text: 'Сначала дождитесь текущей задачи' });
+      await ctx.reply(userWorkflowBusyMessage(claim.active, kind)); return;
+    }
+    let handedOver = false;
+    try {
+      await ctx.answerCallbackQuery({ text: `${artifactLabels[artifact].loader}…` });
+      const vacancy = await getScoredVacancy(userId, id);
+      // The other deliverable stays on offer, so asking for a CV does not take the letter away. The second artifact
+      // request finds the markup already in that state, and an unchanged-markup error must not cost the generation.
+      if (vacancy) await ctx.editMessageReplyMarkup({ reply_markup: applicationKeyboard(vacancy, false) })
+        .catch((error) => { if (!isUnchangedMessageError(error)) throw error; });
+      handedOver = true;
+      await runApplication(userId,id,String(ctx.chat?.id??ctx.from.id),artifact,claim.lease);
+    } finally {
+      if (!handedOver) await claim.lease.release().catch((error) =>
+        console.warn(`Could not release application workflow: ${errorMessage(error)}`));
+    }
   });
   instance.catch((error) => console.error(`Telegram bot error: ${errorMessage(error.error)}`));
   markBotConfigured();

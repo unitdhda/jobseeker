@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import '../src/postgres.ts';
 import * as d from '@jobseeker/store';
 import * as sessions from '../src/telegram-state.ts';
+import { activeUserWorkflow, claimUserWorkflow } from '../src/telegram/workflow-lock.ts';
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required for the Postgres integration test.');
 const suffix = `${Date.now()}-${process.pid}`;
@@ -25,6 +26,31 @@ try {
   assert.equal((await d.setUserStatus(userId, 'approved'))?.status, 'approved');
   await sessions.setTelegramSession(userId, 'window-setup', { step: 'start' }, 60_000);
   assert.deepEqual(await sessions.getTelegramSession(userId, 'window-setup'), { step: 'start' });
+
+  // Distinct Telegram updates and even distinct document buttons share one durable per-user lease. Only one of a
+  // burst may reach parsing/profile/application work, including when requests land in different processes.
+  const burst = await Promise.all([
+    claimUserWorkflow(userId, 'cv-import'), claimUserWorkflow(userId, 'profile-refresh'),
+    claimUserWorkflow(userId, 'tailored-cv'), claimUserWorkflow(userId, 'cover-letter'),
+    claimUserWorkflow(userId, 'tailored-cv'), claimUserWorkflow(userId, 'cover-letter'),
+  ]);
+  const winners = burst.filter((result) => result.claimed);
+  assert.equal(winners.length, 1);
+  assert.ok(burst.filter((result) => !result.claimed).every((result) => result.active != null));
+  const winner = winners[0]!;
+  if (!winner.claimed) throw new Error('Expected one workflow lease winner.');
+  await winner.lease.setKind('profile-refresh');
+  assert.equal((await activeUserWorkflow(userId))?.kind, 'profile-refresh');
+  await winner.lease.release();
+  const afterRelease = await claimUserWorkflow(userId, 'cover-letter');
+  assert.equal(afterRelease.claimed, true);
+  if (afterRelease.claimed) await afterRelease.lease.release();
+
+  const owned = await sessions.claimTelegramSession(userId, 'owned-session', { token: 'current' }, 60_000);
+  assert.equal(owned.claimed, true);
+  assert.equal(await sessions.releaseClaimedTelegramSession(userId, 'owned-session', 'stale'), false);
+  assert.deepEqual(await sessions.getTelegramSession(userId, 'owned-session'), { token: 'current' });
+  assert.equal(await sessions.releaseClaimedTelegramSession(userId, 'owned-session', 'current'), true);
 
   await d.saveCvSource(userId, 'cv.txt', `cv-${suffix}`, {
     text: 'Integration CV with TypeScript PostgreSQL distributed systems experience. '.repeat(5),
