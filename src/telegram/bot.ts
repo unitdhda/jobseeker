@@ -45,6 +45,7 @@ import {
   artifactLabels,
   cell,
   compactNumber,
+  chunkMessageLines,
   deploymentStatusText,
   escapeHtml,
   headerCell,
@@ -303,10 +304,15 @@ function configureTelegramBot(): Bot | null {
     const [summary,settings]=await Promise.all([scraperSummary(),getDeliverySettings(ownerUserId())]);
     const chart=scraperTimelineChart(summary.hourly,settings?.timezone??config.timezone);
     await dropTrackedMessages(ownerUserId(), 'scraper-messages');
-    const sent = await ctx.reply(`${scraperStatusMessage(summary)}\n\n`+
+    // Twenty sources no longer fit one Telegram message; the chart keeps its own message so <pre> never splits.
+    const ids: (number | undefined)[] = [ctx.message?.message_id];
+    for (const chunk of chunkMessageLines(scraperStatusMessage(summary))) {
+      ids.push((await ctx.reply(chunk, { parse_mode: 'HTML' })).message_id);
+    }
+    ids.push((await ctx.reply(
       `<b>Почасовая динамика за 24 часа</b>\n<pre>${escapeHtml(chart)}</pre>`,
-      { parse_mode: 'HTML' });
-    await trackMessages(ownerUserId(), 'scraper-messages', [ctx.message?.message_id, sent.message_id]);
+      { parse_mode: 'HTML' })).message_id);
+    await trackMessages(ownerUserId(), 'scraper-messages', ids);
   });
   instance.command('status', async (ctx) => {
     if (String(ctx.from?.id) !== ownerUserId()) { await ctx.reply('Эта команда доступна только владельцу.'); return; }

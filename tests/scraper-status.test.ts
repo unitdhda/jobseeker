@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { scraperStatusMessage, scraperTimelineChart } from '../src/telegram/format.ts';
+import { chunkMessageLines, scraperStatusMessage, scraperTimelineChart } from '../src/telegram/format.ts';
 import type { ScraperSummary } from '@jobseeker/store';
 
 const start = Date.parse('2026-08-02T12:00:00Z');
@@ -53,4 +53,14 @@ test('the summary reports totals, per-source rows, units, and parser errors', ()
 test('a source with no activity is still listed rather than silently dropped', () => {
   // A dead adapter is exactly what this command exists to expose.
   assert.match(scraperStatusMessage(summary), /geekjob/u);
+});
+
+test('long owner messages split on line boundaries under the Telegram limit', () => {
+  const line = '• source: 100 новых · 100 распознано · очередь 5 · сбоев 0 · закрыто 1 · оценок 9';
+  const text = Array.from({ length: 120 }, (_, index) => `${line} ${index}`).join('\n');
+  const chunks = chunkMessageLines(text, 3_900);
+  assert.ok(chunks.length > 1);
+  assert.ok(chunks.every((chunk) => chunk.length <= 3_900));
+  assert.equal(chunks.join('\n'), text);
+  assert.deepEqual(chunkMessageLines('короткий статус', 3_900), ['короткий статус']);
 });

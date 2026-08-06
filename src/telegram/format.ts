@@ -149,6 +149,20 @@ export function scraperStatusMessage(summary:ScraperSummary):string{
   }
   return lines.join('\n');
 }
+/**
+ * Telegram rejects messages beyond 4096 characters, and the per-source status grew past it when the deployment
+ * reached twenty sources. Splitting on line boundaries keeps each chunk's inline HTML tags intact.
+ */
+export function chunkMessageLines(text:string,limit=3_900):string[]{
+  const chunks:string[]=[];let current='';
+  for(const line of text.split('\n')){
+    const candidate=current?`${current}\n${line}`:line;
+    if(candidate.length>limit&&current){chunks.push(current);current=line;}
+    else current=candidate;
+  }
+  if(current)chunks.push(current);
+  return chunks;
+}
 export function compactNumber(value:number):string{return new Intl.NumberFormat('ru-RU',{notation:'compact',maximumFractionDigits:1}).format(value);}
 export function money(value:number):string{return `$${value<0.01?value.toFixed(6):value.toFixed(2)}`;}
 // The next cycle is announced in the schedule's own timezone, because a UTC instant says nothing about when the
