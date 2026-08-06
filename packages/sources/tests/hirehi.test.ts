@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
-import { hireHiCandidateUrl, hireHiListingUrls, hireHiPlatform, hireHiSearchProfileSchema, hireHiSearchUrl } from '../src/hirehi.ts';
+import { hireHiCandidateUrl, hireHiListingUrls, hireHiPlatform, hireHiSearchProfileSchema, hireHiSearchUrl,
+  hireHiVacancyPosting } from '../src/hirehi.ts';
 import { getSearchPlatform, searchPlatformIds } from '../src/registry.ts';
 
 test('HireHi adapter validates constrained SEO search profiles',()=>{
@@ -30,6 +31,13 @@ test('HireHi extracts safe canonical vacancy URLs from listing JSON-LD',()=>{
     ['71268','https://hirehi.ru/development/frontend-razrabotchik-71268'],
     ['71199','https://www.hirehi.ru/development/backend-developer-71199'],
   ]);
+});
+
+test('HireHi treats its HTTP-200 archive page as closed, not a retryable parser failure',()=>{
+  const archived='<main><p>Вакансия находится <strong>в архиве</strong> и больше не принимает отклики</p></main>';
+  assert.equal(hireHiVacancyPosting(archived,'65866'),null);
+  assert.throws(()=>hireHiVacancyPosting('<main>Temporary incomplete page</main>','65866'),
+    /HireHi vacancy 65866 has no JobPosting JSON-LD/);
 });
 
 test('HireHi uses a canonical listing URL and retains the legacy fallback',()=>{

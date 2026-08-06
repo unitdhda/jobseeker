@@ -101,10 +101,19 @@ export async function scrapeHireHi(plan:SearchPlan<HireHiSearch>):Promise<{seen:
   return collector.result();
 }
 
-export async function normalizeHireHiCandidate(candidate:VacancyCandidate):Promise<VacancyInput>{
-  const {html,url}=await fetchSourceHtml('hirehi',candidate.url),posting=jobPostings(html)[0];
-  if(!posting)throw new Error(`HireHi vacancy ${candidate.sourceId} has no JobPosting JSON-LD`);
+export function hireHiVacancyPosting(html:string,sourceId:string):JsonObject|null{
+  // HireHi keeps archived vacancy pages at HTTP 200 but removes their JobPosting block. Treat the explicit archive
+  // banner as a terminal vacancy state; an unexplained missing block remains a parser failure worth retrying.
+  if(/Вакансия находится в архиве/i.test(htmlText(html)))return null;
+  const posting=jobPostings(html)[0];
+  if(!posting)throw new Error(`HireHi vacancy ${sourceId} has no JobPosting JSON-LD`);
+  return posting;
+}
+
+export async function normalizeHireHiCandidate(candidate:VacancyCandidate):Promise<VacancyInput|null>{
+  const {html,url}=await fetchSourceHtml('hirehi',candidate.url);
   const canonicalId=url.match(/-(\d+)\/?(?:\?.*)?$/)?.[1];if(canonicalId!==candidate.sourceId)throw new Error('Unexpected HireHi canonical vacancy URL');
+  const posting=hireHiVacancyPosting(html,candidate.sourceId);if(!posting)return null;
   let detail:JsonObject|null=null;try{detail=asObject(scriptJson(html,'vacancy-data-json'));}catch{/* JSON-LD remains authoritative. */}
   const listing=asObject(candidate.payload),name=plainText(posting.title)||candidate.title;
   const employer=plainText(asObject(posting.hiringOrganization)?.name)||plainText(listing?.company)||'Не указано';
