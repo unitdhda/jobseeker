@@ -50,3 +50,10 @@ test('application runtime does not issue raw PostgreSQL queries', async () => {
     .filter((file) => !file.includes('/scripts/'));
   assert.deepEqual(files, []);
 });
+
+test('adapter identity is registry-owned rather than duplicated as database allowlists', async () => {
+  for (const file of ['supabase/schema.sql', 'src/scripts/migration/target-schema.sql']) {
+    const schema = await readFile(file, 'utf8');
+    assert.doesNotMatch(schema, /constraint (?:vacancies_source|search_units_platform)_check/i, file);
+  }
+});

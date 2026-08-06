@@ -81,7 +81,6 @@ create table public.vacancies (
   constraint vacancies_apply_id_check check (apply_id ~ '^[a-z]{6}$'::text),
   constraint vacancies_lifecycle_status_check check (lifecycle_status = any (array['discovered','queued','filtered','normalizing','normalized','duplicate','failed','closed'])),
   constraint vacancies_salary_gross_check check ((salary_gross is null) or (salary_gross = any (array[0, 1]))),
-  constraint vacancies_source_check check (source = any (array['hh','habr','rabota','hirehi','geekjob','avito','trudvsem','ats'])),
   constraint vacancies_pkey primary key (id),
   constraint vacancies_apply_id_key unique (apply_id),
   constraint vacancies_source_source_id_key unique (source, source_id),
@@ -100,7 +99,6 @@ create table public.search_units (
   last_novelty_at timestamptz,
   created_at timestamptz not null default now(),
   retired_at timestamptz,
-  constraint search_units_platform_check check (platform = any (array['hh','habr','rabota','hirehi','geekjob','avito','trudvsem','ats'])),
   constraint search_units_pkey primary key (unit_id)
 );
 

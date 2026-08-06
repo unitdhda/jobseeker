@@ -223,6 +223,9 @@ with a PostgreSQL transaction lock so rotating refresh tokens cannot be refreshe
 | `user_state` | Expiring sessions and encrypted operational state references |
 | `telegram_updates` | Durable webhook-update processing state |
 
+Source and platform IDs are validated by the application-owned source registry. PostgreSQL deliberately does not
+repeat that registry as an enum-style `CHECK`, so adding an adapter does not require another schema migration.
+
 ## Deployment surfaces
 
 The live surface is one VPS application container polling Telegram and owning the engine loop. A private Claude CLI
