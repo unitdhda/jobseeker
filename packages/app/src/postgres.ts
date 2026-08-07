@@ -52,8 +52,8 @@ export const {
   requireApprovedUser, saveCvSource, saveDeliveredArtifact, saveDeliverySettings, saveScore,
   saveSearchProfile, scoredVacanciesByApplyIdPrefix, scraperSummary, searchScoredVacancies,
   setTelegramSession, setUserStatus, skipVacancy, spentToday, touchTelegramUser, transitionMatch,
-  unsentHighScoreVacancies, updateClaimedTelegramSession, upsertVacancy, usageInLast24Hours, userUsageSummaries,
-  withPostgresAdvisoryLock,
+  tryAcquireSingletonLock, unsentHighScoreVacancies, updateClaimedTelegramSession, upsertVacancy,
+  usageInLast24Hours, userUsageSummaries, withPostgresAdvisoryLock,
 } = store;
 
 export { applicationAgents } from '@jobseeker/store';

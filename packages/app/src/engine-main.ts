@@ -11,6 +11,7 @@ import {
 } from '@jobseeker/engine';
 import {
   addSpend, approvedUsers, createMatches, dueUnits, getCvSource, getSearchProfile, getVacancy, nextUnitDueAt,
+  tryAcquireSingletonLock,
   recordUnitRun, spentToday, type Vacancy,
 } from './postgres.ts';
 import { deliverDueNotifications, normalizeListings } from './vacancies/jobs.ts';
@@ -111,6 +112,9 @@ const judgmentIntervalMs = 2 * 60_000;
 let loop: EngineLoop | undefined;
 let loopDone: Promise<void> | undefined;
 
+let releaseEngineLock: (() => Promise<void>) | undefined;
+const engineLockKey = 'jobseeker-engine-loop';
+
 export function startEngineLoop(): void {
   if (loop) return;
   // Plain sleeps suffice: createEngineLoop races every sleep against stop, so shutdown stays prompt.
@@ -126,6 +130,18 @@ export function startEngineLoop(): void {
     judgment: { nextWakeMs: async () => judgmentIntervalMs, sleep },
   });
   loopDone = (async () => {
+    // The schedule has no other guard: a second RUN_JOBS process would duplicate discovery and delivery, so the
+    // loop runs only while this session holds the advisory lock.
+    const release = await tryAcquireSingletonLock(engineLockKey).catch((error) => {
+      console.error(`Engine-loop lock acquisition failed: ${errorMessage(error)}`);
+      return null;
+    });
+    if (!release) {
+      console.error('Another process holds the engine-loop lock; RUN_JOBS stays idle here.');
+      loop = undefined;
+      return;
+    }
+    releaseEngineLock = release;
     for (const hook of extensionStartupHooks) {
       try { await hook(); } catch (error) { console.error(`Extension startup hook failed: ${errorMessage(error)}`); }
     }
@@ -134,6 +150,8 @@ export function startEngineLoop(): void {
       for (const hook of extensionShutdownHooks) {
         try { await hook(); } catch (error) { console.error(`Extension shutdown hook failed: ${errorMessage(error)}`); }
       }
+      await releaseEngineLock?.().catch(() => undefined);
+      releaseEngineLock = undefined;
     }
   })();
   console.info('Engine loop started; search_units.next_run_at owns the schedule.');

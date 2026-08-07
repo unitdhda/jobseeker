@@ -1,9 +1,11 @@
-import { delimiter } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createCvPdf, type CvDocument } from '@jobseeker/cv/pdf';
 
-/** The composition point: fonts come from the environment here, not inside the package. */
+/** The composition point: fonts come from the environment here — defaulting to the OFL set the package ships. */
+const packagedFonts = join(dirname(fileURLToPath(import.meta.url)), '..', 'fonts');
 const renderer = createCvPdf({
-  fontPaths: (process.env.TYPST_FONT_PATHS ?? '').split(delimiter).filter(Boolean),
+  fontPaths: (process.env.TYPST_FONT_PATHS ?? packagedFonts).split(delimiter).filter(Boolean),
 });
 
 export const compileTypst = (source: string): Buffer => renderer.compileTypst(source);

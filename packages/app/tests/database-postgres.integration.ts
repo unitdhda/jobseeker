@@ -97,3 +97,16 @@ try {
   if (vacancyId != null) await postgresQuery('delete from vacancies where id=$1', [vacancyId]).catch(() => undefined);
   await d.closePostgresPool();
 }
+
+// Singleton engine-loop lock: a second session must not acquire it while the first holds it.
+{
+  const first = await store.tryAcquireSingletonLock('jobseeker-integration-lock');
+  if (!first) throw new Error('integration lock: first acquisition failed');
+  const second = await store.tryAcquireSingletonLock('jobseeker-integration-lock');
+  if (second) { await second(); throw new Error('integration lock: second session acquired a held lock'); }
+  await first();
+  const third = await store.tryAcquireSingletonLock('jobseeker-integration-lock');
+  if (!third) throw new Error('integration lock: reacquisition after release failed');
+  await third();
+  console.info('Singleton advisory lock verified.');
+}

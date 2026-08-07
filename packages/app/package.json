@@ -1,22 +1,52 @@
 {
   "name": "@unitdhda/jobseeker",
   "version": "0.1.0",
-  "private": true,
+  "description": "Self-hosted Telegram service that turns a CV into continuous vacancy monitoring, scoring, and tailored applications.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/unitdhda/jobseeker.git"
+  },
   "type": "module",
+  "bin": {
+    "jobseeker": "bin/jobseeker.mjs"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "fonts",
+    "schema.sql",
+    "LICENSE",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=23.6"
+  },
   "scripts": {
     "build": "vite build"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "0.81.1",
     "@hono/node-server": "^2.0.12",
+    "@myriaddreamin/typst-ts-node-compiler": "0.7.0",
+    "grammy": "1.45.1",
+    "hono": "4.12.32",
+    "ipaddr.js": "2.5.0",
+    "mammoth": "1.12.0",
+    "node-html-parser": "9.0.1",
+    "p-limit": "7.3.1",
+    "pdfjs-dist": "6.2.108",
+    "pg": "^8.22.0",
+    "unpdf": "1.8.0",
+    "valibot": "1.4.2"
+  },
+  "devDependencies": {
     "@jobseeker/cv": "workspace:*",
     "@jobseeker/engine": "workspace:*",
     "@jobseeker/sources": "workspace:*",
-    "@jobseeker/store": "workspace:*",
-    "grammy": "1.45.1",
-    "hono": "4.12.32",
-    "pdfjs-dist": "6.2.108",
-    "pg": "^8.22.0",
-    "valibot": "1.4.2"
+    "@jobseeker/store": "workspace:*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

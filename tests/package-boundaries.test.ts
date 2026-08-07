@@ -32,8 +32,11 @@ test('the monorepo has the four domain workspaces plus the application package',
     cv:[],engine:[],sources:['@jobseeker/engine'],
     store:['@jobseeker/cv','@jobseeker/engine']};
   for(const name of workspaces){
-    const manifest=JSON.parse(await readFile(`packages/${name}/package.json`,'utf8')) as {dependencies?:Record<string,string>};
-    assert.deepEqual(Object.keys(manifest.dependencies??{}).filter(key=>key.startsWith('@jobseeker/')).sort(),expected[name]);
+    const manifest=JSON.parse(await readFile(`packages/${name}/package.json`,'utf8')) as
+      {dependencies?:Record<string,string>;devDependencies?:Record<string,string>};
+    // app bundles its workspaces at build time, so they are devDependencies of the published package.
+    const all={...manifest.dependencies,...manifest.devDependencies};
+    assert.deepEqual(Object.keys(all).filter(key=>key.startsWith('@jobseeker/')).sort(),expected[name]);
   }
 });
 

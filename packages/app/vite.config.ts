@@ -10,7 +10,7 @@ export default defineConfig({
   // Workspace packages are bundled so dist/ stays a self-contained deploy artifact.
   ssr:{noExternal:[/^@jobseeker\//]},
   build:{ssr:true,rolldownOptions:{input:{
-    server:resolve('src/web.ts'),worker:resolve('src/worker.ts'),'cv-worker':resolve('src/cv-worker.ts'),
+    server:resolve('src/web.ts'),cli:resolve('src/cli.ts'),worker:resolve('src/worker.ts'),'cv-worker':resolve('src/cv-worker.ts'),
     'refresh-profiles':resolve('src/profile-refresh.ts'),
   },output:{entryFileNames:'[name].mjs',chunkFileNames:'[name]-[hash].mjs'}}},
   plugins:[{

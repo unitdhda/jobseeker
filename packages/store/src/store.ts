@@ -3,7 +3,7 @@ import * as engineRepositories from './engine-repos.ts';
 import * as telegramRepositories from './telegram-repos.ts';
 import {
   closeStoreRuntime, createStoreRuntime, getPostgresPool, persistenceReady, postgresQuery, runWithStore,
-  withPostgresAdvisoryLock, withPostgresTransaction, type StoreOptions, type StoreRuntime,
+  tryAcquireSingletonLock, withPostgresAdvisoryLock, withPostgresTransaction, type StoreOptions, type StoreRuntime,
 } from './client.ts';
 
 function bindModule<T extends object>(owner: StoreRuntime, module: T): T {
@@ -31,6 +31,7 @@ export function createStore(options: StoreOptions) {
     persistenceReady: () => runWithStore(owner, persistenceReady),
     withPostgresAdvisoryLock: <T>(key: string, operation: () => Promise<T>) =>
       runWithStore(owner, () => withPostgresAdvisoryLock(key, operation)),
+    tryAcquireSingletonLock: (key: string) => tryAcquireSingletonLock(owner, key),
     closePostgresPool: () => closeStoreRuntime(owner),
     admin: {
       getPostgresPool: () => runWithStore(owner, getPostgresPool),

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { Pool, type PoolClient, type QueryResultRow, type PoolConfig } from 'pg';
+import { Client, Pool, type PoolClient, type QueryResultRow, type PoolConfig } from 'pg';
 
 /** The knobs repositories read through their owning store instance. */
 export interface StoreSettings {
@@ -122,6 +122,37 @@ export function withPostgresAdvisoryLock<T>(key: string, fn: () => Promise<T>): 
     await client.query('select pg_advisory_xact_lock(hashtext($1))', [key]);
     return fn();
   });
+}
+
+/**
+ * Session-held advisory lock for process-lifetime singletons (the engine loop). A dedicated connection holds the
+ * lock until the returned release runs or the process dies, so a second instance acquires nothing while the first
+ * lives and takes over automatically when it stops. Returns null when another session already holds the key.
+ */
+export async function tryAcquireSingletonLock(owner: StoreRuntime,
+  key: string): Promise<(() => Promise<void>) | null> {
+  if (!key) throw new Error('PostgreSQL advisory-lock key is required.');
+  if (!owner.options.databaseUrl) throw new Error('DATABASE_URL is required.');
+  const client = new Client({ connectionString: owner.options.databaseUrl, ssl: owner.options.ssl });
+  await client.connect();
+  client.on('error', (error) => {
+    console.error(`Singleton-lock connection for ${key} failed: ${errorText(error)}`);
+  });
+  try {
+    const result = await client.query<{ locked: boolean }>(
+      'select pg_try_advisory_lock(hashtext($1)) as locked', [key]);
+    if (result.rows[0]?.locked) {
+      return async () => {
+        await client.query('select pg_advisory_unlock(hashtext($1))', [key]).catch(() => undefined);
+        await client.end().catch(() => undefined);
+      };
+    }
+    await client.end();
+    return null;
+  } catch (error) {
+    await client.end().catch(() => undefined);
+    throw error;
+  }
 }
 
 export async function persistenceReady(): Promise<'postgres'> {

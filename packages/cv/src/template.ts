@@ -15,7 +15,7 @@ export function cvPreamble(density: number, lang: string): string {
   hairline: rgb("#d9d2ce"),
 )
 #let body-font = "Spectral"
-#let label-font = ("PragmataPro Liga", "Spectral")
+#let label-font = ("JetBrains Mono", "Spectral")
 
 #set page(
   width: 595.28pt, height: 841.89pt,

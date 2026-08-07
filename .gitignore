@@ -2,7 +2,7 @@ node_modules
 dist/
 data/
 auth/
-fonts/
+/fonts/
 .env
 .env.*
 !.env.example
@@ -25,3 +25,4 @@ tools/
 !/extensions/extension-api.ts
 !/extensions/examples.ts
 !/extensions/hh/
+!/packages/app/fonts/
