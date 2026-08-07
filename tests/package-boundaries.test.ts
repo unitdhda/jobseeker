@@ -46,7 +46,7 @@ test('domain packages never read application environment or import the applicati
 
 test('source and engine dependency directions stay inverted', async () => {
   assert.deepEqual(await matches('packages/sources', /@jobseeker\/(?:store|cv)/), []);
-  assert.deepEqual(await matches('packages/app/src/vacancies/providers', /@jobseeker\/store|from\s+['"][^'"]*postgres/), []);
+  assert.deepEqual(await matches('packages/sources/examples', /@jobseeker\/store|from\s+['"][^'"]*postgres|\b(?:process|Bun)\.env\b/), []);
   assert.deepEqual(await matches('packages/engine', /@jobseeker\/(?:store|sources|cv)/), []);
   assert.deepEqual(await matches('packages', /\bconfigure(?:Store|Sources)\b/), []);
 });
@@ -57,7 +57,7 @@ test('the sources package exposes runtime and generic drivers, not an applicatio
   const manifest = JSON.parse(await readFile('packages/sources/package.json', 'utf8')) as {
     exports: Record<string, string>; dependencies: Record<string, string>;
   };
-  assert.deepEqual(Object.keys(manifest.exports).sort(), ['.', './drivers/*']);
+  assert.deepEqual(Object.keys(manifest.exports).sort(), ['.', './drivers/*', './examples/*']);
   assert.equal(manifest.dependencies.playwright, undefined);
   const files = await typescriptFiles('packages/sources/src');
   for (const source of ['hh.ts', 'hirehi.ts', 'ats.ts', 'trudvsem.ts', 'additional.ts']) {
@@ -85,5 +85,5 @@ test('adapter identity is provider-collection-owned rather than duplicated as al
   const config = await readFile('packages/app/src/config.ts', 'utf8');
   assert.doesNotMatch(config, /supportedSearchPlatforms|builtinSourceProviderIds/);
   const composition = await readFile('packages/app/src/vacancies/providers.ts', 'utf8');
-  assert.match(composition, /sourceProviders\.map\(\(provider\) => provider\.id\)/);
+  assert.match(composition, /extensions\.sourceProviders/);
 });

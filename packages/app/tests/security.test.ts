@@ -2,17 +2,17 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readResponseBytes } from '../src/http.ts';
 import { createSourceUrlPolicy } from '@jobseeker/sources';
-import { hhSource } from '../src/vacancies/providers/hh.ts';
-import { hireHiSource } from '../src/vacancies/providers/hirehi.ts';
+import { hireHiSource } from '@jobseeker/sources/examples/hirehi';
+import { mtsSource } from '@jobseeker/sources/examples/mts';
 import { errorMessage } from '../src/observability.ts';
 
 test('source URLs are restricted to HTTPS source allowlists', () => {
-  const policy = createSourceUrlPolicy([hhSource(), hireHiSource()]);
-  assert.equal(policy.safeVacancyUrl('hh', 'https://hh.ru/vacancy/123'), 'https://hh.ru/vacancy/123');
+  const policy = createSourceUrlPolicy([mtsSource(), hireHiSource()]);
+  assert.equal(policy.safeVacancyUrl('mts', 'https://job.mts.ru/vacancy/123'), 'https://job.mts.ru/vacancy/123');
   assert.equal(policy.safeVacancyUrl('hirehi', 'https://hirehi.ru/frontend/job-123'), 'https://hirehi.ru/frontend/job-123');
-  assert.throws(() => policy.sourceUrl('hh', 'http://hh.ru/vacancy/123'), /Unsafe/);
-  assert.throws(() => policy.sourceUrl('hh', 'https://example.com/vacancy/123'), /Unexpected/);
-  assert.throws(() => policy.sourceUrl('hh', 'https://user:password@hh.ru/vacancy/123'), /Unsafe/);
+  assert.throws(() => policy.sourceUrl('mts', 'http://job.mts.ru/vacancy/123'), /Unsafe/);
+  assert.throws(() => policy.sourceUrl('mts', 'https://example.com/vacancy/123'), /Unexpected/);
+  assert.throws(() => policy.sourceUrl('mts', 'https://user:password@job.mts.ru/vacancy/123'), /Unsafe/);
   assert.throws(() => policy.sourceUrl('hirehi', 'https://example.com/frontend/job-123'), /Unexpected/);
 });
 

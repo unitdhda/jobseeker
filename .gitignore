@@ -18,3 +18,11 @@ out/
 probe/
 tools/
 /tools/
+
+# Deployment-local extensions; only the documented examples are tracked.
+/extensions/*
+!/extensions/README.md
+!/extensions/package.json
+!/extensions/extension-api.ts
+!/extensions/examples.ts
+!/extensions/hh/

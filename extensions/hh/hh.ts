@@ -1,9 +1,9 @@
 import * as v from 'valibot';
+import type { SearchPlan, SearchPlatform, SourceContext } from '@jobseeker/sources';
 import {
-  assertPublicAddress, createSourceProvider, jobPostings, plainText, russianDate, VacancySearchCollector,
-  type SearchPlan, type SearchPlatform, type SourceContext,
-} from '@jobseeker/sources';
-import { AdaptiveTaskPool } from '@jobseeker/engine/concurrency';
+  AdaptiveTaskPool, assertPublicAddress, createSourceProvider, jobPostings, plainText, russianDate,
+  VacancySearchCollector,
+} from './toolkit.ts';
 
 const id = v.pipe(v.string(), v.regex(/^\d+$/, 'Expected a numeric HH identifier'));
 const shortText = v.pipe(v.string(), v.minLength(1), v.maxLength(240));

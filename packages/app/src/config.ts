@@ -1,4 +1,4 @@
-import { resolve } from 'node:path';
+
 
 function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
   const raw = process.env[name];
@@ -43,12 +43,12 @@ function telegramModeEnv(): TelegramMode {
   return value as TelegramMode;
 }
 
-// Optional adapters stay off by default until production-egress probes show useful listings. This parser owns only
-// operator intent; the provider composition validates requested ids against what was actually registered.
-const defaultSearchPlatforms = ['hh', 'habr', 'rabota', 'hirehi', 'trudvsem', 'ozon', 'rwb'];
-function platformEnv(): string[] {
-  const requested = (process.env.SEARCH_PLATFORMS ?? defaultSearchPlatforms.join(','))
-    .split(',').map((value) => value.trim()).filter(Boolean);
+// Unset means "every provider the extensions registered"; a set value narrows discovery to the named ids. This
+// parser owns only operator intent; the provider composition validates requested ids against what was registered.
+function platformEnv(): string[] | null {
+  const raw = process.env.SEARCH_PLATFORMS;
+  if (raw == null || raw.trim() === '') return null;
+  const requested = raw.split(',').map((value) => value.trim()).filter(Boolean);
   if (!requested.length) throw new Error('SEARCH_PLATFORMS must contain at least one platform.');
   return [...new Set(requested)];
 }
@@ -71,21 +71,14 @@ if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
 }
 
 export const config = {
-  hhBrowserDataPath: resolve(process.env.HH_BROWSER_DATA_PATH ?? './data/hh-browser'),
   model: modelEnv('AI_MODEL'),
   thinkingLevel: thinkingLevelEnv('AI_THINKING_LEVEL', 'high'),
   scoringModel: modelEnv('AI_SCORING_MODEL'),
   scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
   scoringFallbackModel: modelEnv('AI_SCORING_FALLBACK_MODEL'),
   scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
-  hhAreaId: process.env.HH_AREA_ID ?? '1',
-  playwrightChromiumPath: process.env.PLAYWRIGHT_CHROMIUM_PATH,
-  playwrightHeadless: booleanEnv('PLAYWRIGHT_HEADLESS', true),
   searchPlatforms: platformEnv(),
-  hhMaxPages: integerEnv('HH_MAX_PAGES', 1, 1, 20),
-  hhOperationTimeoutSeconds: integerEnv('HH_OPERATION_TIMEOUT_SECONDS', 180, 30, 1_800),
   additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 1, 1, 20),
-  hireHiMaxPages: integerEnv('HIREHI_MAX_PAGES', 1, 1, 20),
   searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),
   searchQueriesPerCycle: integerEnv('SEARCH_QUERIES_PER_CYCLE', 1, 1, 8),
   searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
@@ -117,7 +110,6 @@ export const config = {
   unitCadenceCeilingMinutes: integerEnv('UNIT_CADENCE_CEILING_MINUTES', 720, 30, 10_080),
   scoreBatchSize: integerEnv('SCORE_BATCH_SIZE', 3, 1, 20),
   scoringBatchTimeoutSeconds: integerEnv('SCORING_BATCH_TIMEOUT_SECONDS', 180, 30, 1_800),
-  claudeCliTimeoutSeconds: integerEnv('CLAUDE_CLI_TIMEOUT_SECONDS', 300, 30, 1_800),
   scoringBatchMaxAttempts: integerEnv('SCORING_BATCH_MAX_ATTEMPTS', 3, 1, 5),
   userDailyApplicationLimit,
   userDailyCoverLetterLimit,
@@ -136,6 +128,4 @@ export const config = {
   runJobs: booleanEnv('RUN_JOBS', true),
   telegramMode: telegramModeEnv(),
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
-  telegramWebhookAsync: booleanEnv('TELEGRAM_WEBHOOK_ASYNC',false),
-  backgroundDeliveryAsync: booleanEnv('BACKGROUND_DELIVERY_ASYNC',false),
 } as const;

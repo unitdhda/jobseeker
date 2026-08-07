@@ -3,8 +3,7 @@ import test from 'node:test';
 import { careerProfileSchema, prefilterVacancy, vacancyRecency, type CareerProfile } from '@jobseeker/engine';
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
-import { textSearchProfileSchema } from '../src/vacancies/providers/habr.ts';
-import { hhPublishedAt } from '../src/vacancies/providers/hh.ts';
+import { textSearchProfileSchema } from '@jobseeker/sources/examples/habr';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
@@ -114,19 +113,4 @@ await test('contact details do not create skill evidence', () => {
     vacancy('Telegram Bot Developer', 'Develop Telegram integrations.', ['Telegram']), 20, designerProfile);
   assert.equal(result.filtered, true);
   assert.equal(result.reasons.some((reason) => reason.startsWith('evidenced skills: Telegram')), false);
-});
-
-await test('hh reads the advert’s own publication date rather than the time it was read', () => {
-  const posting = (extra: string) => `<html><body>${extra}<script type="application/ld+json">${JSON.stringify({
-    '@context': 'https://schema.org', '@type': 'JobPosting', title: 'Data Scientist',
-    datePosted: '2026-07-29T11:39:03.741+03:00' })}</script></body></html>`;
-  assert.equal(hhPublishedAt(posting(''), ''), '2026-07-29T08:39:03.741Z');
-  // The visible line is the fallback when the page ships no JobPosting block.
-  assert.equal(hhPublishedAt('<html><body></body></html>', 'Вакансия опубликована 29 июля 2026 в Москве'),
-    '2026-07-29T00:00:00.000Z');
-  assert.equal(hhPublishedAt('<html><body></body></html>', 'Вакансия опубликована 1 мая 2026 в Москве'),
-    '2026-05-01T00:00:00.000Z');
-  // No date at all must be reported as unknown, never silently replaced with the current time.
-  assert.equal(hhPublishedAt('<html><body></body></html>', 'Описание вакансии'), null);
-  assert.equal(hhPublishedAt('<html><body></body></html>', 'Вакансия опубликована 3 сентебря 2026'), null);
 });

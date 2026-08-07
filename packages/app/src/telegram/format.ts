@@ -173,22 +173,11 @@ function scheduleClock(timestamp:string,timezone:string):string{
       .format(new Date(timestamp));
   }catch{return timestamp;}
 }
-// Deployment answers "where and how is this running": which Cloud Run revision serves the command, what it is
-// allowed to consume, who owns the scheduled cycle and where background work is dispatched. Model spend lives in
-// /usage instead, so the two commands never repeat each other.
+// Deployment answers "where and how is this running": process resources, worker and engine-lane health. Model
+// spend lives in /usage instead, so the two commands never repeat each other.
 export function deploymentStatusText():string{
   const memory=process.memoryUsage(),cpu=process.cpuUsage(),worker=jobWorkerStatus(),engine=engineLoopStatus();
-  const cloud=Boolean(process.env.K_SERVICE); const service=process.env.K_SERVICE??'локальный процесс';
-  const runtimeHours=process.uptime()/3600,isTaskWorker=service.includes('worker');
-  const allocatedCpu=isTaskWorker?2:1,allocatedMemoryGiB=isTaskWorker?2:0.5;
-  const runtime=cloud?`Cloud Run · ${service} · ревизия ${process.env.K_REVISION??'неизвестна'} · видимый экземпляр: 1`
-    :'Cloud Run не активен · локальных процессов сервиса: 1';
-  const allocation=cloud?`Текущий экземпляр: ${runtimeHours.toFixed(2)} instance-ч · `+
-    `${(runtimeHours*allocatedCpu).toFixed(2)} vCPU-ч · ${(runtimeHours*allocatedMemoryGiB).toFixed(2)} GiB-ч`:
-    'Cloud usage: 0 (локальный владелец исполнения)';
-  const scaling=cloud?'web 0–2 × 20; task workers 0–3 × 1; cycle 0–1':'профиль при cutover: web 0–2 × 20; task workers 0–3 × 1; cycle 0–1';
-  const queue=process.env.CLOUD_TASKS_QUEUE
-    ?`${process.env.CLOUD_TASKS_LOCATION??'?'}/${process.env.CLOUD_TASKS_QUEUE}`:'не настроены (работа в процессе)';
+  const runtimeHours=process.uptime()/3600;
   const lane=(label:string,laneStatus:{iterations:number;lastIterationAt:string|null;lastStageFailures:string[]})=>
     `${label} ${laneStatus.iterations}`+
     `${laneStatus.lastIterationAt?` (последняя ${scheduleClock(laneStatus.lastIterationAt,config.timezone)})`:''}`+
@@ -196,12 +185,11 @@ export function deploymentStatusText():string{
   const cycle=engine.running
     ?`две полосы · ${lane('разведка:',engine.discovery)} · ${lane('оценка:',engine.judgment)}`
     :'планировщик вне этого процесса';
-  return `${runtime}\n${allocation}\nПамять RSS: ${Math.round(memory.rss/1_048_576)} MiB · heap: ${Math.round(memory.heapUsed/1_048_576)} MiB\n`+
+  return `Память RSS: ${Math.round(memory.rss/1_048_576)} MiB · heap: ${Math.round(memory.heapUsed/1_048_576)} MiB\n`+
     `CPU процесса: ${((cpu.user+cpu.system)/1e6).toFixed(1)} c · uptime: ${runtimeHours.toFixed(1)} ч\n`+
     `Локальный job worker: ${worker.active}/1 · очередь: ${worker.pending}/${worker.capacity}\n`+
-    `AI workers: ${config.scoreAgentConcurrencyMin}–${config.scoreAgentConcurrencyMax} · масштаб: ${scaling}\n`+
-    `Telegram: ${config.telegramMode} · Cloud Tasks: ${queue}\n`+
-    `Цикл: ${cycle}`;
+    `AI workers: ${config.scoreAgentConcurrencyMin}–${config.scoreAgentConcurrencyMax}\n`+
+    `Telegram: ${config.telegramMode}\nЦикл: ${cycle}`;
 }
 export const digestPageSize = 10;
 /** One vacancy's bold unique-prefix apply id: the shortest reply that still resolves it across the whole set. */

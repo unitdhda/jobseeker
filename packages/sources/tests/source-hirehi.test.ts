@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
 import { hireHiCandidateUrl, hireHiListingUrls, hireHiPlatform, hireHiSearchProfileSchema, hireHiSearchUrl,
-  hireHiVacancyPosting, hireHiSource } from '../src/vacancies/providers/hirehi.ts';
+  hireHiVacancyPosting, hireHiSource } from '../examples/hirehi.ts';
 import { createSourceUrlPolicy } from '@jobseeker/sources';
 
 const provider = hireHiSource();

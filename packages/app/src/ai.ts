@@ -197,25 +197,21 @@ export function llmUsageSince(previous: LlmUsageReport): LlmUsageReport {
 
 import { builtinProviders } from '@earendil-works/pi-ai/providers/all';
 import { createModels, type Models } from '@earendil-works/pi-ai';
-import { claudeCliProvider } from './ai-plugins/claude-bridge.ts';
 import { createCredentialStore } from './ai-auth.ts';
-import { config } from './config.ts';
+import { extensionAiProviders } from './vacancies/providers.ts';
 
 let configuredModels: Models | undefined;
 
 /**
  * The model catalog behind every request. No provider or model is chosen here: the built-in catalog is registered
- * whole, the two app plugins on top, and which of them actually serves traffic is decided entirely by the model
+ * whole, extension providers on top, and which of them actually serves traffic is decided entirely by the model
  * identifiers in AI_MODEL and friends plus whichever credentials the store or the environment supplies.
  */
 export function aiModels(): Models {
   if (configuredModels) return configuredModels;
   const models = createModels({ credentials: createCredentialStore() });
   for (const provider of builtinProviders()) models.setProvider(provider);
-  // The one app plugin: the Claude Code CLI bridge (subscription billing, resolves its own credentials). It stays
-  // inert unless a model identifier selects it. OAuth providers from the catalog (openai-codex) need no plugin:
-  // their tokens live in the credential store, seeded via src/scripts/seed-cloud-oauth.ts or auth.json directly.
-  models.setProvider(claudeCliProvider({ defaultTimeoutMs: config.claudeCliTimeoutSeconds * 1_000 }));
+  for (const provider of extensionAiProviders) models.setProvider(provider);
   configuredModels = models;
   return models;
 }

@@ -21,8 +21,7 @@ import {
 import { scorePendingVacancies } from './workflows.ts';
 import { llmUsageSince, llmUsageSnapshot } from './ai.ts';
 import { errorMessage } from './observability.ts';
-import { persistHhBrowserState, restoreHhBrowserState } from './runtime-state.ts';
-import { enqueueDueDeliveryTasks } from './cloud-tasks.ts';
+import { extensionShutdownHooks, extensionStartupHooks } from './vacancies/providers.ts';
 
 const cadencePolicy = { floorMinutes: config.unitCadenceFloorMinutes, ceilingMinutes: config.unitCadenceCeilingMinutes };
 
@@ -100,7 +99,6 @@ function loopPorts(): LoopPorts {
       },
     }, { dailyBudgetUsd: config.userDailyLlmBudgetUsd, claimLimit: config.userScoreLimitPerCycle }, now),
     deliver: async (now) => {
-      if (config.backgroundDeliveryAsync) { await enqueueDueDeliveryTasks(); return; }
       const { sendDailyDigest, sendPendingAlerts } = await import('./telegram/delivery.ts');
       await deliverDueNotifications(sendPendingAlerts,
         (userId) => sendDailyDigest(userId, { scheduled: true }), now);
@@ -128,10 +126,14 @@ export function startEngineLoop(): void {
     judgment: { nextWakeMs: async () => judgmentIntervalMs, sleep },
   });
   loopDone = (async () => {
-    await restoreHhBrowserState().catch((error) => console.error(`Could not restore HH browser state: ${errorMessage(error)}`));
+    for (const hook of extensionStartupHooks) {
+      try { await hook(); } catch (error) { console.error(`Extension startup hook failed: ${errorMessage(error)}`); }
+    }
     try { await loop!.run(); } finally {
       await closeSources().catch(() => undefined);
-      await persistHhBrowserState().catch((error) => console.error(`Could not persist HH browser state: ${errorMessage(error)}`));
+      for (const hook of extensionShutdownHooks) {
+        try { await hook(); } catch (error) { console.error(`Extension shutdown hook failed: ${errorMessage(error)}`); }
+      }
     }
   })();
   console.info('Engine loop started; search_units.next_run_at owns the schedule.');

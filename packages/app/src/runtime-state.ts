@@ -64,11 +64,24 @@ export function decryptRuntimeState(path: string, encrypted: Uint8Array): Uint8A
   } catch (error) { throw new Error('Encrypted runtime-state authentication failed.', { cause: error }); }
 }
 
+/** Any Supabase-storage-compatible endpoint; the SUPABASE_* names remain as a fallback for older deployments. */
+function storageSettings(): { url?: string; key?: string; bucket?: string } {
+  return {
+    url: (process.env.STATE_STORAGE_URL ?? process.env.SUPABASE_URL)?.replace(/\/$/, ''),
+    key: process.env.STATE_STORAGE_KEY ?? process.env.SUPABASE_SECRET_KEY,
+    bucket: process.env.STATE_STORAGE_BUCKET ?? process.env.SUPABASE_STORAGE_BUCKET,
+  };
+}
+
+/** True when both the blob store and the encryption key are configured; callers degrade to local state otherwise. */
+export function runtimeStateConfigured(): boolean {
+  const settings = storageSettings();
+  return Boolean(settings.url && settings.key && settings.bucket && process.env.RUNTIME_STATE_ENCRYPTION_KEY);
+}
+
 function storageConfig(): { base: string; key: string; bucket: string } {
-  const url = process.env.SUPABASE_URL?.replace(/\/$/, '');
-  const key = process.env.SUPABASE_SECRET_KEY;
-  const bucket = process.env.SUPABASE_STORAGE_BUCKET;
-  if (!url || !key || !bucket) throw new Error('Supabase runtime-state storage is not configured.');
+  const { url, key, bucket } = storageSettings();
+  if (!url || !key || !bucket) throw new Error('Runtime-state storage is not configured.');
   return { base: `${url}/storage/v1/object/${encodeURIComponent(bucket)}`, key, bucket };
 }
 
@@ -104,70 +117,4 @@ export async function deleteEncryptedRuntimeState(path: string): Promise<void> {
     method: 'DELETE', headers: storageHeaders(config.key), signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok && response.status !== 404) throw new Error(`Supabase runtime-state deletion failed: ${response.status}.`);
-}
-
-import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
-import { promisify } from 'node:util';
-import { config } from './config.ts';
-
-const execute = promisify(execFile);
-const objectPath = 'browser/hh.tar.gz';
-const archiveRoot = 'hh-browser';
-const maximumArchiveBytes = 180 * 1024 * 1024;
-
-function cloudStateConfigured(): boolean {
-  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY
-    && process.env.SUPABASE_STORAGE_BUCKET && process.env.RUNTIME_STATE_ENCRYPTION_KEY);
-}
-
-export async function restoreHhBrowserState(): Promise<boolean> {
-  if (!cloudStateConfigured()) return false;
-  const archive = await getEncryptedRuntimeState(objectPath);
-  if (!archive) return false;
-  if (archive.byteLength > maximumArchiveBytes) throw new Error('Encrypted HH browser-state archive exceeds its limit.');
-  // Staged beside the target rather than in the system temp dir: the final step is a rename, and when /tmp is a
-  // separate mount (tmpfs in a container) a cross-device rename fails with EXDEV.
-  const parent = dirname(config.hhBrowserDataPath);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
-  const work = await mkdtemp(join(parent, '.hh-restore-'));
-  try {
-    const archivePath = join(work, 'state.tar.gz');
-    await writeFile(archivePath, archive, { mode: 0o600 });
-    const { stdout } = await execute('tar', ['-tzf', archivePath], { maxBuffer: 10 * 1024 * 1024 });
-    const entries = stdout.split('\n').filter(Boolean);
-    if (!entries.length || entries.some((entry) => entry.startsWith('/') || entry.includes('..')
-      || (entry !== archiveRoot && !entry.startsWith(`${archiveRoot}/`)))) {
-      throw new Error('HH browser-state archive contains an unsafe path.');
-    }
-    await execute('tar', ['-xzf', archivePath, '-C', work]);
-    const extracted = join(work, archiveRoot);
-    await stat(extracted);
-    await rm(config.hhBrowserDataPath, { recursive: true, force: true });
-    await rename(extracted, config.hhBrowserDataPath);
-    return true;
-  } finally { await rm(work, { recursive: true, force: true }); }
-}
-
-export async function persistHhBrowserState(): Promise<boolean> {
-  if (!cloudStateConfigured()) return false;
-  try { await stat(config.hhBrowserDataPath); }
-  catch { return false; }
-  if (basename(config.hhBrowserDataPath) !== archiveRoot) {
-    throw new Error(`HH_BROWSER_DATA_PATH must end with ${archiveRoot} when cloud state is enabled.`);
-  }
-  const work = await mkdtemp(join(tmpdir(), 'jobseeker-hh-save-'));
-  try {
-    const archivePath = join(work, 'state.tar.gz');
-    await execute('tar', ['-czf', archivePath,
-      '--exclude=*/Cache','--exclude=*/Code Cache','--exclude=*/GPUCache','--exclude=*/DawnCache',
-      '--exclude=*/GrShaderCache','--exclude=*/ShaderCache','--exclude=*/Crashpad','--exclude=*/BrowserMetrics',
-      '-C', dirname(config.hhBrowserDataPath), archiveRoot]);
-    const archive = await readFile(archivePath);
-    if (archive.byteLength > maximumArchiveBytes) throw new Error('HH browser-state archive exceeds its encrypted storage limit.');
-    await putEncryptedRuntimeState(objectPath, archive);
-    return true;
-  } finally { await rm(work, { recursive: true, force: true }); }
 }

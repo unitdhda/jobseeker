@@ -1,10 +1,10 @@
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
-import { postingMatchesQuery, configuredBoards, atsProviders, atsSource } from '../src/vacancies/providers/ats.ts';
+import { postingMatchesQuery, configuredBoards, atsProviders, atsSource } from '../examples/ats.ts';
 import { boardPlatform } from '@jobseeker/sources/drivers/jsonld-board';
-import { geekjobBoard, geekjobSource } from '../src/vacancies/providers/geekjob.ts';
-import { avitoBoard, avitoSource } from '../src/vacancies/providers/avito.ts';
-import { trudvsemVacancies, trudvsemVacancyInput, trudvsemSearchUrl, trudvsemSource } from '../src/vacancies/providers/trudvsem.ts';
+import { geekjobBoard, geekjobSource } from '../examples/geekjob.ts';
+import { avitoBoard, avitoSource } from '../examples/avito.ts';
+import { trudvsemVacancies, trudvsemVacancyInput, trudvsemSearchUrl, trudvsemSource } from '../examples/trudvsem.ts';
 import { createSourceUrlPolicy } from '@jobseeker/sources';
 
 const providers = [geekjobSource(), avitoSource(), trudvsemSource(), atsSource()];

@@ -6,7 +6,7 @@ import { createCompanySiteSource } from '@jobseeker/sources/drivers/company-site
 import { createSources } from '@jobseeker/sources';
 import {
   yandexCompanySite, yandexCursor, yandexListingPage, yandexSearchUrl, yandexSource,
-} from '../src/vacancies/providers/yandex.ts';
+} from '../examples/yandex.ts';
 import { createSourceUrlPolicy } from '@jobseeker/sources';
 
 const yandexUrlPolicy = createSourceUrlPolicy([yandexSource()]);

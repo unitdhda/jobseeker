@@ -12,7 +12,6 @@ export default defineConfig({
   build:{ssr:true,rolldownOptions:{input:{
     server:resolve('src/web.ts'),worker:resolve('src/worker.ts'),'cv-worker':resolve('src/cv-worker.ts'),
     'refresh-profiles':resolve('src/profile-refresh.ts'),
-    'task-worker':resolve('src/task-worker.ts'),
   },output:{entryFileNames:'[name].mjs',chunkFileNames:'[name]-[hash].mjs'}}},
   plugins:[{
     name:'bundle-pdfjs-worker',

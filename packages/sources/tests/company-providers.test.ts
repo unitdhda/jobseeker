@@ -4,35 +4,35 @@ import type { VacancyCandidate } from '@jobseeker/engine/contracts';
 import { createSourceUrlPolicy } from '@jobseeker/sources';
 import {
   ozonListingPage, ozonSearchUrl, ozonSource, ozonVacancyInput,
-} from '../src/vacancies/providers/ozon.ts';
+} from '../examples/ozon.ts';
 import {
   rwbListingPage, rwbSearchUrl, rwbSource, rwbVacancyInput,
-} from '../src/vacancies/providers/rwb.ts';
+} from '../examples/rwb.ts';
 import {
   mtsListingPage, mtsSearchUrl, mtsSource, mtsVacancyInput,
-} from '../src/vacancies/providers/mts.ts';
+} from '../examples/mts.ts';
 import {
   vkCompanySite, vkListingPage, vkSearchUrl, vkSource, vkVacancyInput,
-} from '../src/vacancies/providers/vk.ts';
-import { konturBoard, konturSource } from '../src/vacancies/providers/kontur.ts';
+} from '../examples/vk.ts';
+import { konturBoard, konturSource } from '../examples/kontur.ts';
 import {
   magnitListingPage, magnitSearchUrl, magnitSource, magnitVacancyInput,
-} from '../src/vacancies/providers/magnit.ts';
+} from '../examples/magnit.ts';
 import {
   yadroListingPage, yadroSearchUrl, yadroSource, yadroVacancyInput,
-} from '../src/vacancies/providers/yadro.ts';
+} from '../examples/yadro.ts';
 import {
   selectelListingPage, selectelSearchUrl, selectelSource, selectelVacancyInput,
-} from '../src/vacancies/providers/selectel.ts';
+} from '../examples/selectel.ts';
 import {
   sberListingPage, sberSearchUrl, sberSource, sberVacancyInput,
-} from '../src/vacancies/providers/sber.ts';
+} from '../examples/sber.ts';
 import {
   kasperskyEntries, kasperskyFlightNames, kasperskySearchUrl, kasperskySource, kasperskyVacancyInput,
-} from '../src/vacancies/providers/kaspersky.ts';
+} from '../examples/kaspersky.ts';
 import {
   tbankListings, tbankRequestBody, tbankSource, tbankVacancyFromHtml, tbankVacancyInput,
-} from '../src/vacancies/providers/tbank.ts';
+} from '../examples/tbank.ts';
 
 function candidate(source: string, sourceId: string, url: string, payload: unknown): VacancyCandidate {
   return {
