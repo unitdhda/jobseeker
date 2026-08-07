@@ -182,7 +182,7 @@ npx jobseeker db init
 It prints how many tables it created. `db init` refuses a database that already has tables in `public`: it is an
 initializer, not a migration tool, and there is no upgrade path onto an unrelated existing schema or migration
 series to replay. Later schema changes are applied to live databases as reviewed one-off statements — see
-[operations](operations.md#database-schema).
+[operations](operations.md#upgrading).
 
 Back the database up from the start. It holds every CV, search profile, match, and generated artifact; the schema
 can be recreated from the package, but the data cannot.
