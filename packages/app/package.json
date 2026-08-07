@@ -1,6 +1,6 @@
 {
   "name": "@unitdhda/jobseeker",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Self-hosted Telegram service that turns a CV into continuous vacancy monitoring, scoring, and tailored applications.",
   "license": "MIT",
   "repository": {
