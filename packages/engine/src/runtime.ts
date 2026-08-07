@@ -4,6 +4,7 @@
  * runSchedulerTick and sleeps until the next unit is due.
  */
 import { nextCadence, type CadencePolicy } from './cadence.ts';
+import { mapConcurrent } from './concurrency.ts';
 import { pickDueUnits } from './pick.ts';
 import type { SearchPlan, SearchRecipient } from './contracts.ts';
 
@@ -23,6 +24,11 @@ export interface TickPorts {
   cadencePolicy: CadencePolicy;
   /** How many of each user's units a tick may run per platform; the per-platform budget is subscribers times this. */
   queriesPerUserPerTick: number;
+  /**
+   * How many platforms may scrape at once. Cross-platform parallelism touches distinct hosts, so per-source
+   * politeness is unchanged; providers that serialize internally (a shared browser) keep doing so. Default 1.
+   */
+  platformConcurrency?: number;
   dueUnits(now: Date): Promise<TickUnit[]>;
   discover(platform: string, plan: SearchPlan<unknown>): Promise<TickDiscovery>;
   recordUnitRun(unitId: string, cadenceMinutes: number, foundNovelty: boolean, now: Date): Promise<void>;
@@ -43,7 +49,7 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
     byPlatform.set(unit.platform, list);
   }
   const report: TickReport = { due: due.length, unitsRun: 0, platformFailures: 0, perPlatform: {} };
-  for (const [platform, units] of byPlatform) {
+  const runPlatform = async ([platform, units]: [string, TickUnit[]]): Promise<void> => {
     const subscribers = new Set(units.flatMap((unit) => unit.subscribers.map((entry) => entry.userId)));
     const budget = Math.max(1, subscribers.size * ports.queriesPerUserPerTick);
     const picked = pickDueUnits(units.map((unit) => ({ unitId: unit.unitId, platform, nextRunAt: 0,
@@ -57,7 +63,7 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
     } catch {
       // The units stay due and retry next tick; advancing them would silently skip a whole cadence period.
       report.platformFailures += 1;
-      continue;
+      return;
     }
     for (const unit of chosen) {
       const name = (unit.query as { name?: string } | null)?.name;
@@ -70,7 +76,8 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
       report.unitsRun += 1;
     }
     report.perPlatform[platform] = { units: chosen.length, discovered: discovery.discovered };
-  }
+  };
+  await mapConcurrent([...byPlatform], Math.max(1, ports.platformConcurrency ?? 1), runPlatform);
   return report;
 }
 

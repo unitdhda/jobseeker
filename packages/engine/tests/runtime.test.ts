@@ -99,3 +99,58 @@ test('one user\'s scorer failure does not cost the others their match', async ()
   assert.equal(result.failures, 1);
   assert.deepEqual((filed as any[]).map((entry) => entry.userId), ['u2']);
 });
+
+test('platform scrapes overlap under platformConcurrency and stay sequential at the default', async () => {
+  const order: string[] = [];
+  const gate: { release?: () => void } = {};
+  const slowFirst = (platform: string): Promise<void> => {
+    order.push(`start:${platform}`);
+    if (platform === 'hh') return new Promise((resolve) => { gate.release = () => { order.push('finish:hh'); resolve(); }; });
+    order.push(`finish:${platform}`);
+    return Promise.resolve();
+  };
+
+  // Concurrency 2: habr must start while hh is still in flight, and hh's failure to finish first must not matter.
+  const concurrent = fixture({
+    platformConcurrency: 2,
+    discover: async (platform, plan) => {
+      const pending = slowFirst(platform);
+      if (platform === 'habr') gate.release?.();
+      await pending;
+      return { searches: plan.searches.length, users: 0, seen: 0, discovered: 0 };
+    },
+  });
+  const report = await runSchedulerTick(concurrent.ports, new Date(0));
+  assert.equal(report.unitsRun, 3);
+  assert.deepEqual(order.slice(0, 2), ['start:hh', 'start:habr'], 'second platform started before the first finished');
+  assert.ok(order.indexOf('finish:hh') > order.indexOf('start:habr'));
+
+  // Default (no option): strictly sequential — habr starts only after hh finished.
+  const sequentialOrder: string[] = [];
+  const sequential = fixture({
+    discover: async (platform, plan) => {
+      sequentialOrder.push(`start:${platform}`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      sequentialOrder.push(`finish:${platform}`);
+      return { searches: plan.searches.length, users: 0, seen: 0, discovered: 0 };
+    },
+  });
+  await runSchedulerTick(sequential.ports, new Date(0));
+  assert.deepEqual(sequentialOrder, ['start:hh', 'finish:hh', 'start:habr', 'finish:habr']);
+});
+
+test('a failing platform under concurrency is isolated and the others still record runs', async () => {
+  const { ports, recorded } = fixture({
+    platformConcurrency: 4,
+    discover: async (platform, plan) => {
+      if (platform === 'hh') throw new Error('browser exploded');
+      return { searches: plan.searches.length, users: 0, seen: 0, discovered: 1 };
+    },
+  });
+  const report = await runSchedulerTick(ports, new Date(0));
+  assert.equal(report.platformFailures, 1);
+  assert.equal(report.unitsRun, 1);
+  assert.deepEqual((recorded as { unitId: string }[]).map((entry) => entry.unitId), ['c']);
+  assert.equal(report.perPlatform.habr!.discovered, 1);
+  assert.equal(report.perPlatform.hh, undefined);
+});

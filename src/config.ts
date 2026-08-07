@@ -97,6 +97,11 @@ export const config = {
   // Rows deleted per retention pass, so one cycle cannot spend itself purging a large backlog.
   vacancyPurgeBatchSize: integerEnv('VACANCY_PURGE_BATCH_SIZE', 500, 0, 20_000),
   normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
+  // How many sources normalize queued candidates at once. 1 preserves the historical single queue; a browser-backed
+  // source at ~50s per candidate otherwise blocks sources that normalize in fractions of a second.
+  normalizeSourceConcurrency: integerEnv('NORMALIZE_SOURCE_CONCURRENCY', 1, 1, 8),
+  // How many platforms may scrape concurrently inside one discovery tick; hosts are disjoint across platforms.
+  tickPlatformConcurrency: integerEnv('DISCOVERY_TICK_CONCURRENCY', 1, 1, 8),
   candidateRefreshBatchSize: integerEnv('CANDIDATE_REFRESH_BATCH_SIZE', 2, 0, 1_000),
   candidateRefreshDays: integerEnv('CANDIDATE_REFRESH_DAYS', 7, 1, 365),
   prefilterMinScore: integerEnv('PREFILTER_MIN_SCORE', 20, 0, 100),

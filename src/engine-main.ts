@@ -65,6 +65,7 @@ function loopPorts(): LoopPorts {
     tick: (now) => runSchedulerTick({
       cadencePolicy,
       queriesPerUserPerTick: config.searchQueriesPerCycle,
+      platformConcurrency: config.tickPlatformConcurrency,
       dueUnits,
       discover: async (platform, plan): Promise<TickDiscovery> =>
         getSearchPlatform(platform).discover(plan as SearchPlan<never>),

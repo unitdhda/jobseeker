@@ -29,11 +29,15 @@ export async function normalizeListings(limit: number): Promise<NormalizeListing
   trace('listing.queue.selected', { limit, selected: selected.map((candidate) => ({ source: candidate.source,
     sourceId: candidate.sourceId, title: candidate.title })) });
   const normalizationResults = new Map<string, VacancyInput | null | Error>();
-  for (const source of new Set(selected.map((candidate) => candidate.source))) {
-    const candidates = selected.filter((candidate) => candidate.source === source);
-    const results = await normalizePlatformCandidates(source, candidates);
-    for (const [sourceId, result] of results) normalizationResults.set(`${source}:${sourceId}`, result);
-  }
+  // Sources normalize concurrently because their costs differ by orders of magnitude — a browser-backed candidate
+  // takes ~50s while API detail fetches take fractions of a second — and each source stream stays sequential
+  // inside its provider, so per-host politeness is unchanged.
+  await mapConcurrent([...new Set(selected.map((candidate) => candidate.source))],
+    config.normalizeSourceConcurrency, async (source) => {
+      const candidates = selected.filter((candidate) => candidate.source === source);
+      const results = await normalizePlatformCandidates(source, candidates);
+      for (const [sourceId, result] of results) normalizationResults.set(`${source}:${sourceId}`, result);
+    });
   let normalized = 0; let failed = 0; let closed = 0;
   const vacancyIds: number[] = [];
   const bySource: Record<string, number> = {};
