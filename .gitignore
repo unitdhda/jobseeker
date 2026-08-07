@@ -26,3 +26,4 @@ tools/
 !/extensions/examples.ts
 !/extensions/hh/
 !/packages/app/fonts/
+.DS_Store
