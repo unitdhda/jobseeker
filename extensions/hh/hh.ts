@@ -131,7 +131,7 @@ export function hhSearchUrl(search: HhSearch, page: number): string {
 import { createHash } from 'node:crypto';
 
 import { chromium, type BrowserContext, type Page } from 'playwright';
-import { type VacancyCandidate, type VacancyInput } from '@jobseeker/engine/contracts';
+import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 
 /**
  * The advert's own publication date.

@@ -5,6 +5,7 @@
   "description": "Deployment-local extension modules. Each extension's runtime dependencies are installed here, next to the code that needs them.",
   "dependencies": {
     "playwright": "1.62.0",
-    "valibot": "1.4.2"
+    "valibot": "1.4.2",
+    "@earendil-works/pi-ai": "0.81.1"
   }
 }
