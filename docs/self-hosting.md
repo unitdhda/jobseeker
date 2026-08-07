@@ -1,49 +1,83 @@
 # Self-hosting Jobseeker
 
-This guide gets a private Jobseeker instance from a clean checkout to one healthy Telegram receiver and one healthy
+This guide gets a private Jobseeker instance from an empty database to one healthy Telegram receiver and one healthy
 engine loop. Read [architecture](architecture.md) for design details and [operations](operations.md) before treating an
 instance as production.
 
+There are two ways to run it, and they differ only in where the code comes from:
+
+- **install the published package** — `@unitdhda/jobseeker` from npm, driven by the `jobseeker` command. This is the
+  path below and the one to prefer; you write configuration and extensions, nothing else.
+- **run a checkout** — clone the repository when you intend to change the application itself. See
+  [Running from a checkout](#running-from-a-checkout) at the end.
+
 > [!WARNING]
-> Exactly one process may receive Telegram updates for a bot token, and exactly one process may run with
-> `RUN_JOBS=true`. Jobseeker has no scheduler lock that makes two engine loops safe.
+> Exactly one process may receive Telegram updates for a bot token. A second poller silently splits updates between
+> the two, and Telegram reports nothing wrong. The engine loop is guarded — a second `RUN_JOBS=true` process fails to
+> take the PostgreSQL advisory lock, logs that fact, and idles — but the Telegram receiver is not.
 
 ## Requirements
 
-- Bun 1.3.14 or newer for `bun install` and package scripts; the app itself runs on Node.js 24+ or Bun
-  (with Node, add `--experimental-transform-types` when running `.ts` entrypoints directly);
-- PostgreSQL reachable through `DATABASE_URL`;
-- a Telegram bot token;
-- credentials for at least one model in Pi AI's catalog;
-- Chromium or the Playwright browser installed by the worker Docker image;
-- fonts available to Typst for PDF generation;
-- Docker and Compose for the recommended long-running deployment.
+- Node.js 23.6 or newer (extensions are loaded as TypeScript through native type stripping) or Bun 1.3+;
+- PostgreSQL 15+ reachable through `DATABASE_URL` — Docker, RDS, Supabase, or bare metal, it makes no difference;
+- a Telegram bot token and your own Telegram user id;
+- credentials for at least one model in [Pi AI](https://github.com/earendil-works/pi-ai)'s catalog;
+- whatever your chosen sources need — the reference `hh` extension drives a real Chromium through Playwright;
+  API-backed sources need nothing beyond network egress.
 
-Browser-backed source feasibility depends on network egress. Test sources from the machine that will run discovery,
-not only from a laptop.
+Fonts for PDF generation ship inside the package (JetBrains Mono and Spectral, both OFL), so nothing is required
+there unless you want different ones.
 
-## 1. Install the repository
+Source feasibility depends on network egress. Probe sources from the machine that will run discovery, not only from
+a laptop.
 
-```bash
-git clone git@github.com:unitdhda/jobseeker.git
-cd jobseeker
-bun install --frozen-lockfile
-```
-
-Validate the checkout before introducing credentials:
+## 1. Install
 
 ```bash
-bun run typecheck
-bun run test
-bun run build
+mkdir jobseeker && cd jobseeker
+npm install @unitdhda/jobseeker
+npx jobseeker help
 ```
 
-## 2. Create the Telegram bot
+The package installs a single `jobseeker` command:
 
-Use Telegram's BotFather to create a bot and obtain its token. Start a private chat with the bot so Telegram knows the
-owner account.
+| Command | Does |
+|---|---|
+| `jobseeker start` | Runs the service: Telegram receiver, engine loop, health endpoints. The only long-running mode. |
+| `jobseeker db init` | Applies the packaged `schema.sql` to an empty database. |
+| `jobseeker refresh-profiles` | Generates missing per-platform search profiles for approved users, then exits. |
+| `jobseeker doctor` | Checks configuration, database, fonts, and extensions. |
 
-The minimal identity configuration is:
+Global installation (`npm install -g @unitdhda/jobseeker`) works too, but a project directory is more convenient:
+it is where your `extensions/` and environment file will live.
+
+## 2. Configure the environment
+
+Configuration is environment variables only — there is no config file, and the application does not read `.env` by
+itself. Supply the variables the way your host does it: `export` in a shell, `EnvironmentFile=` in a systemd unit,
+`env_file:` in Compose, or the runtime's own flag:
+
+```bash
+node --env-file=.env node_modules/.bin/jobseeker start   # or: bun --env-file=.env node_modules/.bin/jobseeker start
+```
+
+The minimum is five variables:
+
+```dotenv
+DATABASE_URL=
+TELEGRAM_BOT_TOKEN=
+TELEGRAM_USER_ID=
+AI_MODEL=provider/generation-model
+AI_SCORING_MODEL=provider/scoring-model
+```
+
+Copy [`.env.example`](../.env.example) from the repository as the complete annotated reference — every limit,
+budget, and cadence knob is documented there with its default.
+
+## 3. Create the Telegram bot
+
+Use Telegram's BotFather to create a bot and obtain its token. Start a private chat with the bot so Telegram knows
+the owner account.
 
 ```dotenv
 TELEGRAM_BOT_TOKEN=
@@ -52,20 +86,14 @@ TELEGRAM_CHAT_ID=
 TELEGRAM_MODE=polling
 ```
 
-For a private owner chat, user and chat IDs must match. Keep the token outside version control and set the environment
-file to owner-readable permissions only.
+For a private owner chat, user and chat IDs must match. Keep the token outside version control and set the
+environment file to owner-readable permissions only.
 
-The bot is private by design. Other users send `/request`; the owner approves them with `/ok ID` or `/ok @username`.
+The bot is private by design. Other people send `/request`; the owner approves them with `/ok ID` or `/ok @username`.
 
-## 3. Initialize PostgreSQL
+## 4. Initialize PostgreSQL
 
-Create an empty PostgreSQL database and apply the schema of record:
-
-```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/app/schema.sql
-```
-
-Configure the application:
+Create an empty database and let the CLI apply the schema of record:
 
 ```dotenv
 DATABASE_URL=
@@ -73,15 +101,20 @@ POSTGRES_SSL=require
 POSTGRES_POOL_MAX=4
 ```
 
-Use `POSTGRES_SSL=disable` only for a trusted local database. `verify-full` additionally requires
-`POSTGRES_CA_CERT`.
+```bash
+npx jobseeker db init
+```
 
-`packages/app/schema.sql` creates a fresh runnable schema; it is not an upgrade API for an unrelated existing
-database.
+`db init` refuses a database that already has tables in `public`, and reports how many tables it created. It is an
+initializer, not a migration tool: there is no upgrade path onto an unrelated existing schema, and no migration
+series to replay. Schema changes to a live database are applied as reviewed one-off statements — see
+[operations](operations.md#database-schema).
 
-## 4. Configure model access
+Use `POSTGRES_SSL=disable` only for a trusted local database. `verify-full` additionally requires `POSTGRES_CA_CERT`.
 
-Jobseeker does not hardcode models. Set both roles:
+## 5. Configure model access
+
+Jobseeker hardcodes no models. Set both roles:
 
 ```dotenv
 AI_MODEL=provider/generation-model
@@ -117,55 +150,55 @@ private encrypted runtime-state document instead of a plain local credential fil
 
 ### Providers from extensions
 
-An extension may register further pi-ai providers (see `extensions/README.md`); a role then selects one by naming
-its model id. Such a provider reads its own configuration from the environment.
+An extension may register further pi-ai providers; a role then selects one by naming its model id, and the provider
+reads its own configuration from the environment. This is how a local inference bridge or an unpublished vendor SDK
+is wired in without touching the application.
 
-## 5. Choose vacancy sources
+## 6. Add vacancy sources
 
-Start conservatively:
+**The application registers no vacancy sources by itself.** Discovery does nothing until an extension provides
+providers. At startup the service scans `./extensions` (override with `JOBSEEKER_EXTENSIONS`) for ESM modules —
+single files, or subdirectories with an `index.*` — and calls each module's default-exported `register(api)`.
 
-```dotenv
-SEARCH_PLATFORMS=hh,habr,rabota,hirehi,trudvsem,ozon,rwb
+The bundled `@jobseeker/sources` toolkit reaches extensions through that `api`, including ready-made example
+providers for about 19 public sources. The smallest useful extension enables all of them:
+
+```ts
+// extensions/sources.ts
+export default function register(api) {
+  for (const provider of api.sources.examples.exampleSources({ maxPages: 1 })) {
+    api.registerSourceProvider(provider);
+  }
+}
 ```
 
-Useful source-specific settings include:
+Node loads `.ts` extensions directly through type stripping, so keep to erasable syntax — no enums, namespaces, or
+parameter properties. Extensions own their runtime dependencies: if one drives a browser or an SDK, give the
+extensions directory its own `package.json` and run `npm install` there, next to the code that needs it.
+
+Narrow what actually runs discovery with a comma-separated list of registered source ids; unset means all of them:
 
 ```dotenv
-HH_AREA_ID=1
-PLAYWRIGHT_HEADLESS=true
-HH_OPERATION_TIMEOUT_SECONDS=180
-TRUDVSEM_REGION=
-ATS_BOARDS=
+SEARCH_PLATFORMS=habr,rabota,hirehi,trudvsem,ozon,rwb
 ```
 
-Optional `SEARCH_PLATFORMS` values include `geekjob`, `avito`, `ats`, `yandex`, `mts`, `vk`, `kontur`, `magnit`,
-`yadro`, `selectel`, `sber`, `kaspersky`, and `tbank`. Every concrete adapter is application-owned under
-`src/vacancies/providers/` and registered through the public `@jobseeker/sources` API. Yandex and VK use the shared
-company-site driver; Ozon, RWB, MTS, Magnit Tech, YADRO, Selectel, and Sber use first-party JSON APIs; Kontur uses
-the schema.org board driver; Kaspersky and T-Bank are direct providers over server-rendered pages and an RPC
-gateway respectively. Ozon and RWB are enabled by default; the rest stay registered but unselected until you probe
-them from the machine that will scrape them.
+A source can stay registered while contributing no searches — registration still gives normalization and URL
+validation for listings already stored. Source-specific settings belong to the extension that reads them, for
+example `HH_AREA_ID`, `PLAYWRIGHT_HEADLESS`, and `HH_OPERATION_TIMEOUT_SECONDS` for the reference `hh` extension,
+or `TRUDVSEM_REGION` and `ATS_BOARDS` for example providers.
 
-Do not enable every adapter merely because it exists. Some boards block particular egress networks or return no
-listings. `/scraper` exposes the actual funnel after startup.
+Do not enable every source merely because an example exists. Some boards block particular egress networks or return
+nothing at all. `/scraper` exposes the actual funnel after startup.
 
-HH browser state should live on a persistent writable volume in long-running deployments. If HH asks for a captcha,
-open the same browser profile interactively, solve it, and return to headless operation.
+A browser-backed source needs its state on a persistent writable volume in long-running deployments. If a source
+asks for a captcha, open the same browser profile interactively, solve it, and return to headless operation.
 
-## 6. Configure PDF rendering
-
-Provide fonts and point Typst at them:
-
-```dotenv
-TYPST_FONT_PATHS=./fonts
-```
-
-The Docker worker copies the repository's private `fonts/` directory into the image. Those files are intentionally
-not committed, so a new deployment must supply them before building.
+The repository's [`extensions/README.md`](../extensions/README.md) documents the full `api` surface, and
+[the provider guide](../packages/sources/README.md) documents the drivers behind it.
 
 ## 7. Configure ownership and limits
 
-For a single-process local or VPS deployment:
+For a single-process deployment:
 
 ```dotenv
 TELEGRAM_MODE=polling
@@ -186,26 +219,37 @@ UNIT_CADENCE_FLOOR_MINUTES=30
 UNIT_CADENCE_CEILING_MINUTES=720
 ```
 
-Use `.env.example` as the complete reference. Tune only after measuring the discovery → normalization → lexical
-match → score → delivery funnel.
+Tune only after measuring the discovery → normalization → lexical match → score → delivery funnel.
 
-## 8. Run locally
+### PDF rendering
 
-Build and start the server:
+The packaged fonts are used automatically. Point Typst elsewhere only to override them:
+
+```dotenv
+TYPST_FONT_PATHS=./fonts
+```
+
+## 8. Check, then run
 
 ```bash
-bun run build
-bun --env-file=.env dist/server.mjs   # or: node --env-file=.env dist/server.mjs
+npx jobseeker doctor
+npx jobseeker start
 ```
+
+`doctor` verifies the five required variables, the runtime version, PostgreSQL reachability and initialization,
+the font path, and that the extensions directory exists and is non-empty. It exits non-zero when a check fails, so
+it works as a deployment gate.
 
 Expected startup signals:
 
+- a line listing the loaded extensions and how many source providers they registered;
 - Telegram polling starts;
 - `Engine loop started; search_units.next_run_at owns the schedule.` appears when `RUN_JOBS=true`;
-- `/health` returns process health;
+- `/health` returns process health on `PORT` (default 3000);
 - `/ready` reports PostgreSQL persistence.
 
-Do not start a second copy while the first one is polling or running jobs.
+If a second instance is already running the loop, the new process logs `Another process holds the engine-loop lock`
+and stays idle instead — which is a configuration mistake to fix, not a supported topology.
 
 ## 9. First-use flow
 
@@ -219,38 +263,59 @@ Do not start a second copy while the first one is polling or running jobs.
 Search units adapt their cadence over time. A quiet first few minutes is not necessarily failure; inspect due units,
 normalization, parser errors, and scoring budget before forcing work.
 
-## 10. Docker/VPS deployment
+## 10. Keep it running
 
-The repository includes:
+Any supervisor that holds one process and restarts it works — systemd, Compose, a process manager. Two rules
+survive every choice:
 
-- a multi-stage `Dockerfile` with a browser-capable worker target;
-- a Compose topology with the bot and whatever private sidecars its extensions need;
-- a seccomp profile for Chromium;
-- health/readiness endpoints;
-- documentation for safe ownership handoff.
+- one process per bot token receives Telegram updates;
+- back up PostgreSQL; it holds every CV, profile, match, and artifact.
 
-Release and rollback procedures are in [operations](operations.md). Do not copy live host values into
-documentation or source control.
+Upgrades are `npm update @unitdhda/jobseeker` followed by a restart. Read the release notes for schema changes
+first: the schema is applied by you, not by the upgrade.
 
-## 11. Production checklist
+## Running from a checkout
+
+Use this when you intend to change the application. The repository is a Bun-workspaces monorepo; the published
+package is built from `packages/app`.
+
+```bash
+git clone git@github.com:unitdhda/jobseeker.git
+cd jobseeker
+bun install --frozen-lockfile
+bun run typecheck
+bun run test
+bun run build
+bun --env-file=.env packages/app/dist/server.mjs   # or: node --env-file=.env packages/app/dist/server.mjs
+```
+
+Everything above about configuration, the database, extensions, and ownership applies unchanged; the checkout's
+`extensions/` directory already carries the tracked examples, and `packages/app/schema.sql` is the same file the
+package ships.
+
+For a long-running deployment from a checkout the repository provides a multi-stage `Dockerfile` with a
+browser-capable runtime target, a Compose topology under `docker/`, a seccomp profile for Chromium, and the
+release and rollback procedures in [operations](operations.md). Do not copy live host values into documentation or
+source control.
+
+## Production checklist
 
 Before inviting users:
 
 - [ ] PostgreSQL backups exist and restore successfully.
 - [ ] Telegram webhook is absent when polling is active.
-- [ ] Exactly one process has `RUN_JOBS=true`.
-- [ ] Cloud Scheduler is paused unless Cloud Run deliberately owns production.
-- [ ] The task queue, if used, is bounded to one concurrent dispatch and one per second.
+- [ ] Exactly one process receives Telegram updates.
+- [ ] Exactly one process holds the engine-loop lock; no second one is silently idling.
+- [ ] `jobseeker doctor` passes on the machine that runs the service.
 - [ ] OAuth files, environment files, and encryption keys are not committed.
-- [ ] `/health` and `/ready` pass from the running image.
+- [ ] `/health` and `/ready` pass from the running deployment.
 - [ ] The configured model IDs appear in fresh `usage_events`.
 - [ ] `/privacy`, `/export_me`, and `/delete_me confirm` match actual retention behavior.
-- [ ] HH browser state survives a container recreation.
-- [ ] Generated PDFs render with the supplied fonts.
+- [ ] Browser-backed source state survives a container recreation.
+- [ ] Generated PDFs render with the expected fonts.
 
 ## Next steps
 
 - [Architecture](architecture.md)
 - [Troubleshooting](troubleshooting.md)
 - [Operations](operations.md)
-- [Cloud Run staging](cloud-run.md)

@@ -37,9 +37,9 @@ For the product overview, start with the [README](../README.md). For deployment 
 
 ## Repository boundaries
 
-The repository has four Bun workspaces composed by the executable application layer; the code uses no
-Bun-specific APIs, so the built application runs on Node or Bun. See the
-[dependency graph](dependency-graph.md) for allowed import directions and factory ownership.
+The repository has four domain workspaces composed by the executable application package `packages/app`, which is
+what ships to npm as `@unitdhda/jobseeker`; the code uses no Bun-specific APIs, so the built application runs on
+Node or Bun. See the [dependency graph](dependency-graph.md) for allowed import directions and factory ownership.
 
 | Workspace | Owns | Does not own |
 |---|---|---|
@@ -47,16 +47,18 @@ Bun-specific APIs, so the built application runs on Node or Bun. See the
 | `@jobseeker/store` | Factory-owned PostgreSQL pool and all runtime repositories | Environment parsing, Telegram, source HTTP |
 | `@jobseeker/sources` | Open provider runtime, contracts, SSRF/HTTP policy, reusable source drivers | Specific boards, persistence, browsers, model calls |
 | `@jobseeker/cv` | File extraction, structured CV coercion, Typst rendering | User state, model selection |
-| root `src/` | Vacancy providers, configuration, factory composition, cross-domain workflows, AI and Telegram integrations | Reusable package-level rules |
+| `packages/app` | CLI, configuration, factory composition, extension loading, cross-domain workflows, AI and Telegram integrations, the schema of record | Reusable package-level rules, concrete vacancy sources |
+| `extensions/` | Concrete vacancy-source providers, extra AI providers, and their own runtime dependencies | Anything the application must know about at build time |
 
 `createStore` returns an isolated pool/repository instance. `createSources` returns an empty provider collection;
 provider factories register through `setProvider`. Collection options contain only shared limits and ports, while
-application-owned provider factories own page limits, regions, boards, and browser configuration/state. Discovery,
-normalization, and shutdown receive an explicit `SourceContext`; there is no ambient source runtime. Every concrete
-source lives under `src/vacancies/providers/` and uses the same public registration API. Reusable API, grouped ATS,
-company-site, and JSON-LD wrappers all return ordinary `createSourceProvider` providers without putting a source
-catalogue back inside the package. Ozon/RWB, ATS, Yandex, and GeekJob/Avito respectively demonstrate those four
-composition paths. The application owns one production store and source collection. Trusted provider metadata is assembled first so the
+provider factories own page limits, regions, boards, and browser configuration/state. Discovery, normalization, and
+shutdown receive an explicit `SourceContext`; there is no ambient source runtime. **No concrete source lives in the
+application at all**: extensions register providers at startup through the same public API, so a deployment's source
+set is configuration rather than a release. Reusable API, grouped ATS, company-site, and JSON-LD wrappers all return
+ordinary `createSourceProvider` providers without putting a source catalogue back inside the package; the example
+providers shipped with `@jobseeker/sources` demonstrate those four composition paths. The application owns one
+production store and source collection. Trusted provider metadata is assembled first so the
 store and executable collection receive equivalent immutable URL policies without a source/store import cycle.
 Source adapters report listings through an injected persistence port and never import PostgreSQL. CV-specific
 application generation stays in the root cross-domain workflow, so engine has no dependency on CV.
@@ -126,7 +128,7 @@ with respect to user-visible redelivery.
 
 ## Two independent runtime lanes
 
-`src/engine-main.ts` starts one engine loop with two clocks:
+`packages/app/src/engine-main.ts` starts one engine loop with two clocks:
 
 ### Discovery lane
 
@@ -145,8 +147,9 @@ claim scoring work → score batches → deliver alerts and due digests
 It wakes every two minutes independently. A slow or failed discovery pass cannot hold scoring or Telegram delivery
 behind it.
 
-Exactly one process may run the loop with `RUN_JOBS=true`. There is no scheduler advisory lock; a second process can
-perform duplicate source work and delivery.
+Exactly one process runs the loop. `RUN_JOBS=true` only expresses intent: the loop starts once its process takes a
+PostgreSQL session advisory lock, and a process that fails to take it logs the fact and idles, so duplicate source
+work and delivery cannot follow from a second replica.
 
 ## Scoring and paced budgets
 
@@ -210,8 +213,8 @@ registered. Role-specific model IDs come only from configuration:
 - `AI_SCORING_MODEL` — vacancy scoring;
 - `AI_SCORING_FALLBACK_MODEL` — optional fallback.
 
-Credentials come from provider environment variables or the provider-keyed credential store. In cloud-enabled
-configurations, that document is encrypted in private runtime storage. OAuth refresh is serialized in-process and
+Credentials come from provider environment variables or the provider-keyed credential store. When private runtime
+storage is configured, that document is held there encrypted instead of on local disk. OAuth refresh is serialized in-process and
 with a PostgreSQL transaction lock so rotating refresh tokens cannot be refreshed concurrently by two workers.
 
 ## PostgreSQL schema

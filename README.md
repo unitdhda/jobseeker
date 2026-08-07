@@ -95,41 +95,52 @@ without another model call; uploading a new CV invalidates the cached version na
 
 ## Vacancy sources
 
-Sources are open providers rather than a fixed catalogue. `@jobseeker/sources` supplies the runtime — the provider
-contract, per-instance registration, explicitly injected context, the HTTPS/SSRF boundary, and generic drivers for the
-surfaces sites actually expose. Every concrete source is application code under `src/vacancies/providers/`, composed in
-`src/vacancies/providers.ts`.
+**The application registers no vacancy sources of its own.** Sources arrive as extensions: at startup the service
+loads ESM modules from `./extensions` (override with `JOBSEEKER_EXTENSIONS`) and calls each module's
+default-exported `register(api)`. `@jobseeker/sources` supplies the runtime that reaches them through that `api` —
+the provider contract, per-instance registration, explicitly injected context, the HTTPS/SSRF boundary, generic
+drivers for the surfaces sites actually expose, and ready-made example providers for about 19 public sources.
 
-| Driver | Source surface | Built-in examples |
+| Driver | Source surface | Example providers |
 |---|---|---|
 | `createApiSource` | Paginated JSON listings with optional JSON detail | Ozon Careers, RWB / Wildberries, MTS Careers |
 | `createAtsSource` | Greenhouse, Lever, Ashby, SmartRecruiters boards | Configured `provider:slug` company boards |
 | `createCompanySiteSource` | First-party JSON search with HTML vacancy pages | Yandex Careers, VK Careers |
 | `createJsonLdBoardSource` | Enumerated boards with schema.org `JobPosting` | Avito Careers, Geekjob, Kontur Careers |
-| `createSourceProvider` | Anything else, including browser-backed sources | hh.ru (persistent Playwright), Habr Career, Rabota.ru, HireHi, Работа России |
+| `createSourceProvider` | Anything else, including browser-backed sources | Habr Career, Rabota.ru, HireHi, Работа России, and hh.ru as the reference `hh` extension (persistent Playwright) |
 
 A provider declares every host it may touch, fetches only through the injected HTTP client, and is registered
 independently of whether it participates in discovery: `SEARCH_PLATFORMS` decides that separately, so a source can stay
-registered for normalization and URL validation while contributing no new searches.
+registered for normalization and URL validation while contributing no new searches. An extension owns its own runtime
+dependencies, so a browser-driven source keeps Playwright next to itself instead of in the application.
 
-Source availability depends on network egress and the source's current behavior. An adapter being built in does not
-mean it should be enabled in every deployment; probe it from the machine that will actually scrape it.
+Source availability depends on network egress and the source's current behavior. An example existing does not mean it
+should be enabled in every deployment; probe it from the machine that will actually scrape it.
 
-[Provider runtime and driver guide →](packages/sources/README.md)
+[Extension guide →](extensions/README.md) · [Provider runtime and driver guide →](packages/sources/README.md)
 
 ## Run your own instance
 
-You will need:
+Jobseeker is published as [`@unitdhda/jobseeker`](https://www.npmjs.com/package/@unitdhda/jobseeker) — one command,
+configured entirely through the environment:
 
-- Bun 1.3.14 or newer for installing dependencies and running package scripts; the app itself runs on Node.js 24+ or Bun;
-- PostgreSQL;
-- a Telegram bot token and an owner account;
-- Chromium for browser-backed sources;
-- credentials for at least one Pi AI provider;
-- suitable fonts for generated PDFs.
+```bash
+npm install @unitdhda/jobseeker
 
-The safe setup path covers database initialization, model credentials, Telegram ownership, browser state, and the
-single-engine-loop invariant:
+export DATABASE_URL=postgres://… TELEGRAM_BOT_TOKEN=… TELEGRAM_USER_ID=…
+export AI_MODEL=provider/model AI_SCORING_MODEL=provider/model
+
+npx jobseeker db init   # apply the packaged schema to an empty database
+npx jobseeker doctor    # config, database, fonts, extensions
+npx jobseeker start     # Telegram receiver + engine loop + health endpoints
+```
+
+You will need Node.js 23.6+ or Bun 1.3+, PostgreSQL 15+, a Telegram bot token and owner account, and credentials for
+at least one Pi AI provider. Fonts for generated PDFs ship inside the package. Vacancy sources do not: add at least
+one extension before discovery does anything.
+
+The safe setup path covers database initialization, model credentials, Telegram ownership, source extensions, and the
+single-receiver invariant:
 
 **[Open the self-hosting guide →](docs/self-hosting.md)**
 
@@ -139,30 +150,32 @@ one of these prompts:
 ### Configure an instance
 
 ```text
-Clone https://github.com/unitdhda/jobseeker and configure a private local instance. Read and follow
-README.md, docs/self-hosting.md, and .env.example; ask me for missing choices and credentials without exposing or
-committing secrets. Preserve the single Telegram receiver and single engine-loop invariants, run the documented
-validation, verify /health and /ready, and stop for approval before pushing or deploying.
+Install @unitdhda/jobseeker from npm and configure a private instance for me. Read and follow its README,
+docs/self-hosting.md, and .env.example from https://github.com/unitdhda/jobseeker; ask me for missing choices and
+credentials without exposing or committing secrets. Initialize the database with `jobseeker db init`, write an
+extension that registers the vacancy sources I choose, preserve the single-Telegram-receiver invariant, and get
+`jobseeker doctor` passing plus /health and /ready before handing back.
 ```
 
 ### Add a vacancy source
 
 ```text
-Add <source name and listing URL> to Jobseeker as a vacancy source. Read packages/sources/README.md and
-src/vacancies/providers.ts first. Probe the public JSON or HTML surface and show the evidence, then pick the
-closest reusable driver (or createSourceProvider directly). Keep the concrete provider under
-src/vacancies/providers/, declare every host, fetch only through context.http, keep raw queries out of traces,
-and add deterministic tests. Run typecheck, test, and build, then stop for approval before enabling or deploying.
+Add <source name and listing URL> to my Jobseeker instance as a vacancy source. Read extensions/README.md and
+packages/sources/README.md from https://github.com/unitdhda/jobseeker first. Probe the public JSON or HTML surface
+and show the evidence, then pick the closest reusable driver (or createSourceProvider directly). Write it as an
+extension in my extensions directory, declare every host, fetch only through context.http, keep raw queries out of
+traces, and install any dependency it needs in that directory. Show me the source's funnel in /scraper before
+leaving it enabled.
 ```
 
-For a quick development checkout after configuration:
+To work on the application itself, clone the repository instead:
 
 ```bash
 bun install --frozen-lockfile
 bun run typecheck
 bun run test
 bun run build
-bun --env-file=.env dist/server.mjs   # or: node --env-file=.env dist/server.mjs
+bun --env-file=.env packages/app/dist/server.mjs   # or: node --env-file=.env packages/app/dist/server.mjs
 ```
 
 Health endpoints are available at `/health` and `/ready`; readiness includes PostgreSQL connectivity.
@@ -170,7 +183,8 @@ Health endpoints are available at `/health` and `/ready`; readiness includes Pos
 ## Technical overview
 
 Jobseeker is a Bun-workspaces monorepo that runs on Node or Bun — no Bun-specific APIs are used. Domain and
-infrastructure packages stay behind explicit dependency boundaries; the root application composes them.
+infrastructure packages stay behind explicit dependency boundaries; the application package composes them and is what
+ships to npm.
 
 | Workspace | Responsibility |
 |---|---|
@@ -178,11 +192,13 @@ infrastructure packages stay behind explicit dependency boundaries; the root app
 | `packages/store` | Factory-owned PostgreSQL pool and repositories |
 | `packages/sources` | Open provider runtime, contracts, SSRF policy, HTTP utilities, and reusable source drivers |
 | `packages/cv` | CV extraction, structured documents, and Typst PDF rendering |
-| `src/` | Vacancy providers, configuration, factory composition, cross-domain workflows, AI, Telegram, workers, and entrypoints |
+| `packages/app` | The published `@unitdhda/jobseeker` package: CLI, configuration, factory composition, cross-domain workflows, AI, Telegram, workers, extension loading, and the schema of record |
 
 The [workspace dependency graph](docs/dependency-graph.md) documents and enforces the allowed import directions.
-PostgreSQL is the only runtime database. `search_units.next_run_at` owns the discovery schedule, and exactly one
-process may run with `RUN_JOBS=true`. There is no scheduler lock that makes a second engine loop safe.
+PostgreSQL is the only runtime database and `packages/app/schema.sql` is its single schema of record — there is no
+migration series. `search_units.next_run_at` owns the discovery schedule, and the loop takes a PostgreSQL advisory
+lock, so a second `RUN_JOBS=true` process idles instead of duplicating work. Telegram has no such guard: exactly one
+process per bot token may receive updates.
 
 ## AI providers and cost
 
@@ -221,7 +237,7 @@ PostgreSQL database, Telegram token, and model credentials.
 | How do search units, matching, budgets, and delivery work? | [Architecture](docs/architecture.md) |
 | Why are there no vacancies, scores, or documents? | [Troubleshooting](docs/troubleshooting.md) |
 | How do I validate, deploy, monitor, or roll back production? | [Operations](docs/operations.md) |
-| What is retained in the dormant cloud surface? | [Cloud Run](docs/cloud-run.md) |
+| How do I add a vacancy source or an AI provider? | [Extensions](extensions/README.md) |
 
 ## Project status
 

@@ -46,4 +46,4 @@ bun run test:postgres
 bun audit
 ```
 
-On a Docker-capable host, also build and scan both image targets. Verify Cloud Run ingress and IAM, inspect only file modes (not secret contents), and test encrypted-state recovery without printing stored data.
+On a Docker-capable host, also build and scan the runtime image. Inspect only file modes (not secret contents), and test encrypted-state recovery without printing stored data.

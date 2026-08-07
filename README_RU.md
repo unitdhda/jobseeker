@@ -96,41 +96,52 @@ Jobseeker — не очередной интерфейс для просмотр
 
 ## Источники вакансий
 
-Источники — это открытые провайдеры, а не фиксированный каталог. `@jobseeker/sources` даёт runtime: контракт
-провайдера, регистрацию в рамках экземпляра, явно передаваемый контекст, границу HTTPS/SSRF и универсальные драйверы
-для тех поверхностей, которые реально публикуют сайты. Каждый конкретный источник — код приложения в
-`src/vacancies/providers/`, собираемый в `src/vacancies/providers.ts`.
+**Приложение само не регистрирует ни одного источника.** Источники приходят из расширений: при старте сервис
+загружает ESM-модули из `./extensions` (переопределяется через `JOBSEEKER_EXTENSIONS`) и вызывает у каждого
+экспортированную по умолчанию функцию `register(api)`. `@jobseeker/sources` даёт им runtime: контракт провайдера,
+регистрацию в рамках экземпляра, явно передаваемый контекст, границу HTTPS/SSRF, универсальные драйверы для тех
+поверхностей, которые реально публикуют сайты, и готовые примеры провайдеров примерно для 19 публичных источников.
 
-| Драйвер | Поверхность источника | Встроенные примеры |
+| Драйвер | Поверхность источника | Примеры провайдеров |
 |---|---|---|
 | `createApiSource` | Постраничные JSON-списки и опциональная JSON-карточка | Ozon Careers, RWB / Wildberries, Вакансии МТС |
 | `createAtsSource` | Борды Greenhouse, Lever, Ashby, SmartRecruiters | Настраиваемые борды компаний `provider:slug` |
 | `createCompanySiteSource` | Собственный JSON-поиск компании и HTML-страницы вакансий | Вакансии Яндекса, Вакансии VK |
 | `createJsonLdBoardSource` | Перечисляемые борды с разметкой schema.org `JobPosting` | Avito Careers, Geekjob, Вакансии Контура |
-| `createSourceProvider` | Всё остальное, включая браузерные источники | hh.ru (постоянный Playwright), Habr Career, Rabota.ru, HireHi, Работа России |
+| `createSourceProvider` | Всё остальное, включая браузерные источники | Habr Career, Rabota.ru, HireHi, Работа России и hh.ru — эталонное расширение `hh` (постоянный Playwright) |
 
 Провайдер объявляет все хосты, к которым может обращаться, ходит в сеть только через переданный HTTP-клиент и
 регистрируется независимо от участия в поиске: это отдельно решает `SEARCH_PLATFORMS`. Источник может оставаться
-зарегистрированным для нормализации и проверки URL, не создавая новых поисков.
+зарегистрированным для нормализации и проверки URL, не создавая новых поисков. Свои зависимости расширение держит
+при себе: браузерный источник хранит Playwright рядом с собой, а не в приложении.
 
-Доступность источника зависит от сетевого выхода сервера и текущего поведения площадки. Наличие адаптера в коде не
-означает, что его следует включать в каждом деплое: проверяйте источник с той машины, которая будет выполнять поиск.
+Доступность источника зависит от сетевого выхода сервера и текущего поведения площадки. Наличие примера не означает,
+что его следует включать в каждом деплое: проверяйте источник с той машины, которая будет выполнять поиск.
 
-[Руководство по runtime провайдеров и драйверам →](packages/sources/README.md)
+[Руководство по расширениям →](extensions/README.md) · [Руководство по runtime провайдеров и драйверам →](packages/sources/README.md)
 
 ## Развернуть свой экземпляр
 
-Понадобятся:
+Jobseeker публикуется как [`@unitdhda/jobseeker`](https://www.npmjs.com/package/@unitdhda/jobseeker) — одна команда,
+настраиваемая только переменными окружения:
 
-- Bun 1.3.14 или новее для установки зависимостей и скриптов пакета; само приложение работает на Node.js 24+ или Bun;
-- PostgreSQL;
-- токен Telegram-бота и аккаунт владельца;
-- Chromium для браузерных источников;
-- учётные данные хотя бы одного провайдера Pi AI;
-- подходящие шрифты для PDF.
+```bash
+npm install @unitdhda/jobseeker
 
-Безопасный путь настройки охватывает инициализацию базы, AI-авторизацию, владение Telegram, состояние браузера и
-инвариант единственного движка:
+export DATABASE_URL=postgres://… TELEGRAM_BOT_TOKEN=… TELEGRAM_USER_ID=…
+export AI_MODEL=provider/model AI_SCORING_MODEL=provider/model
+
+npx jobseeker db init   # применить схему из пакета к пустой базе
+npx jobseeker doctor    # конфигурация, база, шрифты, расширения
+npx jobseeker start     # приёмник Telegram + цикл движка + health-эндпоинты
+```
+
+Понадобятся Node.js 23.6+ или Bun 1.3+, PostgreSQL 15+, токен Telegram-бота с аккаунтом владельца и учётные данные
+хотя бы одного провайдера Pi AI. Шрифты для PDF идут внутри пакета. Источники вакансий — нет: пока не добавлено ни
+одного расширения, поиск ничего не делает.
+
+Безопасный путь настройки охватывает инициализацию базы, AI-авторизацию, владение Telegram, расширения-источники и
+инвариант единственного приёмника:
 
 **[Открыть руководство по self-hosting →](docs/self-hosting.md)**
 
@@ -140,30 +151,32 @@ Jobseeker — не очередной интерфейс для просмотр
 ### Настроить экземпляр
 
 ```text
-Clone https://github.com/unitdhda/jobseeker and configure a private local instance. Read and follow
-README.md, docs/self-hosting.md, and .env.example; ask me for missing choices and credentials without exposing or
-committing secrets. Preserve the single Telegram receiver and single engine-loop invariants, run the documented
-validation, verify /health and /ready, and stop for approval before pushing or deploying.
+Install @unitdhda/jobseeker from npm and configure a private instance for me. Read and follow its README,
+docs/self-hosting.md, and .env.example from https://github.com/unitdhda/jobseeker; ask me for missing choices and
+credentials without exposing or committing secrets. Initialize the database with `jobseeker db init`, write an
+extension that registers the vacancy sources I choose, preserve the single-Telegram-receiver invariant, and get
+`jobseeker doctor` passing plus /health and /ready before handing back.
 ```
 
 ### Добавить источник вакансий
 
 ```text
-Add <source name and listing URL> to Jobseeker as a vacancy source. Read packages/sources/README.md and
-src/vacancies/providers.ts first. Probe the public JSON or HTML surface and show the evidence, then pick the
-closest reusable driver (or createSourceProvider directly). Keep the concrete provider under
-src/vacancies/providers/, declare every host, fetch only through context.http, keep raw queries out of traces,
-and add deterministic tests. Run typecheck, test, and build, then stop for approval before enabling or deploying.
+Add <source name and listing URL> to my Jobseeker instance as a vacancy source. Read extensions/README.md and
+packages/sources/README.md from https://github.com/unitdhda/jobseeker first. Probe the public JSON or HTML surface
+and show the evidence, then pick the closest reusable driver (or createSourceProvider directly). Write it as an
+extension in my extensions directory, declare every host, fetch only through context.http, keep raw queries out of
+traces, and install any dependency it needs in that directory. Show me the source's funnel in /scraper before
+leaving it enabled.
 ```
 
-После настройки для локальной разработки достаточно:
+Чтобы дорабатывать само приложение, клонируйте репозиторий:
 
 ```bash
 bun install --frozen-lockfile
 bun run typecheck
 bun run test
 bun run build
-bun --env-file=.env dist/server.mjs   # или: node --env-file=.env dist/server.mjs
+bun --env-file=.env packages/app/dist/server.mjs   # или: node --env-file=.env packages/app/dist/server.mjs
 ```
 
 `/health` показывает состояние процесса, `/ready` дополнительно проверяет PostgreSQL.
@@ -171,7 +184,7 @@ bun --env-file=.env dist/server.mjs   # или: node --env-file=.env dist/server
 ## Технический обзор
 
 Jobseeker — монорепозиторий на Bun workspaces, работающий на Node или Bun (Bun-специфичные API не используются).
-Четыре пакета содержат доменную логику, корневое приложение их собирает.
+Доменные пакеты собираются пакетом приложения — именно он публикуется в npm.
 
 | Workspace | Ответственность |
 |---|---|
@@ -179,10 +192,12 @@ Jobseeker — монорепозиторий на Bun workspaces, работаю
 | `packages/store` | PostgreSQL-клиент и репозитории |
 | `packages/sources` | Открытый runtime провайдеров, контракты, SSRF/HTTP-политика и переиспользуемые драйверы |
 | `packages/cv` | Извлечение резюме и генерация PDF через Typst |
-| `src/` | Провайдеры вакансий, runtime движка, Telegram, workflow, модели, воркеры и точки входа |
+| `packages/app` | Публикуемый пакет `@unitdhda/jobseeker`: CLI, конфигурация, runtime движка, Telegram, workflow, модели, воркеры, загрузка расширений и схема базы |
 
-PostgreSQL — единственная runtime-база. Расписание обнаружения хранится в `search_units.next_run_at`, и только один
-процесс может работать с `RUN_JOBS=true`. Advisory lock, который делал бы второй движок безопасным, отсутствует.
+PostgreSQL — единственная runtime-база, а `packages/app/schema.sql` — её единственная схема: серии миграций нет.
+Расписание обнаружения хранится в `search_units.next_run_at`, а цикл движка берёт advisory lock в PostgreSQL, так что
+второй процесс с `RUN_JOBS=true` простаивает, а не дублирует работу. У Telegram такой защиты нет: обновления по
+одному токену может принимать только один процесс.
 
 ## AI-провайдеры и стоимость
 
@@ -220,7 +235,7 @@ Jobseeker обрабатывает резюме и поисковые предп
 | Как работают поисковые единицы, бюджеты и доставка? | [Архитектура](docs/architecture.md) |
 | Почему нет вакансий, оценок или документов? | [Диагностика](docs/troubleshooting.md) |
 | Как проверять, деплоить, наблюдать и откатывать продакшен? | [Эксплуатация](docs/operations.md) |
-| Что осталось в неактивной облачной поверхности? | [Cloud Run](docs/cloud-run.md) |
+| Как добавить источник вакансий или AI-провайдера? | [Расширения](extensions/README.md) |
 
 ## Статус проекта
 

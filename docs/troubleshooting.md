@@ -208,9 +208,9 @@ configured together:
 - runtime-state encryption key;
 - PostgreSQL connectivity for refresh serialization.
 
-If replacing a cloud OAuth document, make the overwrite explicit and verify a tiny completion before restarting
-production. A rotated refresh token must be persisted; restoring an older credential file can invalidate future
-refreshes.
+If replacing an OAuth document in the encrypted runtime state, make the overwrite explicit and verify a tiny
+completion before restarting production. A rotated refresh token must be persisted; restoring an older credential
+file can invalidate future refreshes.
 
 ## Duplicate alerts or missing Telegram commands
 
@@ -220,12 +220,12 @@ Possible causes:
 
 - polling and webhook active for the same token;
 - two polling processes;
-- two `RUN_JOBS=true` processes;
-- Cloud Scheduler enabled while the VPS engine is active;
-- local development process pointed at production.
+- a local development process pointed at production.
 
-Stop the unintended owner first, then verify webhook state, process/container ownership, Scheduler state, and queue
-bounds. PostgreSQL does not provide a lock that makes duplicate engine loops safe.
+Stop the unintended owner first, then verify webhook state and process/container ownership. Duplicate *alerts* from
+two engine loops are the one case with a guard: the loop holds a PostgreSQL session advisory lock and a second
+`RUN_JOBS=true` process logs `Another process holds the engine-loop lock` and idles. Duplicate Telegram *reception*
+has no guard at all — that is the case to hunt first.
 
 ## Digest navigation or IDs fail
 
@@ -263,7 +263,7 @@ Collect a bounded, redacted incident packet:
 - receiver and engine-loop owner;
 - `/health` and `/ready` results;
 - webhook configured/pending/error booleans;
-- Scheduler and queue states;
+- loaded extensions and registered source providers;
 - `/scraper` aggregate funnel;
 - recent model IDs and aggregate usage;
 - last relevant error classes and counts;

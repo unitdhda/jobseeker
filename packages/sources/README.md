@@ -4,12 +4,13 @@
 instance-scoped registration, explicitly injected runtime context, strict HTTP/SSRF boundary, normalization helpers,
 and generic source drivers.
 
-It is deliberately **not a provider catalogue**. Concrete vacancy sources are application concerns. In this repository,
-they live under `src/vacancies/providers/` and are composed by `src/vacancies/providers.ts`. An external application can
-register its own providers through exactly the same public API.
+It is deliberately **not a provider catalogue**. Concrete vacancy sources are deployment concerns: they live in
+extensions, which register them at startup through this package's public API (see
+[`extensions/README.md`](../../extensions/README.md)). The package ships example providers under `examples` — an
+extension may register them as they are, adapt them, or ignore them entirely.
 
-Ozon, RWB, Yandex, Avito, HH, and the other built-in application sources are examples of providers assembled above
-this package; their identities, hosts, codecs, browser ownership, and deployment settings do not belong here.
+Ozon, RWB, Yandex, Avito, hh.ru, and the other examples are exactly that: providers assembled above this package.
+Their identities, hosts, codecs, browser ownership, and deployment settings do not belong here.
 
 ## Package boundary
 
@@ -202,15 +203,16 @@ historical candidates and replaced providers; deleting an active registration is
 ## Let a coding agent add the source
 
 Adding a source is mostly mechanical once the surface is known: probe the site, pick a driver, write a codec, declare
-hosts, add tests. That is a good task to hand to a coding agent working in this repository, with you reviewing the
-probe evidence and the diff. Keep the agent away from enablement and deployment; those are operator decisions.
+hosts, add tests. That is a good task to hand to a coding agent, with you reviewing the probe evidence and the diff.
+Keep the agent away from enablement and deployment; those are operator decisions.
 
 ```text
 Add <source name and listing URL> to Jobseeker as a vacancy source. Read packages/sources/README.md and
-src/vacancies/providers.ts first. Probe the public JSON or HTML surface and show the evidence, then pick the
-closest reusable driver (or createSourceProvider directly). Keep the concrete provider under
-src/vacancies/providers/, declare every host, fetch only through context.http, keep raw queries out of traces,
-and add deterministic tests. Run typecheck, test, and build, then stop for approval before enabling or deploying.
+extensions/README.md first. Probe the public JSON or HTML surface and show the evidence, then pick the closest
+reusable driver (or createSourceProvider directly). Write it as an extension that registers the provider, declare
+every host, fetch only through context.http, keep raw queries out of traces, install any dependency it needs in
+the extensions directory, and add deterministic tests. Run typecheck, test, and build, then stop for approval
+before enabling or deploying.
 ```
 
 ## Choosing a reusable driver
