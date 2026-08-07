@@ -20,6 +20,9 @@ create table public.users (
   digest_minutes integer,
   delivery_timezone text,
   last_digest_at timestamptz,
+  -- Interface language: the one chosen with /language, or the Telegram client language first seen for this user.
+  -- Null means the deployment default; an unrecognised value is read as the default rather than rejected.
+  locale text,
   constraint users_is_owner_check check (is_owner = any (array[0, 1])),
   constraint users_status_check check (status = any (array['unregistered','pending','approved','rejected','revoked'])),
   constraint users_pkey primary key (user_id),

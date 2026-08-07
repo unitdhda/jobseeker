@@ -6,6 +6,7 @@ import {
   updateClaimedTelegramSession,
 } from '../postgres.ts';
 import { errorMessage } from '../observability.ts';
+import { messages, type Locale } from '../i18n/index.ts';
 
 export type UserWorkflowKind = 'cv-import' | 'profile-refresh' | 'tailored-cv' | 'cover-letter';
 export interface UserWorkflowState { token: string; kind: UserWorkflowKind; startedAt: string }
@@ -14,28 +15,20 @@ const sessionKind = 'user-workflow';
 const leaseTtlMs = 30 * 60_000;
 const renewalIntervalMs = 5 * 60_000;
 
-const workflowLabels: Record<UserWorkflowKind, string> = {
-  'cv-import': 'загрузка и разбор резюме',
-  'profile-refresh': 'подготовка поисковых настроек по резюме',
-  'tailored-cv': 'подготовка адаптированного резюме',
-  'cover-letter': 'подготовка сопроводительного письма',
-};
+const workflowKinds: UserWorkflowKind[] = ['cv-import', 'profile-refresh', 'tailored-cv', 'cover-letter'];
 
 function validState(value: unknown): value is UserWorkflowState {
   if (!value || typeof value !== 'object') return false;
   const state = value as Partial<UserWorkflowState>;
   return typeof state.token === 'string' && state.token.length > 0
     && typeof state.startedAt === 'string' && !Number.isNaN(Date.parse(state.startedAt))
-    && typeof state.kind === 'string' && state.kind in workflowLabels;
+    && workflowKinds.includes(state.kind as UserWorkflowKind);
 }
 
-export function userWorkflowBusyMessage(active: UserWorkflowState | null, requested: UserWorkflowKind): string {
-  const activeLabel = active ? workflowLabels[active.kind] : 'другая операция с резюме или документами';
-  const requestedLabel = workflowLabels[requested];
-  return `Сейчас уже выполняется: «${activeLabel}». Запрос «${requestedLabel}» не запущен.\n\n`
-    + 'Одновременно для одного пользователя выполняется только одна такая задача. Повторные нажатия не ставятся '
-    + 'в очередь и не запускают дополнительные обращения к языковой модели. Дождитесь итогового сообщения об '
-    + 'успехе или ошибке, затем повторите запрос.';
+export function userWorkflowBusyMessage(active: UserWorkflowState | null, requested: UserWorkflowKind,
+  locale: Locale): string {
+  const text = messages(locale).workflow;
+  return text.busy(active ? text.kinds[active.kind] : text.unknownKind, text.kinds[requested]);
 }
 
 export class UserWorkflowLease {

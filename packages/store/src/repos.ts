@@ -14,8 +14,12 @@ export type UserStatus = 'unregistered' | 'pending' | 'approved' | 'rejected' | 
 export interface TelegramUser {
   userId: string; chatId: string; username: string | null; displayName: string;
   status: UserStatus; isOwner: boolean; requestedAt: string | null; approvedAt: string | null;
+  /** The interface language this user chose, or the client language they were first seen with. */
+  locale: string | null;
 }
-export interface TelegramIdentity { userId: string; chatId: string; username?: string; displayName: string }
+export interface TelegramIdentity {
+  userId: string; chatId: string; username?: string; displayName: string; languageCode?: string;
+}
 export interface AccessRequestResult { user: TelegramUser; notifyOwner: boolean; retryAfterSeconds: number }
 export type UsageKind = 'score' | 'application' | 'search-profile';
 export interface UserUsageSummary {
@@ -88,7 +92,8 @@ function optionalTimestamp(value: unknown): string | null {
 function rowToUser(row: Row): TelegramUser {
   return { userId: String(row.user_id), chatId: String(row.chat_id), username: row.username == null ? null : String(row.username),
     displayName: String(row.display_name), status: String(row.status) as TelegramUser['status'], isOwner: Boolean(row.is_owner),
-    requestedAt: optionalIsoTimestamp(row.requested_at), approvedAt: optionalIsoTimestamp(row.approved_at) };
+    requestedAt: optionalIsoTimestamp(row.requested_at), approvedAt: optionalIsoTimestamp(row.approved_at),
+    locale: row.locale == null ? null : String(row.locale) };
 }
 export async function getTelegramUser(userId: string): Promise<TelegramUser | null> {
   await ready(); const row = await one('select * from users where user_id=$1', [userId]); return row ? rowToUser(row) : null;
@@ -101,13 +106,25 @@ export async function requireApprovedUser(userId: string): Promise<TelegramUser>
   if (!user || (user.status !== 'approved' && !user.isOwner)) throw new Error('User access is not approved.');
   return user;
 }
+/**
+ * The client language is only ever recorded for a user who has none: a Telegram client language is a first guess,
+ * and it must not overwrite the language the person actually picked with /language.
+ */
 export async function touchTelegramUser(identity: TelegramIdentity): Promise<TelegramUser> {
   await ready(); const timestamp = now();
-  const [row] = await q(`insert into users(user_id,chat_id,username,display_name,status,updated_at)
-    values ($1,$2,$3,$4,'unregistered',$5) on conflict(user_id) do update set chat_id=excluded.chat_id,
-    username=excluded.username,display_name=excluded.display_name,updated_at=excluded.updated_at returning *`,
-    [identity.userId, identity.chatId, identity.username ?? null, identity.displayName, timestamp]);
+  const [row] = await q(`insert into users(user_id,chat_id,username,display_name,status,updated_at,locale)
+    values ($1,$2,$3,$4,'unregistered',$5,$6) on conflict(user_id) do update set chat_id=excluded.chat_id,
+    username=excluded.username,display_name=excluded.display_name,updated_at=excluded.updated_at,
+    locale=coalesce(users.locale,excluded.locale) returning *`,
+    [identity.userId, identity.chatId, identity.username ?? null, identity.displayName, timestamp,
+      identity.languageCode ?? null]);
   return rowToUser(row!);
+}
+export async function setUserLocale(userId: string, locale: string): Promise<TelegramUser | null> {
+  await ready();
+  const [row] = await q('update users set locale=$1,updated_at=$2 where user_id=$3 returning *',
+    [locale, now(), userId]);
+  return row ? rowToUser(row) : null;
 }
 export async function requestAccess(identity: TelegramIdentity): Promise<AccessRequestResult> {
   const current = await touchTelegramUser(identity);
@@ -224,8 +241,10 @@ export async function deleteUserData(userId: string): Promise<void> {
     }
     await client.query(`update search_units u set retired_at=coalesce(u.retired_at,now())
       where not exists (select 1 from unit_subscriptions s where s.unit_id=u.unit_id)`);
+    // Access and identity survive; everything the person configured does not, the interface language included.
+    // The next update they send re-seeds it from their Telegram client language, exactly as for a new user.
     await client.query(`update users set delivery_start_minutes=null,delivery_end_minutes=null,digest_minutes=null,
-      delivery_timezone=null,last_digest_at=null where user_id=$1`, [userId]);
+      delivery_timezone=null,last_digest_at=null,locale=null where user_id=$1`, [userId]);
 
   });
 }

@@ -14,7 +14,7 @@ const many = Array.from({ length: 23 }, (_, index) => vacancy(index));
 const allIds = many.map((entry) => entry.applyId);
 
 test('a page lists at most ten vacancies as links and names its position', () => {
-  const { text, keyboard } = digestPageMessage(many.slice(0, digestPageSize), allIds, 0, 3);
+  const { text, keyboard } = digestPageMessage(many.slice(0, digestPageSize), allIds, 0, 3, 'ru');
   assert.equal((text.match(/<a href=/gu) ?? []).length, 10);
   assert.match(text, /1\/3/u);
   assert.match(text, /&lt;0&gt;/u, 'vacancy names are HTML-escaped');
@@ -22,7 +22,7 @@ test('a page lists at most ten vacancies as links and names its position', () =>
 });
 
 test('navigation goes exactly to the neighbour pages and stops at the edges', () => {
-  const row = (page: number) => digestPageMessage(many.slice(page * 10, page * 10 + 10), allIds, page, 3)
+  const row = (page: number) => digestPageMessage(many.slice(page * 10, page * 10 + 10), allIds, page, 3, 'ru')
     .keyboard!.inline_keyboard[0]! as { text: string; callback_data?: string }[];
   const first = row(0);
   assert.equal(first[0]!.callback_data, 'digest:noop', 'no page before the first');
@@ -35,13 +35,13 @@ test('navigation goes exactly to the neighbour pages and stops at the edges', ()
 });
 
 test('a single page needs no keyboard at all', () => {
-  const { keyboard } = digestPageMessage(many.slice(0, 3), allIds.slice(0, 3), 0, 1);
+  const { keyboard } = digestPageMessage(many.slice(0, 3), allIds.slice(0, 3), 0, 1, 'ru');
   assert.equal(keyboard, undefined);
 });
 
 test('apply-id prefixes stay unique against the whole digest, not just the visible page', () => {
   // Prefix resolution answers user replies, and the user may reply from any page.
-  const { text } = digestPageMessage(many.slice(0, 10), allIds, 0, 3);
+  const { text } = digestPageMessage(many.slice(0, 10), allIds, 0, 3, 'ru');
   const match = /^<b>([a-z0-9]+)<\/b>[a-z0-9]* · /mu.exec(text);
   assert.ok(match, 'every row starts with its apply id');
   const bold = match[1]!;

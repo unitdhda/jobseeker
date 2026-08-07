@@ -81,6 +81,11 @@ Each alert is designed to support a decision rather than merely announce a URL:
 Delivered artifacts are reused while the source CV is unchanged. Requesting the same document again resends it
 without another model call; uploading a new CV invalidates the cached version naturally.
 
+The bot speaks Russian and English. A conversation opens in the Telegram client's language when it is one of them,
+otherwise in the deployment's `BOT_LOCALE`, and `/language` settles it per user — including alerts and digests that
+arrive with nobody watching. Model-written text (score summaries, tailored documents) follows the vacancy's own
+language instead, so an application is never written in the wrong one.
+
 ## Why Jobseeker
 
 | Capability | What it solves |
@@ -92,6 +97,7 @@ without another model call; uploading a new CV invalidates the cached version na
 | **Application artifacts** | Tailored CVs and letters are generated independently and can be resent instantly. |
 | **Provider-independent AI** | Scoring and generation can use different models from Pi AI's provider catalog. |
 | **Inspectable operation** | Telegram owner commands expose usage, scraper health, parser errors, users, and deployment status. |
+| **Per-user language** | Every message, button, and command menu is rendered from a locale catalogue chosen per person. |
 
 ## Vacancy sources
 

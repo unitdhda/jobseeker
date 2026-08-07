@@ -368,7 +368,7 @@ and stays idle instead — which is a configuration mistake to fix, not a suppor
 1. Send `/start` to the bot.
 2. Upload a CV through `/cv`.
 3. Wait for CV extraction and search-profile generation.
-4. Configure delivery through `/window`.
+4. Configure delivery through `/window`, and the interface language through `/language`.
 5. Use `/scraper` as owner to inspect source and scoring progress.
 6. Use `/usage` to inspect model turns, tokens, and catalog cost estimates.
 

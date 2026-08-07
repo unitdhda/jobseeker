@@ -51,7 +51,7 @@ export const {
   recordUnitRun, recordUsage, releaseClaimedTelegramSession, replaceDigestSnapshot, requestAccess,
   requireApprovedUser, saveCvSource, saveDeliveredArtifact, saveDeliverySettings, saveScore,
   saveSearchProfile, scoredVacanciesByApplyIdPrefix, scraperSummary, searchScoredVacancies,
-  setTelegramSession, setUserStatus, skipVacancy, spentToday, touchTelegramUser, transitionMatch,
+  setTelegramSession, setUserLocale, setUserStatus, skipVacancy, spentToday, touchTelegramUser, transitionMatch,
   tryAcquireSingletonLock, unsentHighScoreVacancies, updateClaimedTelegramSession, upsertVacancy,
   usageInLast24Hours, userUsageSummaries, withPostgresAdvisoryLock,
 } = store;

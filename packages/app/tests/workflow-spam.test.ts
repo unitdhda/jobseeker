@@ -7,7 +7,7 @@ const kinds: UserWorkflowKind[] = ['cv-import', 'profile-refresh', 'tailored-cv'
 test('every expensive user workflow produces an explicit non-queued busy notice', () => {
   for (const activeKind of kinds) {
     for (const requestedKind of kinds) {
-      const message = userWorkflowBusyMessage({ token: 'test', kind: activeKind, startedAt: new Date(0).toISOString() }, requestedKind);
+      const message = userWorkflowBusyMessage({ token: 'test', kind: activeKind, startedAt: new Date(0).toISOString() }, requestedKind, 'ru');
       assert.match(message, /Сейчас уже выполняется/);
       assert.match(message, /не запущен/);
       assert.match(message, /не ставятся в очередь/);
@@ -18,7 +18,7 @@ test('every expensive user workflow produces an explicit non-queued busy notice'
 });
 
 test('a malformed or stale workflow state still gives a safe generic notice', () => {
-  const message = userWorkflowBusyMessage(null, 'cover-letter');
+  const message = userWorkflowBusyMessage(null, 'cover-letter', 'ru');
   assert.match(message, /другая операция с резюме или документами/);
   assert.match(message, /сопроводительного письма/);
 });

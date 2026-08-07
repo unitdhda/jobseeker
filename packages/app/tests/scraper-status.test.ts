@@ -20,7 +20,7 @@ const summary: ScraperSummary = {
 };
 
 test('scraper timeline keeps the usage chart geometry with its own legend', () => {
-  const chart = scraperTimelineChart(hourly, '+00:00');
+  const chart = scraperTimelineChart(hourly, '+00:00', 'ru');
   const lines = chart.split('\n');
   assert.equal(lines.length, 19);
   assert.match(lines[0]!, /Оценки/u);
@@ -35,11 +35,11 @@ test('scraper timeline keeps the usage chart geometry with its own legend', () =
 });
 
 test('scraper timeline demands the full 25 hourly points', () => {
-  assert.throws(() => scraperTimelineChart(hourly.slice(0, 10), '+00:00'));
+  assert.throws(() => scraperTimelineChart(hourly.slice(0, 10), '+00:00', 'ru'));
 });
 
 test('the summary reports totals, per-source rows, units, and parser errors', () => {
-  const message = scraperStatusMessage(summary);
+  const message = scraperStatusMessage(summary, 'ru');
   assert.match(message, /320/u);
   assert.match(message, /оценок 9/u);
   assert.match(message, /hh/u);
@@ -52,7 +52,7 @@ test('the summary reports totals, per-source rows, units, and parser errors', ()
 
 test('a source with no activity is still listed rather than silently dropped', () => {
   // A dead adapter is exactly what this command exists to expose.
-  assert.match(scraperStatusMessage(summary), /geekjob/u);
+  assert.match(scraperStatusMessage(summary, 'ru'), /geekjob/u);
 });
 
 test('long owner messages split on line boundaries under the Telegram limit', () => {

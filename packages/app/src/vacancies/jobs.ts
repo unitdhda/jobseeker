@@ -9,6 +9,7 @@ import { trace } from '../observability.ts';
 import { errorMessage } from '../observability.ts';
 import { mapConcurrent } from '@jobseeker/engine/concurrency';
 import type { DeliverySettings } from '../postgres.ts';
+import { messages, type Locale } from '../i18n/index.ts';
 
 export interface NormalizeListingsResult { expired: number; selected: number; refreshed: number; normalized: number;
   failed: number; closed: number; vacancyIds: number[]; bySource: Record<string, number> }
@@ -65,19 +66,25 @@ type UserHandler = (userId: string) => Promise<unknown>;
 
 const defaultDigestMinutes = 9 * 60;
 
-export function parseClockMinutes(value: string): number {
+/**
+ * The delivery-window parsers reject input straight to the person who typed it, so they are told which locale to
+ * complain in rather than defaulting to the deployment's language.
+ */
+export function parseClockMinutes(value: string, locale: Locale): number {
+  const text = messages(locale).delivery;
   const match = /^(\d{2}):(\d{2})$/.exec(value.trim());
-  if (!match) throw new Error('Введите время в формате ЧЧ:ММ, например 09:30.');
+  if (!match) throw new Error(text.invalidClock);
   const hour = Number(match[1]); const minute = Number(match[2]);
-  if (hour > 23 || minute > 59) throw new Error('Время должно быть в диапазоне от 00:00 до 23:59.');
+  if (hour > 23 || minute > 59) throw new Error(text.clockOutOfRange);
   return hour * 60 + minute;
 }
 
-export function normalizeUtcOffset(value: string): string {
+export function normalizeUtcOffset(value: string, locale: Locale): string {
+  const text = messages(locale).delivery;
   const match = /^([+-])(\d{1,2})(?::(00|30))?$/.exec(value.trim());
-  if (!match) throw new Error('Укажите смещение от UTC, например +3, -5 или +3:30.');
+  if (!match) throw new Error(text.invalidOffset);
   const hour = Number(match[2]); const minute = Number(match[3] ?? '00');
-  if (hour > 14 || (hour === 14 && minute !== 0)) throw new Error('Смещение UTC должно быть от -14:00 до +14:00.');
+  if (hour > 14 || (hour === 14 && minute !== 0)) throw new Error(text.offsetOutOfRange);
   if (hour === 0 && minute === 0) return '+00:00';
   return `${match[1]}${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
@@ -133,13 +140,18 @@ function timeText(minutes: number): string {
   return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
 }
 
-export async function deliverySettingsStatus(userId: string): Promise<string> {
+/**
+ * Rendered for whoever is reading it, not for whoever it describes: the owner's user table shows every account's
+ * delivery settings in the owner's language.
+ */
+export async function deliverySettingsStatus(userId: string, locale: Locale): Promise<string> {
+  const text = messages(locale).delivery;
   const configured = await getDeliverySettings(userId);
   const settings = await effectiveSettings(userId);
-  const alerts = settings.startMinutes === settings.endMinutes ? 'в любое время'
+  const alerts = settings.startMinutes === settings.endMinutes ? text.anyTime
     : `${timeText(settings.startMinutes)}–${timeText(settings.endMinutes)}`;
   const timezone = offsetMinutes(settings.timezone) == null ? settings.timezone : `UTC${settings.timezone}`;
-  return `уведомления: ${alerts}; дайджест: ${timeText(settings.digestMinutes)}; ${timezone}${configured ? '' : ' (по умолчанию)'}`;
+  return text.status(alerts, timeText(settings.digestMinutes), timezone, !configured);
 }
 
 async function saveEffectiveSettings(userId: string, patch: Partial<Omit<DeliverySettings, 'lastDigestAt'>>): Promise<void> {
@@ -149,16 +161,16 @@ async function saveEffectiveSettings(userId: string, patch: Partial<Omit<Deliver
     timezone: patch.timezone ?? current.timezone });
 }
 
-export async function updateDeliveryWindow(userId: string, start: string, end: string): Promise<void> {
-  const startMinutes = parseClockMinutes(start); const endMinutes = parseClockMinutes(end);
-  if (startMinutes === endMinutes) throw new Error('Время начала и окончания уведомлений должно отличаться.');
+export async function updateDeliveryWindow(userId: string, start: string, end: string, locale: Locale): Promise<void> {
+  const startMinutes = parseClockMinutes(start, locale); const endMinutes = parseClockMinutes(end, locale);
+  if (startMinutes === endMinutes) throw new Error(messages(locale).delivery.equalBounds);
   await saveEffectiveSettings(userId, { startMinutes, endMinutes });
 }
-export async function updateDeliveryTimezone(userId: string, timezone: string): Promise<void> {
-  await saveEffectiveSettings(userId, { timezone: normalizeUtcOffset(timezone) });
+export async function updateDeliveryTimezone(userId: string, timezone: string, locale: Locale): Promise<void> {
+  await saveEffectiveSettings(userId, { timezone: normalizeUtcOffset(timezone, locale) });
 }
-export async function updateDigestTime(userId: string, digest: string): Promise<void> {
-  await saveEffectiveSettings(userId, { digestMinutes: parseClockMinutes(digest) });
+export async function updateDigestTime(userId: string, digest: string, locale: Locale): Promise<void> {
+  await saveEffectiveSettings(userId, { digestMinutes: parseClockMinutes(digest, locale) });
 }
 export async function removeDeliveryWindow(userId: string): Promise<void> {
   await saveEffectiveSettings(userId, { startMinutes: 0, endMinutes: 0 });

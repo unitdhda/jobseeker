@@ -1,4 +1,4 @@
-
+import { isLocale, locales, type Locale } from './i18n/locale.ts';
 
 function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
   const raw = process.env[name];
@@ -32,6 +32,15 @@ function thinkingLevelEnv(name: string, fallback: ThinkingLevel): ThinkingLevel 
   const value = raw ? raw : fallback;
   if (!thinkingLevels.includes(value as ThinkingLevel)) throw new Error(`Invalid ${name}: ${value}`);
   return value as ThinkingLevel;
+}
+
+// The language a conversation starts in when Telegram reports a client language we do not translate, and the
+// language of anything the bot says with no person attached.
+function localeEnv(name: string, fallback: Locale): Locale {
+  const raw = process.env[name]?.trim();
+  if (!raw) return fallback;
+  if (!isLocale(raw)) throw new Error(`${name} must be one of: ${locales.join(', ')}.`);
+  return raw;
 }
 
 const telegramModes = ['polling', 'webhook', 'off'] as const;
@@ -123,6 +132,7 @@ export const config = {
   alertScore,
   digestMinScore,
   timezone: process.env.TIMEZONE ?? 'Europe/Moscow',
+  defaultLocale: localeEnv('BOT_LOCALE', 'ru'),
   telegramChatId: process.env.TELEGRAM_CHAT_ID,
   telegramUserId: process.env.TELEGRAM_USER_ID ?? process.env.TELEGRAM_CHAT_ID,
   runJobs: booleanEnv('RUN_JOBS', true),

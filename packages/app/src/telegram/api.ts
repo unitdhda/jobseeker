@@ -1,14 +1,22 @@
 import { Bot, type Context } from 'grammy';
 import { config } from '../config.ts';
 import { getTelegramUser, type TelegramIdentity } from '../postgres.ts';
+import type { Locale, Messages } from '../i18n/index.ts';
 
 
-let bot: Bot | undefined;
+/**
+ * Every update carries the locale of the person who sent it, resolved once by the access middleware, so handlers
+ * never have to ask the store again or guess.
+ */
+export interface LocaleFlavor { locale: Locale; t: Messages }
+export type BotContext = Context & LocaleFlavor;
+
+let bot: Bot<BotContext> | undefined;
 let botConfigured = false;
-export function getBot(): Bot {
+export function getBot(): Bot<BotContext> {
   const token = process.env.TELEGRAM_BOT_TOKEN;
   if (!token) throw new Error('TELEGRAM_BOT_TOKEN is required.');
-  return bot ??= new Bot(token);
+  return bot ??= new Bot<BotContext>(token);
 }
 export function ownerUserId(): string {
   if (!config.telegramUserId) throw new Error('TELEGRAM_USER_ID is required for the bot owner.');
@@ -22,7 +30,9 @@ export async function targetChat(userId: string): Promise<string> {
 export function identity(ctx: Context): TelegramIdentity | null {
   if (!ctx.from || !ctx.chat || ctx.chat.type !== 'private') return null;
   const displayName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || ctx.from.username || String(ctx.from.id);
-  return { userId: String(ctx.from.id), chatId: String(ctx.chat.id), username: ctx.from.username, displayName };
+  // The client language is the opening guess at someone's language; the store keeps it only until they choose one.
+  return { userId: String(ctx.from.id), chatId: String(ctx.chat.id), username: ctx.from.username, displayName,
+    languageCode: ctx.from.language_code };
 }
 export function telegramRetryAfter(error:unknown):number|null{
   const value=error as {error_code?:unknown;parameters?:{retry_after?:unknown};message?:unknown};
@@ -51,4 +61,4 @@ export function isBotConfigured(): boolean { return botConfigured; }
 export function markBotConfigured(): void { botConfigured = true; }
 
 /** The lifecycle needs to stop only a bot that was ever created; getBot would create one just to stop it. */
-export function currentBot(): Bot | undefined { return bot; }
+export function currentBot(): Bot<BotContext> | undefined { return bot; }

@@ -1,6 +1,7 @@
 import { InlineKeyboard } from 'grammy';
 import { config } from '../config.ts';
 import { errorMessage } from '../observability.ts';
+import { messages, userLocale } from '../i18n/index.ts';
 import {
   getBot,
   isMissingTelegramMessageError,
@@ -13,7 +14,8 @@ import {
 
 export const loaderFrames = ['⋆', '✦', '✧', '✶', '✷'] as const;
 export const loaderEditIntervalMs = 1_000;
-export type LoaderTask = 'Адаптирую резюме' | 'Отправляю резюме' | 'Пишу письмо' | 'Отправляю письмо';
+/** The task names come from the caller's catalogue, so the label is whatever that locale calls the step. */
+export type LoaderTask = string;
 export interface ApplicationLoader { setTask(task: LoaderTask): void; stop(): Promise<void> }
 export interface EditableIndicator {
   setLabel(label: string): void;
@@ -92,13 +94,14 @@ export async function startEditableIndicator(userId: string, initialLabel: strin
 
 export async function startCycleStatus(): Promise<CycleStatus | null> {
   if (!process.env.TELEGRAM_BOT_TOKEN || !config.telegramUserId) return null;
-  const indicator = await startEditableIndicator(ownerUserId(), 'Ищу вакансии');
+  // The cycle indicator is only ever shown to the owner, so it speaks the owner's language.
+  const text = messages(await userLocale(ownerUserId())).cycle;
+  const indicator = await startEditableIndicator(ownerUserId(), text.scraping);
   if (!indicator) return null;
   return {
     set(phase, current, total) {
-      const label = ({ scraping: 'Ищу вакансии', filtering: 'Фильтрую', normalization: 'Обрабатываю',
-        scoring: 'Оцениваю' } as const)[phase];
-      indicator.setLabel(current == null || total == null ? label : `${label} (${current}/${total})`);
+      const label = text[phase];
+      indicator.setLabel(current == null || total == null ? label : text.progress(label, current, total));
     },
     stop: () => indicator.stop(),
   };

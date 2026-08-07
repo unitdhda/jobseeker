@@ -10,22 +10,24 @@ import {
 } from '../postgres.ts';
 import { getBot, targetChat, telegramRetryAfter } from './api.ts';
 import { applicationKeyboard, digestPageMessage, digestPageSize, escapeHtml, salary, sourceLabel } from './format.ts';
+import { messages, userLocale } from '../i18n/index.ts';
 
 
 export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy): Promise<void> {
   if (!await isApprovedUser(userId)) throw new Error('User access is not approved.');
+  const locale = await userLocale(userId); const alert = messages(locale).alert;
   const reasons = vacancy.reasons.slice(0, 3).map((item) => `• ${escapeHtml(item)}`).join('\n');
   const gaps = vacancy.gaps.slice(0, 2).map((item) => `• ${escapeHtml(item)}`).join('\n');
   const text = [
-    `<b>${vacancy.score}/100 — ${escapeHtml(vacancy.name)}</b>`,
-    `ID: <code>${escapeHtml(vacancy.applyId)}</code>`,
-    `${escapeHtml(vacancy.employer)} · ${escapeHtml(vacancy.area)} · ${sourceLabel(vacancy.source)}`,
-    `Направление: ${escapeHtml(vacancy.primaryTrack)} · Зарплата: ${escapeHtml(salary(vacancy))}`,
-    `\n<b>Комментарий к оценке</b>\n${escapeHtml(vacancy.summary)}`,
-    reasons ? `\n<b>Почему подходит</b>\n${reasons}` : '', gaps ? `\n<b>На что обратить внимание</b>\n${gaps}` : '',
+    alert.header(vacancy.score, escapeHtml(vacancy.name)),
+    alert.applyId(escapeHtml(vacancy.applyId)),
+    alert.origin(escapeHtml(vacancy.employer), escapeHtml(vacancy.area), sourceLabel(vacancy.source, locale)),
+    alert.trackAndSalary(escapeHtml(vacancy.primaryTrack), escapeHtml(salary(vacancy, locale))),
+    alert.summary(escapeHtml(vacancy.summary)),
+    reasons ? alert.reasons(reasons) : '', gaps ? alert.gaps(gaps) : '',
   ].filter(Boolean).join('\n');
   await getBot().api.sendMessage(await targetChat(userId), text, {
-    reply_markup: applicationKeyboard(vacancy, true),
+    reply_markup: applicationKeyboard(vacancy, true, locale),
     parse_mode: 'HTML', link_preview_options: { is_disabled: true },
   });
   await markAlerted(userId, vacancy.id);
@@ -53,18 +55,19 @@ export interface DigestDeliveryOptions { scheduled?: boolean; sendEmptyTable?: b
 export async function sendDailyDigest(userId:string,options:DigestDeliveryOptions={}):Promise<number>{
   if(!await isApprovedUser(userId))throw new Error('User access is not approved.');
   const scheduled=options.scheduled??false,snapshotAt=new Date().toISOString();
+  const locale=await userLocale(userId);
   const settings=await getDeliverySettings(userId);
   const vacancies=await digestVacancies(userId,config.digestMinScore,config.alertScore,settings?.lastDigestAt??null,snapshotAt);
   if(!vacancies.length){
     if(options.sendEmptyTable)await getBot().api.sendMessage(await targetChat(userId),
-      'Нет новых вакансий для дайджеста.',{disable_notification:true});
+      messages(locale).digest.empty,{disable_notification:true});
     if(scheduled)await replaceDigestSnapshot(userId,[],snapshotAt);
     return 0;
   }
   // One message, ten per page; the buttons page over the addressable set, so flipping works after the snapshot.
   const applyIds=vacancies.map(vacancy=>vacancy.applyId);
   const pageCount=Math.ceil(vacancies.length/digestPageSize);
-  const {text,keyboard}=digestPageMessage(vacancies.slice(0,digestPageSize),applyIds,0,pageCount);
+  const {text,keyboard}=digestPageMessage(vacancies.slice(0,digestPageSize),applyIds,0,pageCount,locale);
   await getBot().api.sendMessage(await targetChat(userId),text,{parse_mode:'HTML',
     reply_markup:keyboard,disable_notification:true,link_preview_options:{is_disabled:true}});
   if(scheduled)await replaceDigestSnapshot(userId,vacancies.map(vacancy=>vacancy.id),snapshotAt);

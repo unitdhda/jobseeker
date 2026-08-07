@@ -96,6 +96,13 @@ docker compose --env-file .env up -d --build jobseeker
 reaches the running process immediately: apply only what the current revision tolerates, or stop the service first.
 There is no migration series and no down-migration — recover by shipping a forward-compatible revision.
 
+The current revision records each user's interface language. Apply this before deploying the code that reads it;
+older code ignores the column, so it is safe to apply while the service runs:
+
+```sql
+alter table public.users add column if not exists locale text;
+```
+
 ## Rolling back
 
 Reset the source checkout to the last known-good commit and rebuild, or install the previous package version and
