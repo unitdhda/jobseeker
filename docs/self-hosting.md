@@ -91,26 +91,99 @@ environment file to owner-readable permissions only.
 
 The bot is private by design. Other people send `/request`; the owner approves them with `/ok ID` or `/ok @username`.
 
-## 4. Initialize PostgreSQL
+## 4. Set up PostgreSQL
 
-Create an empty database and let the CLI apply the schema of record:
+Any PostgreSQL 15+ works. Pick whichever of these fits; the rest of the guide is identical afterwards.
+
+### A container next to the service
+
+The simplest self-contained setup. Give it a named volume so the data survives container recreation:
+
+```bash
+docker run -d --name jobseeker-db \
+  -e POSTGRES_PASSWORD='<choose a strong password>' \
+  -e POSTGRES_USER=jobseeker \
+  -e POSTGRES_DB=jobseeker \
+  -v jobseeker-db:/var/lib/postgresql/data \
+  -p 127.0.0.1:5432:5432 \
+  postgres:17
+```
+
+Publishing on `127.0.0.1` keeps the database off the public network. If the service runs in Compose alongside it,
+publish nothing at all and let them talk over the Compose network by service name.
+
+As a Compose service:
+
+```yaml
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_USER: jobseeker
+      POSTGRES_DB: jobseeker
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes:
+      - jobseeker-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobseeker"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  jobseeker-db:
+
+secrets:
+  db_password:
+    file: ./db_password.txt   # keep it out of version control
+```
+
+With the database on the Compose network, the service reaches it by service name and nothing is published to the
+host at all: `DATABASE_URL=postgres://jobseeker:<password>@db:5432/jobseeker` with `POSTGRES_SSL=disable`.
+
+### An existing PostgreSQL server
+
+Create a dedicated database and role rather than reusing an existing one — `jobseeker db init` expects the `public`
+schema to be empty:
+
+```bash
+sudo -u postgres psql <<'SQL'
+CREATE ROLE jobseeker LOGIN PASSWORD 'replace-me';
+CREATE DATABASE jobseeker OWNER jobseeker;
+SQL
+```
+
+### A managed provider
+
+RDS, Cloud SQL, Neon, Supabase, and friends all work; create an empty database and copy the connection string they
+give you. Managed providers usually require TLS, which is the default here.
+
+### Point the service at it
 
 ```dotenv
-DATABASE_URL=
+DATABASE_URL=postgres://jobseeker:<password>@<host>:5432/jobseeker
 POSTGRES_SSL=require
 POSTGRES_POOL_MAX=4
 ```
+
+`POSTGRES_SSL` accepts `require` (default), `verify-full`, and `disable`. Use `disable` only for a database on the
+same host or private network; `verify-full` additionally requires `POSTGRES_CA_CERT`. Keep the password out of shell
+history and command lines — put it in the environment file, or use a secret file as the Compose example above does.
+
+Then apply the schema of record:
 
 ```bash
 npx jobseeker db init
 ```
 
-`db init` refuses a database that already has tables in `public`, and reports how many tables it created. It is an
-initializer, not a migration tool: there is no upgrade path onto an unrelated existing schema, and no migration
-series to replay. Schema changes to a live database are applied as reviewed one-off statements — see
+It prints how many tables it created. `db init` refuses a database that already has tables in `public`: it is an
+initializer, not a migration tool, and there is no upgrade path onto an unrelated existing schema or migration
+series to replay. Later schema changes are applied to live databases as reviewed one-off statements — see
 [operations](operations.md#database-schema).
 
-Use `POSTGRES_SSL=disable` only for a trusted local database. `verify-full` additionally requires `POSTGRES_CA_CERT`.
+Back the database up from the start. It holds every CV, search profile, match, and generated artifact; the schema
+can be recreated from the package, but the data cannot.
 
 ## 5. Configure model access
 
@@ -269,7 +342,7 @@ Any supervisor that holds one process and restarts it works — systemd, Compose
 survive every choice:
 
 - one process per bot token receives Telegram updates;
-- back up PostgreSQL; it holds every CV, profile, match, and artifact.
+- the database backups from step 4 actually restore — test one before you need it.
 
 Upgrades are `npm update @unitdhda/jobseeker` followed by a restart. Read the release notes for schema changes
 first: the schema is applied by you, not by the upgrade.

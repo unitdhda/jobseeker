@@ -240,7 +240,7 @@ not repeat the collection as an enum-style `CHECK`, so adding an adapter does no
 
 ## Deployment surfaces
 
-The live surface is one VPS application container polling Telegram and owning the engine loop. A deployment may
+The live surface is one application container polling Telegram and owning the engine loop. A deployment may
 run further containers of its own — an inference sidecar an extension talks to, for example — but exactly one
 process may poll Telegram and exactly one may run the engine loop.
 

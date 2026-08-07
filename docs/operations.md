@@ -4,16 +4,18 @@ This is the canonical runbook for validating, deploying, monitoring, and handing
 
 ## Where production runs
 
-**Production is a Docker deployment on a VPS**, built from a checkout of this repository.
+**Production is one Docker container**, built from a checkout of this repository and run by Compose on a host you
+control. Nothing in this runbook depends on what kind of host that is: a rented server, a dedicated box, and your
+own laptop run the same image with the same commands, and reaching the host is your own arrangement.
 
 | Surface | State | Role |
 |---|---|---|
-| VPS `jobseeker-jobseeker-1` | live | Telegram receiver (polling) **and** the only engine loop |
+| Container `jobseeker-jobseeker-1` | live | Telegram receiver (polling) **and** the only engine loop |
 | Extension sidecars (optional) | deployment-specific | Services an extension needs, private network only |
-| Supabase PostgreSQL | live | The only runtime database, shared by every surface |
-| Local checkout | development | Same production database; a local cycle is not a dry run |
+| PostgreSQL | live | The only runtime database, shared by every surface |
+| Local checkout | development | Same production database; a local run is not a dry run |
 
-Verify ownership before every operation instead of trusting this table. Ownership has moved between surfaces before.
+Verify ownership before every operation instead of trusting this table. Ownership has moved between hosts before.
 
 This document deliberately records no configuration values, host addresses, or filesystem paths. Read the live
 settings from the host's env file when you need them; a copy here would drift and mislead. `.env.example`
@@ -25,9 +27,10 @@ Runtime: every `bun <file>` command in this runbook also runs under Node.js 23.6
 
 ## Invariants
 
-- Keep exactly one Telegram receiver per token: today the VPS poller, and therefore **no configured webhook**. This
-  invariant has no technical guard — Telegram splits updates between two receivers and reports nothing wrong.
-- Keep exactly one engine loop: today the VPS process with `RUN_JOBS=true`. `search_units.next_run_at` is the
+- Keep exactly one Telegram receiver per token: today the deployed container's poller, and therefore **no configured
+  webhook**. This invariant has no technical guard — Telegram splits updates between two receivers and reports
+  nothing wrong. A forgotten local process counts as a second receiver.
+- Keep exactly one engine loop: today the container's process with `RUN_JOBS=true`. `search_units.next_run_at` is the
   schedule, and the loop holds a session advisory lock, so a second `RUN_JOBS=true` process logs `Another process
   holds the engine-loop lock` and idles. Treat that line as a misconfiguration to fix, not as a safe topology.
 - PostgreSQL is the only runtime database. SQLite files are historical recovery material.
@@ -39,50 +42,48 @@ Runtime: every `bun <file>` command in this runbook also runs under Node.js 23.6
 - Do not print environment values, Telegram credentials, database URLs, OAuth state, encryption keys, or personal data.
 - Use Jujutsu bookmarks and workspaces; do not create Git branch workflows.
 
-## Shell setup
+## How to run these commands
 
-Run everything from the repository root.
-
-**Host connection details and directory layout stay in local configuration, never in this repository.** Supply them
-as environment variables and drive the host through these helpers, so no command below names an address, a port, or
-a path. Never guess credentials or locations; ask instead.
+Run the repository commands (`bun run …`, `jj …`) from your checkout, and the Docker commands from the deployment
+directory on the host — the one holding `compose.yaml` and the deployment's `.env`. How you get a shell there is
+your business: SSH, a remote Docker context, or sitting at the machine. Nothing in this runbook depends on the
+answer.
 
 ```bash
-export VPS_SSH_TARGET='...'    # user@host, or a Host alias from local SSH configuration
-export VPS_SSH_PORT=''         # only when the alias does not carry it
-export VPS_DEPLOY_DIR='...'    # directory holding compose.yaml and .env on the host
-export VPS_SRC_DIR='...'       # application source checkout on the host
-
-vps()     { ssh ${VPS_SSH_PORT:+-p "$VPS_SSH_PORT"} "$VPS_SSH_TARGET" "$@"; }
-compose() { vps "cd '$VPS_DEPLOY_DIR' && docker compose $*"; }
-src()     { vps "cd '$VPS_SRC_DIR' && $*"; }
+cd <deployment directory>   # holds compose.yaml and .env
+docker compose ps
 ```
 
-Confirm the host before any mutating command. Never infer it from an old log or copied URL.
+Two directories on the host matter and they are usually not the same one: the **deployment directory** above, and
+the **source checkout** the image is built from. Commands below say which one they expect.
+
+**Host addresses, ports, paths, and credentials stay in local configuration, never in this repository.** Never guess
+them; ask instead.
 
 ## Production status
 
 Status checks must not change ownership.
 
-### The live VPS
+### The live container
 
 ```bash
-vps 'docker ps --format "{{.Names}}\t{{.Status}}"'
-compose ps
+docker ps --format "{{.Names}}\t{{.Status}}"    # every container on the host
+docker compose ps                                # this deployment only
 ```
 
 `jobseeker-jobseeker-1` must be up. If the standby sidecar is retained, it must be healthy and have no published
 host port. Confirm the deployed revision and that the working tree is clean:
 
 ```bash
-src 'git log --oneline -3 && git status --short'
+# in the source checkout on the host
+git log --oneline -3 && git status --short
 ```
 
 The `/scraper` owner command and recent engine-stage logs usually answer an operational question without forcing
 work:
 
 ```bash
-compose 'logs --since 2h jobseeker' | grep -E 'Engine (tick|discovery|judgment|score|deliver)' | tail -30
+docker compose logs --since 2h jobseeker | grep -E 'Engine (tick|discovery|judgment|score|deliver)' | tail -30
 ```
 
 ### Local receivers and producers
@@ -113,11 +114,11 @@ console.log(JSON.stringify({
 BUN
 ```
 
-Do not print the webhook URL because it may contain routing information. **With the VPS polling, healthy production
-reports `configured: false`.** A configured webhook at the same time as the poller means updates are being split or
-double-handled — resolve ownership immediately. A deployment that deliberately runs `TELEGRAM_MODE=webhook` inverts
-the healthy state: a configured HTTPS webhook, zero or draining pending updates, and no current error — and then no
-poller anywhere.
+Do not print the webhook URL because it may contain routing information. **While the deployed container polls,
+healthy production reports `configured: false`.** A configured webhook at the same time as the poller means updates
+are being split or double-handled — resolve ownership immediately. A deployment that deliberately runs
+`TELEGRAM_MODE=webhook` inverts the healthy state: a configured HTTPS webhook, zero or draining pending updates, and
+no current error — and then no poller anywhere.
 
 ## Validation baseline
 
@@ -148,10 +149,10 @@ To change the schema:
 
 Do not place database passwords on command lines or in logs.
 
-Every surface shares one database, so a schema change reaches the live VPS the moment it is applied, before any
-code ships. Apply only changes the running revision tolerates, or take the bot down first.
+Every surface shares one database, so a schema change reaches the running container the moment it is applied,
+before any code ships. Apply only changes the running revision tolerates, or take the bot down first.
 
-## Release workflow — the live VPS
+## Release workflow
 
 This is the normal release path.
 
@@ -160,10 +161,12 @@ This is the normal release path.
 - Run the full validation baseline locally.
 - Publish the tested revision: `jj bookmark set main -r @` and `jj git push --bookmark main`. Another session may
   have moved `main`; inspect the graph before setting it.
-- **Check the deploy line has not diverged.** Confirm what the VPS runs is an ancestor of what you are about to ship:
+- **Check the deploy line has not diverged.** Confirm what the host runs is an ancestor of what you are about to
+  ship:
 
   ```bash
-  src 'git rev-parse HEAD && git status --short'
+  # in the source checkout on the host
+  git rev-parse HEAD && git status --short
   ```
 
   A dirty tree or a commit absent from `main` means production carries edits recorded in no revision. Diff and
@@ -174,24 +177,29 @@ This is the normal release path.
 ### 2. Ship the source
 
 ```bash
-src 'git fetch origin main && git reset --hard FETCH_HEAD && git log --oneline -1'
+# in the source checkout on the host
+git fetch origin main && git reset --hard FETCH_HEAD && git log --oneline -1
 ```
 
-**Never run `git clean` there.** `.gitignore` excludes `fonts/` and `/scripts/`, which the build needs, and removing
-them breaks the image.
+**Never run `git clean` there, and never `rsync --delete` onto it.** `.gitignore` excludes `fonts/`, `/scripts/`, and
+the deployment's own `extensions/`, all of which the build needs; removing them breaks the image or silently strips
+the deployment's vacancy sources.
 
 ### 3. Rebuild and restart
 
 ```bash
-compose '--env-file .env up -d --build jobseeker'
+docker compose --env-file .env up -d --build jobseeker
 ```
 
-The build takes several minutes. **Wait by polling, never with a blind `sleep`** — `scripts/vps-wait.sh` runs a
-condition in one SSH session and returns the moment it holds:
+The build takes several minutes. **Wait by polling, never with a blind `sleep`** — poll the condition and return
+the moment it holds, with a deadline so a failed build cannot hang the operation:
 
 ```bash
-scripts/vps-wait.sh 'docker ps --format "{{.Names}} {{.Status}}" | grep -q "^jobseeker-jobseeker-1 Up"' 900 5 \
-  'docker ps --format "{{.Names}} {{.Status}}" | grep jobseeker-jobseeker-1'
+deadline=$(( $(date +%s) + 900 ))
+until docker ps --format '{{.Names}} {{.Status}}' | grep -q '^jobseeker-jobseeker-1 Up'; do
+  [ "$(date +%s)" -lt "$deadline" ] || { echo 'TIMEOUT'; docker compose ps; break; }
+  sleep 5
+done
 ```
 
 Restarting `jobseeker` alone leaves the sidecar running; it costs nothing while idle.
@@ -199,8 +207,9 @@ Restarting `jobseeker` alone leaves the sidecar running; it costs nothing while 
 ### 4. Validate the running revision
 
 ```bash
-compose 'logs --since 10m jobseeker' | grep -iE 'error|fatal' | tail -20
-compose 'exec -T jobseeker bun -e "const p=process.env.PORT; for (const r of [\"health\",\"ready\"]) console.log(r, await (await fetch(\"http://localhost:\"+p+\"/\"+r)).text())"'
+docker compose logs --since 10m jobseeker | grep -iE 'error|fatal' | tail -20
+docker compose exec -T jobseeker bun -e \
+  'const p = process.env.PORT; for (const r of ["health", "ready"]) console.log(r, await (await fetch(`http://localhost:${p}/${r}`)).text())'
 ```
 
 The image ships no `curl` or `wget`, so probe from inside with `bun`; the container reads its own port from the
@@ -210,10 +219,16 @@ Then confirm the receiver is alive by sending one inexpensive command to the bot
 wait for the engine to run a due unit and for the independent two-minute judgment lane to report normal work:
 
 ```bash
-scripts/vps-wait.sh \
-  "cd '$VPS_DEPLOY_DIR' && docker compose logs --since 45m jobseeker | grep -q 'Engine tick finish'" 2700 30 \
-  "cd '$VPS_DEPLOY_DIR' && docker compose logs --since 45m jobseeker | grep -c 'Engine'"
+deadline=$(( $(date +%s) + 2700 ))
+until docker compose logs --since 45m jobseeker | grep -q 'Engine tick finish'; do
+  [ "$(date +%s)" -lt "$deadline" ] || { echo 'TIMEOUT'; break; }
+  docker compose logs --since 45m jobseeker | grep -c 'Engine'
+  sleep 30
+done
 ```
+
+A due unit may legitimately be up to `UNIT_CADENCE_CEILING_MINUTES` away; the deadline above is a reporting bound,
+not a failure threshold.
 
 Use `/scraper` for aggregate discovery, normalization, scoring, unit-health, and parser-error counters; inspect
 engine stage errors in logs without dumping vacancy or user payloads.
@@ -221,14 +236,14 @@ engine stage errors in logs without dumping vacancy or user payloads.
 ### 5. Verify inference still routes through the sidecar
 
 ```bash
-compose 'logs --since 1h jobseeker' | grep 'LLM cycle usage' | tail -2
+docker compose logs --since 1h jobseeker | grep 'LLM cycle usage' | tail -2
 ```
 
 `byModel` must agree with the role-specific `AI_*_MODEL` values read from the host. Production currently routes
 through the provider named by the host's `AI_*_MODEL` settings, so `byModel` must agree with them; another
 provider appears only after an intentional fallback or model switch.
 
-### Rollback on the VPS
+### Rollback
 
 Reset the checkout to the last-known-good commit and rebuild the same way. Recovery of an image alone is possible
 only because the classic Docker builder retains build-stage layers — do not rely on it. Roll back schema-dependent
@@ -242,11 +257,12 @@ to the production database and cleans them up.
 Do not start local polling with the production token — it becomes a second receiver. If an explicit rollback
 requires it:
 
-1. Stop the VPS bot and confirm the container has exited.
+1. Stop the deployed bot (`docker compose stop jobseeker`) and confirm the container has exited.
 2. Wait longer than the previous receiver's polling interval.
 3. Start exactly one local process with `TELEGRAM_MODE=polling`.
 4. Verify its health and confirm no second receiver exists.
-5. To hand back, stop the local process, wait for it to exit, then start the VPS bot again and re-verify ownership.
+5. To hand back, stop the local process, wait for it to exit, then `docker compose up -d jobseeker` and re-verify
+   ownership.
 
 **Never start a local engine loop while production owns the schedule.** There is no advisory lock to make this
 safe: a second `RUN_JOBS=true` process can perform duplicate discovery and delivery against the production database.
@@ -256,9 +272,9 @@ safe: a second `RUN_JOBS=true` process can perform duplicate discovery and deliv
 ### The live bot
 
 ```bash
-compose 'logs --since 1h jobseeker' | grep -iE 'error|fatal' | tail -50
-compose 'logs --since 6h jobseeker' | grep -E 'Engine (tick|discovery|judgment|score|deliver)'
-vps 'docker stats --no-stream $(vps "docker ps --format {{.Names}}" | tr "\n" " ")'
+docker compose logs --since 1h jobseeker | grep -iE 'error|fatal' | tail -50
+docker compose logs --since 6h jobseeker | grep -E 'Engine (tick|discovery|judgment|score|deliver)'
+docker stats --no-stream
 ```
 
 The `/scraper` funnel is the first thing to read: most "why is nothing arriving" questions are a throttled stage,
@@ -267,8 +283,8 @@ not a failure. Each stage is bounded on purpose — discovery volume and deliver
 ### The inference sidecar
 
 ```bash
-compose 'logs --since 1h <sidecar service>' | tail -50
-compose 'ps --format "{{.Service}} {{.Status}}"'
+docker compose logs --since 1h <sidecar service> | tail -50
+docker compose ps --format "{{.Service}} {{.Status}}"
 ```
 
 The sidecar carries a Docker healthcheck, so its `Status` is the authoritative readiness signal — it must report
@@ -282,13 +298,12 @@ transport-level backoff.
 These read the shared database from the local checkout and change nothing:
 
 ```bash
-# DATABASE_URL lives in .env.cloud, not .env, so the funnel needs it named explicitly.
-bun --env-file=.env.cloud scripts/source-funnel.ts '7 days'   # discovery → prefilter → normalization → score, per source
+bun --env-file=.env scripts/source-funnel.ts '7 days'   # discovery → prefilter → normalization → score, per source
 bun scripts/probe-sources.ts                                  # adapter feasibility of candidate sources
 ```
 
-Feasibility depends on egress IP: some Russian boards answer the VPS but not a local machine. Probe from the VPS,
-because that is what scrapes them. Judge a source by its prefilter pass rate, not its discovery count — prefilter
+Feasibility depends on egress IP: some boards answer the deployment's network but not your laptop. Probe from the
+host that actually scrapes them. Judge a source by its prefilter pass rate, not its discovery count — prefilter
 scores are not comparable across sources, which is why the normalization queue carries a per-source quota.
 
 ## Verify against a clock you actually read
@@ -302,7 +317,7 @@ Report, without secrets or personal data:
 
 - tested commit/bookmark, and the commit the live surface actually runs;
 - which surface owns Telegram and the engine loop;
-- VPS container states and the sidecar health result;
+- container states and the sidecar health result;
 - `/health` and `/ready` result;
 - Telegram webhook configured/pending/error booleans;
 - the extensions the running revision loaded, and how many source providers they registered;
