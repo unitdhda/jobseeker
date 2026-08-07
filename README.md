@@ -16,7 +16,7 @@ looks promising, request a tailored CV or cover letter directly from the alert.
        width="1000">
 </p>
 
-<p align="center"><strong>Node/Bun · PostgreSQL · Telegram · Pi AI · Playwright · Typst</strong></p>
+<p align="center"><strong>Node/Bun · PostgreSQL · Telegram · Pi AI · Typst</strong></p>
 
 > [!NOTE]
 > Jobseeker is in active development. It runs in production for a small group of users, but configuration, adapters,
