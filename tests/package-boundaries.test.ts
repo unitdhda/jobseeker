@@ -78,7 +78,7 @@ test('application runtime does not issue raw PostgreSQL queries', async () => {
 });
 
 test('adapter identity is provider-collection-owned rather than duplicated as allowlists', async () => {
-  for (const file of ['supabase/schema.sql', 'packages/app/src/scripts/migration/target-schema.sql']) {
+  for (const file of ['packages/app/schema.sql']) {
     const schema = await readFile(file, 'utf8');
     assert.doesNotMatch(schema, /constraint (?:vacancies_source|search_units_platform)_check/i, file);
   }

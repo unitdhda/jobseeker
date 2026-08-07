@@ -162,27 +162,17 @@ and cleans them up. `jj status` is a review step, not a gate.
 
 ## Database schema
 
-`supabase/schema.sql` is the schema of record: it describes the database the application expects, and applying it
-to an empty database produces a runnable environment. It is generated from the live database, so it reflects what is
-actually deployed rather than what a migration series intended.
-
-Incremental migration files under `supabase/migrations/` are **not** version controlled. They remain on the machine
-that applies them, because the Supabase CLI needs them to reconcile with the remote ledger, but they are working
-material rather than a published record.
+`packages/app/schema.sql` is the schema of record: applying it to an empty database produces a runnable
+environment (`jobseeker db init` does exactly that). There is no incremental migration series.
 
 To change the schema:
 
-1. Write the change as a timestamped migration under `supabase/migrations/` locally.
-2. Never edit a migration already applied remotely; the remote ledger records it.
-3. Review destructive statements and constraints before applying.
-4. Apply it to the linked Supabase project and verify before deploying dependent code.
-5. Regenerate `supabase/schema.sql` from the live database and commit that.
-6. Run `bun run test:postgres` after application.
+1. Edit `packages/app/schema.sql` in the same change as the code that needs it.
+2. For live deployments, apply the delta as a reviewed one-off statement, then verify the live schema matches the
+   file before deploying dependent code.
+3. Run `bun run test:postgres` after application.
 
-Use the project's existing Supabase linkage and local secret files. Do not place database passwords on command lines or in logs.
-
-Because the migration series is not published, the repository carries no upgrade path for an existing database —
-`schema.sql` builds a new one. A clone without the local migration files cannot run `supabase db push`.
+Do not place database passwords on command lines or in logs.
 
 Every surface shares one database, so a schema change reaches the live VPS the moment it is applied, before any
 code ships. Apply only changes the running revision tolerates, or take the bot down first.

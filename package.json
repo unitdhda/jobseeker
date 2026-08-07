@@ -9,8 +9,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts",
     "test:postgres": "bun --env-file=.env.cloud packages/app/tests/database-postgres.integration.ts",
-    "cv:prepare": "bun packages/app/src/scripts/prepare-cv.ts",
-    "migrate:rehearse": "bun packages/app/src/scripts/migration/rehearse.ts"
+    "cv:prepare": "bun packages/app/src/scripts/prepare-cv.ts"
   },
   "devDependencies": {
     "@types/node": "26.1.2",

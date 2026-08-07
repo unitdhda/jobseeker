@@ -62,7 +62,7 @@ The bot is private by design. Other users send `/request`; the owner approves th
 Create an empty PostgreSQL database and apply the schema of record:
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f supabase/schema.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f packages/app/schema.sql
 ```
 
 Configure the application:
@@ -76,8 +76,8 @@ POSTGRES_POOL_MAX=4
 Use `POSTGRES_SSL=disable` only for a trusted local database. `verify-full` additionally requires
 `POSTGRES_CA_CERT`.
 
-`supabase/schema.sql` creates a fresh runnable schema. Historical migration material is not an upgrade API for an
-unrelated existing database.
+`packages/app/schema.sql` creates a fresh runnable schema; it is not an upgrade API for an unrelated existing
+database.
 
 ## 4. Configure model access
 

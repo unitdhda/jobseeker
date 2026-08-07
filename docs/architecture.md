@@ -216,7 +216,7 @@ with a PostgreSQL transaction lock so rotating refresh tokens cannot be refreshe
 
 ## PostgreSQL schema
 
-`supabase/schema.sql` is the schema of record. Core tables:
+`packages/app/schema.sql` is the schema of record. Core tables:
 
 | Table | Purpose |
 |---|---|

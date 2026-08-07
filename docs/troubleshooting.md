@@ -250,7 +250,7 @@ Check:
 - TLS mode matches the database;
 - pool size fits the deployment;
 - DNS and egress reach the database;
-- schema matches `supabase/schema.sql`;
+- schema matches `packages/app/schema.sql`;
 - the database clock and disk are healthy.
 
 Do not “fix” readiness by falling back to a local database. PostgreSQL is the only runtime store.

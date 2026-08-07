@@ -1,12 +1,9 @@
--- Jobseeker PostgreSQL schema (engine world, schema of record since the 2026-08-05 cutover).
+-- Jobseeker PostgreSQL schema — the single schema of record.
 --
--- This is what the application expects to exist; apply it to an empty database to get a runnable
--- environment. It is the same file the migration applied at cutover (src/scripts/migration/
--- target-schema.sql); keep the two in sync until the legacy schema is dropped and the migration
--- tooling retired.
---
--- Extensions present in the managed database (created by the platform, not here):
---   pg_stat_statements, pgcrypto, plpgsql, supabase_vault, uuid-ossp
+-- Applied to an empty database by `jobseeker db init` (or psql). There are no incremental migrations: a schema
+-- change ships as a new revision of this file plus, when needed, a documented one-off statement for live
+-- deployments.
+
 
 create table public.users (
   user_id text not null,
