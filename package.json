@@ -2,37 +2,15 @@
   "name": "hh-jobseeker",
   "private": true,
   "type": "module",
-  "workspaces": ["packages/*"],
-  "packageManager": "bun@1.3.14",
-  "engines": {
-    "bun": ">=1.3.14"
-  },
   "scripts": {
-    "dev": "vite dev",
-    "build": "vite build",
-    "start": "bun dist/server.mjs",
-    "start:task-worker": "bun dist/task-worker.mjs",
+    "dev": "cd packages/app && vite dev",
+    "build": "cd packages/app && bun run build",
+    "start": "bun packages/app/dist/server.mjs",
     "typecheck": "tsc --noEmit",
     "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts",
-    "test:postgres": "bun --env-file=.env.cloud tests/database-postgres.integration.ts",
-    "cv:prepare": "bun src/scripts/prepare-cv.ts",
-    "migrate:rehearse": "bun src/scripts/migration/rehearse.ts"
-  },
-  "dependencies": {
-    "@earendil-works/pi-ai": "0.81.1",
-    "@google-cloud/tasks": "^6.3.0",
-    "@hono/node-server": "^2.0.12",
-    "@jobseeker/cv": "workspace:*",
-    "@jobseeker/engine": "workspace:*",
-    "@jobseeker/sources": "workspace:*",
-    "@jobseeker/store": "workspace:*",
-    "croner": "10.0.1",
-    "grammy": "1.45.1",
-    "hono": "4.12.32",
-    "pdfjs-dist": "6.2.108",
-    "pg": "^8.22.0",
-    "playwright": "1.62.0",
-    "valibot": "1.4.2"
+    "test:postgres": "bun --env-file=.env.cloud packages/app/tests/database-postgres.integration.ts",
+    "cv:prepare": "bun packages/app/src/scripts/prepare-cv.ts",
+    "migrate:rehearse": "bun packages/app/src/scripts/migration/rehearse.ts"
   },
   "devDependencies": {
     "@types/node": "26.1.2",
@@ -41,8 +19,7 @@
     "typescript": "7.0.2",
     "vite": "8.1.5"
   },
-  "overrides": {
-    "sharp": "0.35.3",
-    "adm-zip": "0.6.0"
-  }
+  "workspaces": [
+    "packages/*"
+  ]
 }

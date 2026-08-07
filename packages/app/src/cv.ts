@@ -10,7 +10,8 @@ import type { ExtractedCvDocument } from '@jobseeker/cv/extract';
 
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const parserTimeoutMs = 30_000;
 const parserMemoryMb = 256;
@@ -18,16 +19,17 @@ const maximumConcurrentParsers = 2;
 let activeParsers = 0;
 interface CvWorkerResponse { ok: boolean; result?: ExtractedCvDocument; error?: string }
 
+/** The worker entry lives next to this module in both layouts: dist/ when built, the package src/ otherwise. */
 function command(): { modulePath: string; args: string[]; execArgv: string[] } {
-  const root = process.cwd();
-  const built = resolve(root, 'dist/cv-worker.mjs');
-  if (existsSync(built) && /(?:^|\/)dist\//.test(process.argv[1] ?? '')) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const built = join(here, 'cv-worker.mjs');
+  if (existsSync(built)) {
     return { modulePath: built, args: [], execArgv: [
       `--max-old-space-size=${parserMemoryMb}`, '--permission',
-      `--allow-fs-read=${resolve(root, 'dist')}`, `--allow-fs-read=${resolve(root, 'node_modules')}`,
+      `--allow-fs-read=${here}`, `--allow-fs-read=${resolve(process.cwd(), 'node_modules')}`,
     ] };
   }
-  const source = resolve(root, 'src/cv-worker.ts');
+  const source = join(here, 'cv-worker.ts');
   if (process.versions.bun && existsSync(source)) {
     return { modulePath: source, args: [], execArgv: ['--no-env-file', `--max-old-space-size=${parserMemoryMb}`] };
   }

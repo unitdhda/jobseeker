@@ -4,6 +4,17 @@
   "workspaces": {
     "": {
       "name": "hh-jobseeker",
+      "devDependencies": {
+        "@types/node": "26.1.2",
+        "@types/pg": "^8.20.3",
+        "adm-zip": "0.6.0",
+        "typescript": "7.0.2",
+        "vite": "8.1.5",
+      },
+    },
+    "packages/app": {
+      "name": "@unitdhda/jobseeker",
+      "version": "0.1.0",
       "dependencies": {
         "@earendil-works/pi-ai": "0.81.1",
         "@google-cloud/tasks": "^6.3.0",
@@ -12,20 +23,12 @@
         "@jobseeker/engine": "workspace:*",
         "@jobseeker/sources": "workspace:*",
         "@jobseeker/store": "workspace:*",
-        "croner": "10.0.1",
         "grammy": "1.45.1",
         "hono": "4.12.32",
         "pdfjs-dist": "6.2.108",
         "pg": "^8.22.0",
         "playwright": "1.62.0",
         "valibot": "1.4.2",
-      },
-      "devDependencies": {
-        "@types/node": "26.1.2",
-        "@types/pg": "^8.20.3",
-        "adm-zip": "0.6.0",
-        "typescript": "7.0.2",
-        "vite": "8.1.5",
       },
     },
     "packages/cv": {
@@ -65,10 +68,6 @@
         "@types/pg": "^8.20.3",
       },
     },
-  },
-  "overrides": {
-    "adm-zip": "0.6.0",
-    "sharp": "0.35.3",
   },
   "packages": {
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.91.1", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-LAmu761tSN9r66ixvmciswUj/ZC+1Q4iAfpedTfSVLeswRwnY3n2Nb6Tsk+cLPP28aLOPWeMgIuTuCcMC6W/iw=="],
@@ -383,6 +382,8 @@
 
     "@typescript/typescript-win32-x64": ["@typescript/typescript-win32-x64@7.0.2", "", { "os": "win32", "cpu": "x64" }, "sha512-0BQ3HkAHHlKLSp1qRvf3SUhGpGsDuhB/jgFw75guyqbxJqEaS0Cw/VFO8i2nHglJUzQCRtMMR/IBAKE3ETMC4g=="],
 
+    "@unitdhda/jobseeker": ["@unitdhda/jobseeker@workspace:packages/app"],
+
     "@xmldom/xmldom": ["@xmldom/xmldom@0.8.13", "", {}, "sha512-KRYzxepc14G/CEpEGc3Yn+JKaAeT63smlDr+vjB8jRfgTBBI9wRj/nkQEO+ucV8p8I9bfKLWp37uHgFrbntPvw=="],
 
     "abort-controller": ["abort-controller@3.0.0", "", { "dependencies": { "event-target-shim": "^5.0.0" } }, "sha512-h8lQ8tacZYnR3vNQTgibj+tODHI5/+l06Au2Pcriv/Gmet0eaj4TwWH41sO9wnHDiQsEj19q0drzdWdeAHtweg=="],
@@ -420,8 +421,6 @@
     "color-name": ["color-name@1.1.4", "", {}, "sha512-dOy+3AuW3a2wNbZHIuMZpTcgjGuLU/uBL/ubcZF9OXbDo8ff4O8yVp5Bf0efS8uEoYo5q4Fx7dY9OgQGXgAsQA=="],
 
     "core-util-is": ["core-util-is@1.0.3", "", {}, "sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ=="],
-
-    "croner": ["croner@10.0.1", "", {}, "sha512-ixNtAJndqh173VQ4KodSdJEI6nuioBWI0V1ITNKhZZsO0pEMoDxz539T4FTTbSZ/xIOSuDnzxLVRqBVSvPNE2g=="],
 
     "cross-spawn": ["cross-spawn@7.0.6", "", { "dependencies": { "path-key": "^3.1.0", "shebang-command": "^2.0.0", "which": "^2.0.1" } }, "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA=="],
 

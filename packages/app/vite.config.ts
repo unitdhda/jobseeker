@@ -1,6 +1,10 @@
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
+
+// Dependencies are hoisted to the workspace root, so the worker asset is resolved rather than path-joined.
+const require = createRequire(import.meta.url);
 
 export default defineConfig({
   // Workspace packages are bundled so dist/ stays a self-contained deploy artifact.
@@ -13,6 +17,6 @@ export default defineConfig({
   plugins:[{
     name:'bundle-pdfjs-worker',
     generateBundle(){this.emitFile({type:'asset',fileName:'pdf.worker.mjs',
-      source:readFileSync(resolve('node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs'))});},
+      source:readFileSync(require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs'))});},
   }],
 });

@@ -6,12 +6,18 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "types": ["node"],
+    "types": [
+      "node"
+    ],
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true
   },
   "include": [
-    "src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts",
-    "packages/*/src/**/*.ts", "packages/*/tests/**/*.ts", "*.ts"
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "packages/*/src/**/*.ts",
+    "packages/*/tests/**/*.ts",
+    "packages/app/vite.config.ts",
+    "*.ts"
   ]
 }

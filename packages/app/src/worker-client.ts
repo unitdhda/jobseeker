@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type { GeneratedApplication } from './documents.ts';
 import type { ApplicationArtifact } from './postgres.ts';
 import { config } from './config.ts';
@@ -14,12 +15,13 @@ let nextId = 1;
 let ready: Promise<void> | undefined;
 const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 
+/** The worker entry lives next to this module in both layouts: dist/ when built, the package src/ otherwise. */
 function workerCommand(): { modulePath: string; args: string[] } {
-  const built = resolve(process.cwd(), 'dist/worker.mjs');
+  const here = dirname(fileURLToPath(import.meta.url));
+  const built = join(here, 'worker.mjs');
   if (existsSync(built)) return { modulePath: built, args: [] };
-  const tsx = resolve(process.cwd(), 'node_modules/tsx/dist/cli.mjs');
-  const source = resolve(process.cwd(), 'src/worker.ts');
-  if (existsSync(tsx) && existsSync(source)) return { modulePath: tsx, args: [source] };
+  const source = join(here, 'worker.ts');
+  if (process.versions.bun && existsSync(source)) return { modulePath: source, args: [] };
   throw new Error('Background worker entry was not found. Run bun run build.');
 }
 
