@@ -90,16 +90,6 @@ git fetch origin main && git reset --hard FETCH_HEAD && git log --oneline -1
 docker compose --env-file .env up -d --build jobseeker
 ```
 
-The build takes minutes. **Poll for readiness, never sleep blindly:**
-
-```bash
-deadline=$(( $(date +%s) + 900 ))
-until [ "$(docker compose ps -q jobseeker | xargs -r docker inspect -f '{{.State.Running}}')" = true ]; do
-  [ "$(date +%s)" -lt "$deadline" ] || { echo 'TIMEOUT'; docker compose ps; break; }
-  sleep 5
-done
-```
-
 **CLI** — `npm update @unitdhda/jobseeker`, then restart the service.
 
 **Schema changes** ship before the code that needs them. Every instance shares one database, so an applied change
