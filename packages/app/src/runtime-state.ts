@@ -64,12 +64,12 @@ export function decryptRuntimeState(path: string, encrypted: Uint8Array): Uint8A
   } catch (error) { throw new Error('Encrypted runtime-state authentication failed.', { cause: error }); }
 }
 
-/** Any Supabase-storage-compatible endpoint; the SUPABASE_* names remain as a fallback for older deployments. */
+/** Any endpoint speaking the object-storage REST API below; the deployment names it, not this code. */
 function storageSettings(): { url?: string; key?: string; bucket?: string } {
   return {
-    url: (process.env.STATE_STORAGE_URL ?? process.env.SUPABASE_URL)?.replace(/\/$/, ''),
-    key: process.env.STATE_STORAGE_KEY ?? process.env.SUPABASE_SECRET_KEY,
-    bucket: process.env.STATE_STORAGE_BUCKET ?? process.env.SUPABASE_STORAGE_BUCKET,
+    url: process.env.STATE_STORAGE_URL?.replace(/\/$/, ''),
+    key: process.env.STATE_STORAGE_KEY,
+    bucket: process.env.STATE_STORAGE_BUCKET,
   };
 }
 
@@ -79,9 +79,14 @@ export function runtimeStateConfigured(): boolean {
   return Boolean(settings.url && settings.key && settings.bucket && process.env.RUNTIME_STATE_ENCRYPTION_KEY);
 }
 
+// STATE_STORAGE_URL points at the API root; objects live under the Supabase-compatible /storage/v1/object route,
+// authenticated by a bearer key. Any service exposing that route works.
 function storageConfig(): { base: string; key: string; bucket: string } {
   const { url, key, bucket } = storageSettings();
-  if (!url || !key || !bucket) throw new Error('Runtime-state storage is not configured.');
+  if (!url || !key || !bucket) {
+    throw new Error('Runtime-state storage is not configured: set STATE_STORAGE_URL, STATE_STORAGE_KEY, and '
+      + 'STATE_STORAGE_BUCKET.');
+  }
   return { base: `${url}/storage/v1/object/${encodeURIComponent(bucket)}`, key, bucket };
 }
 
@@ -98,7 +103,7 @@ export async function putEncryptedRuntimeState(path: string, plaintext: Uint8Arr
     body,
     signal: AbortSignal.timeout(60_000),
   });
-  if (!response.ok) throw new Error(`Supabase runtime-state upload failed: ${response.status}.`);
+  if (!response.ok) throw new Error(`Runtime-state upload failed: ${response.status}.`);
 }
 
 export async function getEncryptedRuntimeState(path: string): Promise<Uint8Array | null> {
@@ -107,7 +112,7 @@ export async function getEncryptedRuntimeState(path: string): Promise<Uint8Array
     headers: storageHeaders(config.key), signal: AbortSignal.timeout(60_000),
   });
   if (response.status === 400 || response.status === 404) return null;
-  if (!response.ok) throw new Error(`Supabase runtime-state download failed: ${response.status}.`);
+  if (!response.ok) throw new Error(`Runtime-state download failed: ${response.status}.`);
   return decryptRuntimeState(path, new Uint8Array(await response.arrayBuffer()));
 }
 
@@ -116,5 +121,5 @@ export async function deleteEncryptedRuntimeState(path: string): Promise<void> {
   const response = await fetch(`${config.base}/${safeObjectPath(path)}`, {
     method: 'DELETE', headers: storageHeaders(config.key), signal: AbortSignal.timeout(30_000),
   });
-  if (!response.ok && response.status !== 404) throw new Error(`Supabase runtime-state deletion failed: ${response.status}.`);
+  if (!response.ok && response.status !== 404) throw new Error(`Runtime-state deletion failed: ${response.status}.`);
 }

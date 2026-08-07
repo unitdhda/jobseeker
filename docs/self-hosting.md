@@ -218,8 +218,22 @@ AI_AUTH_FILE=./auth/auth.json
 ```
 
 Create credentials through Pi/provider login tooling rather than hand-editing access and refresh tokens. Keep the
-file mode `600`. When Supabase runtime-state variables and an encryption key are configured, Jobseeker uses its
-private encrypted runtime-state document instead of a plain local credential file.
+file mode `600`.
+
+A local file is lost when a container is recreated, which matters for OAuth providers whose refresh token rotates.
+Configure object storage and an encryption key, and Jobseeker keeps the credential document there — encrypted, and
+serialized across processes — instead:
+
+```dotenv
+STATE_STORAGE_URL=
+STATE_STORAGE_KEY=
+STATE_STORAGE_BUCKET=jobseeker-private-state
+RUNTIME_STATE_ENCRYPTION_KEY=   # 32 bytes, hex
+```
+
+All four are required together; with any of them missing the credential store stays on local disk. Any endpoint
+serving the `/storage/v1/object` route with a bearer key works — Supabase Storage is one such service. **Back up
+`RUNTIME_STATE_ENCRYPTION_KEY`**: without it everything already written to that bucket is unreadable.
 
 ### Providers from extensions
 

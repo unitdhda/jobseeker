@@ -1,6 +1,6 @@
 /**
  * The app-owned credential store pi-ai resolves auth through. One document keyed by provider id — the auth.json
- * shape — held either in the encrypted cloud runtime state (when configured) or in a local file. A stored
+ * shape — held either in the encrypted remote runtime state (when configured) or in a local file. A stored
  * credential owns its provider; pi-ai consults provider env variables (OPENAI_API_KEY and friends) only when
  * nothing is stored, so the operator chooses env or auth.json per provider without any code knowing which.
  *
@@ -10,28 +10,27 @@
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import type { Credential, CredentialInfo, CredentialStore } from '@earendil-works/pi-ai';
-import { getEncryptedRuntimeState, putEncryptedRuntimeState } from './runtime-state.ts';
+import { getEncryptedRuntimeState, putEncryptedRuntimeState, runtimeStateConfigured } from './runtime-state.ts';
 import { withPostgresAdvisoryLock } from './postgres.ts';
 
-// The cloud object predates the generalized store and already holds a provider-keyed document; renaming it would
+// The stored object predates the generalized store and already holds a provider-keyed document; renaming it would
 // orphan deployed credentials.
-const cloudDocumentPath = 'oauth/codex.json';
+const remoteDocumentPath = 'oauth/codex.json';
 
 function filePath(): string {
   return resolve(process.env.AI_AUTH_FILE ?? process.env.OPENAI_CODEX_AUTH_FILE ?? './auth/auth.json');
 }
 
-function usesCloudStore(): boolean {
-  return Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SECRET_KEY
-    && process.env.SUPABASE_STORAGE_BUCKET && process.env.RUNTIME_STATE_ENCRYPTION_KEY);
-}
+// One definition of "configured", shared with the runtime-state module: a partial configuration must never make
+// this store silently fall back to a local file that the next container recreation discards.
+const usesRemoteStore = runtimeStateConfigured;
 
 async function readDocument(): Promise<Record<string, Credential>> {
-  if (usesCloudStore()) {
-    const encrypted = await getEncryptedRuntimeState(cloudDocumentPath);
+  if (usesRemoteStore()) {
+    const encrypted = await getEncryptedRuntimeState(remoteDocumentPath);
     if (!encrypted) return {};
     try { return JSON.parse(Buffer.from(encrypted).toString('utf8')) as Record<string, Credential>; }
-    catch (error) { throw new Error('AI credential cloud document is invalid.', { cause: error }); }
+    catch (error) { throw new Error('The stored AI credential document is invalid.', { cause: error }); }
   }
   try {
     const document = JSON.parse(await readFile(filePath(), 'utf8')) as Record<string, Credential>;
@@ -45,8 +44,8 @@ async function readDocument(): Promise<Record<string, Credential>> {
 
 async function writeDocument(document: Record<string, Credential>): Promise<void> {
   const serialized = `${JSON.stringify(document, null, 2)}\n`;
-  if (usesCloudStore()) {
-    await putEncryptedRuntimeState(cloudDocumentPath, Buffer.from(serialized));
+  if (usesRemoteStore()) {
+    await putEncryptedRuntimeState(remoteDocumentPath, Buffer.from(serialized));
     return;
   }
   const path = filePath();

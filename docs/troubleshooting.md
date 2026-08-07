@@ -201,11 +201,12 @@ Check derived metadata only: provider present, credential type, expiry state, an
 print access or refresh tokens.
 
 Jobseeker serializes refresh through the credential store. In encrypted runtime-state mode, verify all of these are
-configured together:
+configured together — a partial set silently means local-file mode, and a rotated token then dies with the
+container:
 
-- private storage endpoint and credential;
-- storage bucket;
-- runtime-state encryption key;
+- `STATE_STORAGE_URL` and `STATE_STORAGE_KEY`;
+- `STATE_STORAGE_BUCKET`;
+- `RUNTIME_STATE_ENCRYPTION_KEY`;
 - PostgreSQL connectivity for refresh serialization.
 
 If replacing an OAuth document in the encrypted runtime state, make the overwrite explicit and verify a tiny
