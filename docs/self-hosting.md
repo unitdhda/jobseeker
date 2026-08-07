@@ -115,10 +115,10 @@ Create credentials through Pi/provider login tooling rather than hand-editing ac
 file mode `600`. When Supabase runtime-state variables and an encryption key are configured, Jobseeker uses its
 private encrypted runtime-state document instead of a plain local credential file.
 
-### Optional Claude Code bridge
+### Providers from extensions
 
-A role may select `claude-cli/<model>`. Either install the `claude` executable and set `CLAUDE_CLI_PATH`, or run the
-private sidecar and set `CLAUDE_CLI_ENDPOINT` plus its bearer secret.
+An extension may register further pi-ai providers (see `extensions/README.md`); a role then selects one by naming
+its model id. Such a provider reads its own configuration from the environment.
 
 ## 5. Choose vacancy sources
 
@@ -224,7 +224,7 @@ normalization, parser errors, and scoring budget before forcing work.
 The repository includes:
 
 - a multi-stage `Dockerfile` with a browser-capable worker target;
-- a Compose topology with the bot and optional private Claude sidecar;
+- a Compose topology with the bot and whatever private sidecars its extensions need;
 - a seccomp profile for Chromium;
 - health/readiness endpoints;
 - documentation for safe ownership handoff.

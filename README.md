@@ -193,8 +193,8 @@ Inference goes through [Pi AI](https://github.com/earendil-works/pi-ai). Model s
 - `AI_SCORING_FALLBACK_MODEL` is an optional fallback;
 - `AI_AUTH_FILE` points to a provider-keyed credential store.
 
-Built-in providers may use API keys or OAuth credentials. The repository also includes a `claude-cli` provider that
-can run Claude Code directly or through a private sidecar. `usage_events` records model IDs, token classes, and
+Built-in providers may use API keys or OAuth credentials, and an extension can register a provider of its own.
+`usage_events` records model IDs, token classes, and
 catalog cost estimates. For OAuth or subscription providers, those estimates are operational accounting—not
 necessarily an invoice.
 

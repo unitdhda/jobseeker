@@ -1,51 +1,18 @@
-# All-in-one VPS deployment: the bot polls Telegram and runs its own cycle schedule in-process,
-# scoring through the claude-cli sidecar instead of a metered API key.
+# Single-host deployment: one container polls Telegram and runs the engine loop in-process.
 #
-# PREREQUISITE — this takes Telegram and scheduling ownership away from Cloud Run.
-# Pause Cloud Scheduler and remove the Cloud Run webhook first; see docs/operations.md.
+# OWNERSHIP — this host is the sole Telegram receiver and the sole engine loop. No other process anywhere may
+# poll the same bot token or run with RUN_JOBS=true, and no webhook may be configured while polling is on.
 #
 # Expected host layout:
-#   ~/containers/jobseeker/      compose.yaml, .env, claude-creds/auth.json
-#   ~/containers/claude-cli/     sidecar build context
-#   ~/containers/jobseeker-src/  application source checkout
+#   <deploy dir>/       compose.yaml, .env, and any secrets an extension needs
+#   <source dir>/       application source checkout, built by the image below
 #
 #   docker compose --env-file .env up -d --build
+#
+# Extensions (see extensions/README.md) may require their own services — an inference sidecar, a proxy — plus the
+# environment that selects them. Add those services here, keep them on the private network, publish no host port
+# for them, and make the application depend on their health.
 services:
-  claude-cli:
-    build:
-      context: ../claude-cli
-    image: claude-cli-service:local
-    restart: unless-stopped
-    init: true
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    pids_limit: 256
-    mem_limit: 1g
-    cpus: 1.0
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
-      - /home/claude:rw,nosuid,nodev,size=128m,uid=10001,gid=10001,mode=0700
-    environment:
-      PORT: "8787"
-      # Short-lived pi-style OAuth credential; the service refreshes it and writes the rotated token back,
-      # so this mount must stay writable.
-      CLAUDE_CREDENTIALS_FILE: /creds/auth.json
-      CLAUDE_CLI_TOKEN: "${CLAUDE_CLI_TOKEN:?set CLAUDE_CLI_TOKEN}"
-      CLAUDE_CLI_MAX_CONCURRENT: "${CLAUDE_CLI_MAX_CONCURRENT:-4}"
-      DISABLE_AUTOUPDATER: "1"
-      DISABLE_TELEMETRY: "1"
-      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
-    volumes:
-      - ./claude-creds:/creds:rw
-    # Reachable only from the bot on the internal network; no host port is published.
-    expose:
-      - "8787"
-    networks:
-      - jobseeker
-
   jobseeker:
     build:
       context: ../jobseeker-src
@@ -55,13 +22,11 @@ services:
     stop_grace_period: 70s
     init: true
     read_only: true
-    depends_on:
-      claude-cli:
-        condition: service_healthy
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+      # Chromium needs a permissive-enough profile; required only by browser-backed source extensions.
       - seccomp:../jobseeker-src/docker/seccomp-chromium.json
     pids_limit: 512
     mem_limit: 2g
@@ -75,18 +40,17 @@ services:
       TELEGRAM_MODE: "polling"
       RUN_JOBS: "true"
       RUN_INITIAL_CYCLE: "false"
-      BACKGROUND_DELIVERY_ASYNC: "false"
-      # Everything routes through the sidecar. The OpenAI Codex subscription is exhausted, which was failing
-      # application generation for live users; Codex remains reachable by unsetting these.
-      AI_MODEL: "${AI_MODEL:-claude-cli/claude-opus-5}"
+      # Model roles are deployment choices; nothing is hardcoded. Set them in .env.
+      AI_MODEL: "${AI_MODEL:?set AI_MODEL}"
       AI_THINKING_LEVEL: "${AI_THINKING_LEVEL:-high}"
-      AI_SCORING_MODEL: "${AI_SCORING_MODEL:-claude-cli/claude-opus-5}"
+      AI_SCORING_MODEL: "${AI_SCORING_MODEL:?set AI_SCORING_MODEL}"
       AI_SCORING_THINKING_LEVEL: "${AI_SCORING_THINKING_LEVEL:-medium}"
-      CLAUDE_CLI_ENDPOINT: "http://claude-cli:8787"
-      # A 2-vCPU host cannot sustain the Cloud Run concurrency settings.
+      # A 2-vCPU host cannot sustain large concurrency settings.
       USER_WORKFLOW_CONCURRENCY: "${USER_WORKFLOW_CONCURRENCY:-2}"
       SCORE_AGENT_CONCURRENCY_MIN: "2"
       SCORE_AGENT_CONCURRENCY_MAX: "4"
+      NORMALIZE_SOURCE_CONCURRENCY: "${NORMALIZE_SOURCE_CONCURRENCY:-3}"
+      DISCOVERY_TICK_CONCURRENCY: "${DISCOVERY_TICK_CONCURRENCY:-3}"
       HH_BROWSER_DATA_PATH: /app/data/hh-browser
       PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
       TYPST_FONT_PATHS: /app/fonts
@@ -105,4 +69,4 @@ volumes:
 
 networks:
   jobseeker:
-    name: jobseeker
+    driver: bridge

@@ -9,7 +9,7 @@ This is the canonical runbook for validating, deploying, monitoring, and handing
 | Surface | State | Role |
 |---|---|---|
 | VPS `jobseeker-jobseeker-1` | live | Telegram receiver (polling) **and** the only engine loop |
-| VPS `jobseeker-claude-cli-1` | live, idle | Standby Claude Code inference sidecar, private network only |
+| Extension sidecars (optional) | deployment-specific | Services an extension needs, private network only |
 | Supabase PostgreSQL | live | The only runtime database, shared by every surface |
 | Cloud Run `jobseeker-web` / `jobseeker-worker` | deployed, idle | Staged alternative; no Telegram webhook points at them |
 | Cloud Run Jobs `jobseeker-cycle` / `jobseeker-profile-refresh` | deployed, idle | Executed only for staged validation |
@@ -35,7 +35,7 @@ Runtime: every `bun <file>` command in this runbook also runs under Node.js 24+ 
 - PostgreSQL is the only runtime database. SQLite files are historical recovery material.
 - Cloud Tasks must remain bounded at one concurrent dispatch and one dispatch per second unless a new bound is explicitly approved.
 - Do not deploy `OPENAI_API_KEY`; production inference is subscription-backed, not a metered API key. Model roles
-  come from the live `AI_*_MODEL` settings; both roles currently select the `claude-cli` sidecar route.
+  come from the live `AI_*_MODEL` settings read from the host.
 - Do not print environment values, Telegram credentials, database URLs, OAuth state, encryption keys, or personal data.
 - Historical Supabase migrations are immutable. Add forward migrations only.
 - Use Jujutsu bookmarks and workspaces; do not create Git branch workflows.
@@ -261,7 +261,7 @@ compose 'logs --since 1h jobseeker' | grep 'LLM cycle usage' | tail -2
 ```
 
 `byModel` must agree with the role-specific `AI_*_MODEL` values read from the host. Production currently routes
-through the `claude-cli` sidecar for both scoring and generation, so `byModel` entries name that provider; another
+through the provider named by the host's `AI_*_MODEL` settings, so `byModel` must agree with them; another
 provider appears only after an intentional fallback or model switch.
 
 ### Rollback on the VPS
@@ -439,7 +439,7 @@ safe: a second `RUN_JOBS=true` process can perform duplicate discovery and deliv
 ```bash
 compose 'logs --since 1h jobseeker' | grep -iE 'error|fatal' | tail -50
 compose 'logs --since 6h jobseeker' | grep -E 'Engine (tick|discovery|judgment|score|deliver)'
-vps 'docker stats --no-stream jobseeker-jobseeker-1 jobseeker-claude-cli-1'
+vps 'docker stats --no-stream $(vps "docker ps --format {{.Names}}" | tr "\n" " ")'
 ```
 
 The `/scraper` funnel is the first thing to read: most "why is nothing arriving" questions are a throttled stage,
@@ -448,7 +448,7 @@ not a failure. Each stage is bounded on purpose — discovery volume and deliver
 ### The inference sidecar
 
 ```bash
-compose 'logs --since 1h claude-cli' | tail -50
+compose 'logs --since 1h <sidecar service>' | tail -50
 compose 'ps --format "{{.Service}} {{.Status}}"'
 ```
 

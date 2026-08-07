@@ -203,8 +203,8 @@ changes the hash and forces regeneration. PostgreSQL does not store the generate
 
 ## AI composition
 
-`src/ai.ts` registers Pi AI's complete built-in provider catalog plus the repository's `claude-cli` plugin.
-Role-specific model IDs come only from configuration:
+`packages/app/src/ai.ts` registers Pi AI's complete built-in provider catalog plus any provider an extension
+registered. Role-specific model IDs come only from configuration:
 
 - `AI_MODEL` — profile and application generation;
 - `AI_SCORING_MODEL` — vacancy scoring;
@@ -237,8 +237,8 @@ not repeat the collection as an enum-style `CHECK`, so adding an adapter does no
 
 ## Deployment surfaces
 
-The live surface is one VPS application container polling Telegram and owning the engine loop. A private Claude CLI
-sidecar is available as an optional provider. Cloud Run services, jobs, Cloud Tasks, and Scheduler remain deployed as
-a dormant alternative and must never be activated while the VPS owns Telegram or the engine schedule.
+The live surface is one VPS application container polling Telegram and owning the engine loop. A deployment may
+run further containers of its own — an inference sidecar an extension talks to, for example — but exactly one
+process may poll Telegram and exactly one may run the engine loop.
 
-See [operations](operations.md) and [Cloud Run](cloud-run.md).
+See [operations](operations.md).

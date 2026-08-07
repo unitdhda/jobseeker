@@ -56,7 +56,7 @@ const prompt = `CV:\n${cv}\n\nVACANCIES:\n${JSON.stringify(vacancies, null, 1)}\
 const models = aiModels();
 
 const repeats = Number(process.argv[2] ?? 3);
-const candidates = (process.argv[3] ?? 'claude-cli/claude-haiku-4-5-20251001,claude-cli/claude-sonnet-5,claude-cli/claude-opus-5').split(',');
+const candidates = (process.argv[3] ?? process.env.AI_SCORING_MODEL ?? '').split(',').filter(Boolean);
 const efforts = (process.argv[4] ?? 'medium').split(',') as ThinkingLevel[];
 
 interface Run { ok: boolean; ms: number; cost: number; input: number; output: number;
@@ -70,8 +70,9 @@ const spread = (xs: number[]): number => (xs.length < 2 ? 0 : Math.max(...xs) - 
 
 for (const candidate of candidates) for (const effort of efforts) {
   const slash = candidate.indexOf('/');
-  const provider = slash < 0 ? 'claude-cli' : candidate.slice(0, slash);
-  const id = slash < 0 ? candidate : candidate.slice(slash + 1);
+  if (slash < 1) { console.error(`${candidate}: expected provider/model`); continue; }
+  const provider = candidate.slice(0, slash);
+  const id = candidate.slice(slash + 1);
   const model = models.getModel(provider, id);
   if (!model) { console.error(`${candidate}: not registered`); continue; }
   const runs: Run[] = [];
