@@ -211,7 +211,9 @@ container:
 
 If replacing an OAuth document in the encrypted runtime state, make the overwrite explicit and verify a tiny
 completion before restarting production. A rotated refresh token must be persisted; restoring an older credential
-file can invalidate future refreshes.
+file can invalidate future refreshes. `jobseeker credentials create` re-runs the provider's login and writes the
+result through the same lock the service uses, which is the safe way to replace a credential under a running
+instance; `jobseeker credentials <path>` does the same from an `auth.json` you already hold.
 
 ## Duplicate alerts or missing Telegram commands
 

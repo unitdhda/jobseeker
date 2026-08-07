@@ -26,12 +26,24 @@ export AI_SCORING_MODEL=provider/model    # high-volume vacancy scoring
 # 2. Initialize an empty database.
 npx jobseeker db init
 
-# 3. Add vacancy sources: the service registers none by itself.
+# 3. Sign in to the model provider (OAuth or API key), or import an existing auth.json.
+npx jobseeker credentials create
+
+# 4. Add vacancy sources: the service registers none by itself.
 mkdir extensions   # see the extensions section below
 
 npx jobseeker doctor
 npx jobseeker start
 ```
+
+| Command | Does |
+|---|---|
+| `jobseeker start` | Runs the service: Telegram receiver, engine loop, health endpoints |
+| `jobseeker db init` | Applies the packaged `schema.sql` to an empty database |
+| `jobseeker credentials create` | Interactive provider login: OAuth (browser or device code) or an API key |
+| `jobseeker credentials [path]` | Imports an existing `auth.json` into the credential store |
+| `jobseeker refresh-profiles` | Generates missing per-platform search profiles, then exits |
+| `jobseeker doctor` | Checks configuration, database, fonts, and extensions |
 
 `/health` and `/ready` are served on `PORT` (default 3000).
 

@@ -45,6 +45,8 @@ The package installs a single `jobseeker` command:
 |---|---|
 | `jobseeker start` | Runs the service: Telegram receiver, engine loop, health endpoints. The only long-running mode. |
 | `jobseeker db init` | Applies the packaged `schema.sql` to an empty database. |
+| `jobseeker credentials create` | Signs in to a model provider: OAuth, or an API key. |
+| `jobseeker credentials [path]` | Imports an existing `auth.json` into the credential store. |
 | `jobseeker refresh-profiles` | Generates missing per-platform search profiles for approved users, then exits. |
 | `jobseeker doctor` | Checks configuration, database, fonts, and extensions. |
 
@@ -199,30 +201,50 @@ AI_SCORING_THINKING_LEVEL=medium
 `AI_MODEL` generates career/search profiles, tailored CV content, and cover letters. `AI_SCORING_MODEL` serves the
 higher-volume scoring path and is usually the cheaper model.
 
-### Provider API key
+### Signing in to a provider
 
-Use the provider's normal environment variable, such as:
+Credentials live in a store the service owns, and `jobseeker credentials` puts them there. It works the same way
+pi's own login does — pick a provider, pick a method, follow the flow:
+
+```bash
+npx jobseeker credentials create
+```
+
+The list covers every provider in the pi-ai catalog plus any an extension registered, and each one offers whatever
+it supports: an OAuth flow (browser or device code, for subscription plans) or an API key, typed invisibly. The
+credential is written under the provider's id, which is the same id you name in `AI_MODEL`.
+
+If you already have an `auth.json` — from pi, or from an earlier deployment — import it instead of logging in
+again:
+
+```bash
+npx jobseeker credentials             # reads AI_AUTH_FILE, or ./auth/auth.json
+npx jobseeker credentials ~/.pi/agent/auth.json
+```
+
+Both commands need `DATABASE_URL`: writes go through a PostgreSQL advisory lock so an import cannot race a running
+instance mid-refresh.
+
+Alternatively, skip the store entirely and give the provider its usual environment variable:
 
 ```dotenv
 OPENAI_API_KEY=
 ```
 
-Leave unused provider keys unset.
+A stored credential wins for its provider; env vars are consulted only where nothing is stored, so you can mix the
+two across providers. Leave unused provider keys unset.
 
-### OAuth credential store
+### Where credentials are kept
 
-Pi AI OAuth providers read a provider-keyed `auth.json` document:
+By default the store is a local file, `0600`, written atomically:
 
 ```dotenv
 AI_AUTH_FILE=./auth/auth.json
 ```
 
-Create credentials through Pi/provider login tooling rather than hand-editing access and refresh tokens. Keep the
-file mode `600`.
-
 A local file is lost when a container is recreated, which matters for OAuth providers whose refresh token rotates.
-Configure object storage and an encryption key, and Jobseeker keeps the credential document there — encrypted, and
-serialized across processes — instead:
+Configure object storage and an encryption key, and Jobseeker keeps the credential document there instead —
+encrypted, and serialized across processes:
 
 ```dotenv
 STATE_STORAGE_URL=
@@ -234,6 +256,9 @@ RUNTIME_STATE_ENCRYPTION_KEY=   # 32 bytes, hex
 All four are required together; with any of them missing the credential store stays on local disk. Any endpoint
 serving the `/storage/v1/object` route with a bearer key works — Supabase Storage is one such service. **Back up
 `RUNTIME_STATE_ENCRYPTION_KEY`**: without it everything already written to that bucket is unreadable.
+
+`jobseeker credentials` writes to whichever of the two is configured and says which one it used, so the same
+command bootstraps a fresh bucket and a laptop checkout.
 
 ### Providers from extensions
 

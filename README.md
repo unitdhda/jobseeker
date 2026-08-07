@@ -130,9 +130,10 @@ npm install @unitdhda/jobseeker
 export DATABASE_URL=postgres://… TELEGRAM_BOT_TOKEN=… TELEGRAM_USER_ID=…
 export AI_MODEL=provider/model AI_SCORING_MODEL=provider/model
 
-npx jobseeker db init   # apply the packaged schema to an empty database
-npx jobseeker doctor    # config, database, fonts, extensions
-npx jobseeker start     # Telegram receiver + engine loop + health endpoints
+npx jobseeker db init            # apply the packaged schema to an empty database
+npx jobseeker credentials create # sign in to a model provider: OAuth, or an API key
+npx jobseeker doctor             # config, database, fonts, extensions
+npx jobseeker start              # Telegram receiver + engine loop + health endpoints
 ```
 
 You will need Node.js 23.6+ or Bun 1.3+, PostgreSQL 15+, a Telegram bot token and owner account, and credentials for
