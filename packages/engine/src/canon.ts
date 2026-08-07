@@ -40,6 +40,15 @@ const gradeWords = new Set([
 ]);
 const noiseWords = new Set(['or', 'and', 'и', 'или', 'the', 'a', 'по', 'для', 'с', 'в', 'на', 'специалист']);
 
+/**
+ * The shared role vocabulary, exposed token-by-token so the prefilter's title and skill evidence can compare a
+ * Russian CV with an English advert (and vice versa) through the same markers unit clustering already trusts.
+ * An unlisted token keeps itself — this never widens a match, it only lets equivalent role words meet.
+ */
+export function canonicalRoleToken(token: string): string {
+  return roleMarkers[token] ?? token;
+}
+
 export function searchTokens(text: string): Set<string> {
   const tokens = text.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}+#.]{2,}/gu) ?? [];
   return new Set(tokens

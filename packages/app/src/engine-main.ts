@@ -10,36 +10,37 @@ import {
   type EngineLoop, type LoopPorts, type TickDiscovery,
 } from '@jobseeker/engine';
 import {
-  addSpend, approvedUsers, createMatches, dueUnits, getCvSource, getSearchProfile, getVacancy, nextUnitDueAt,
+  addSpend, approvedUsers, calibrationExamples, calibrationLabelsSince, createMatches,
+  dueUnits, getVacancy, latestCalibrationAttemptAt, nextUnitDueAt,
   tryAcquireSingletonLock,
-  recordUnitRun, spentToday, type Vacancy,
+  recordUnitRun, saveCalibration, spentToday, type Vacancy,
 } from './postgres.ts';
 import { deliverDueNotifications, normalizeListings } from './vacancies/jobs.ts';
 import { closeSources, getSearchPlatform, type SearchPlan } from './vacancies/registry.ts';
 import {
-  careerProfilePlatformId, parseStoredCareerProfile, prefilterVacancy, type CareerProfile, type StoredCareerProfile,
+  evaluateCalibration, evaluateScores, fitPrefilterCalibration, vacancyRecency,
+  type CalibrationExample,
 } from '@jobseeker/engine';
 import { scorePendingVacancies } from './workflows.ts';
 import { llmUsageSince, llmUsageSnapshot } from './ai.ts';
 import { errorMessage } from './observability.ts';
 import { extensionShutdownHooks, extensionStartupHooks } from './vacancies/providers.ts';
+import { loadRoleEquivalenceResolver, tryRefreshRoleEquivalences } from './role-equivalence.ts';
+import {
+  activeCalibration, activeCalibrationFittedAt, loadActiveCalibration, matchEvidence, setActiveCalibration,
+  userLens, type UserLens,
+} from './matching.ts';
 
 const cadencePolicy = { floorMinutes: config.unitCadenceFloorMinutes, ceilingMinutes: config.unitCadenceCeilingMinutes };
 
 function dayKey(now: Date): string { return now.toISOString().slice(0, 10); }
 
-interface UserLens { userId: string; cvText: string; profile: CareerProfile }
-
 /** Every approved user who can judge a vacancy: a CV and a current career profile make a lens; others wait. */
 async function approvedLenses(): Promise<UserLens[]> {
-  const users = await approvedUsers(true);
   const lenses: UserLens[] = [];
-  for (const user of users) {
-    const cv = await getCvSource(user.userId);
-    if (!cv) continue;
-    const profile = parseStoredCareerProfile(
-      await getSearchProfile<StoredCareerProfile>(user.userId, careerProfilePlatformId), cv.cvSha256);
-    if (profile) lenses.push({ userId: user.userId, cvText: cv.cvText, profile });
+  for (const user of await approvedUsers(true)) {
+    const lens = await userLens(user.userId);
+    if (lens) lenses.push(lens);
   }
   return lenses;
 }
@@ -47,17 +48,52 @@ async function approvedLenses(): Promise<UserLens[]> {
 async function matchOne(lenses: UserLens[], vacancy: Vacancy, now: Date): Promise<{ matched: number; failures: number }> {
   return matchVacancy({
     approvedUserIds: async () => lenses.map((lens) => lens.userId),
-    lexicalScore: async (userId) => {
-      const lens = lenses.find((entry) => entry.userId === userId)!;
-      const result = prefilterVacancy(
-        lens.cvText, vacancy, config.prefilterMinScore, lens.profile, config.prefilterMaxAgeDays,
-      );
-      // The prefilter already folds the floor and recency into `filtered`; a filtered vacancy never matches.
-      return result.filtered ? -1 : Math.max(0, Math.round(result.combinedScore));
-    },
+    lexicalScore: async (userId) =>
+      matchEvidence(lenses.find((entry) => entry.userId === userId)!, vacancy, now),
     matchFloor: 0,
-    createMatches,
+    createMatches: (candidates, at) => createMatches(candidates.map(({ score, ...candidate }) =>
+      ({ ...candidate, lexicalScore: score })), at),
   }, { vacancyId: vacancy.id }, now);
+}
+
+const calibrationRefitIntervalMs = 24 * 3_600_000;
+const calibrationMinNewLabels = 50;
+
+/**
+ * The daily self-calibration: refit on the frozen evidence+label pairs, accept only if pooled out-of-fold
+ * ordering quality does not regress against whatever orders claims today (the active model, or the stored
+ * lexical scores before any model exists). Every attempt is recorded, so a rejected fit both leaves an audit row
+ * and arms the 24-hour gate.
+ */
+async function refitCalibration(now: Date): Promise<void> {
+  if (!config.calibrationAutoRefit) return;
+  const lastAttempt = await latestCalibrationAttemptAt();
+  // The vocabulary rides the same daily cadence: mining is cheap and its input is the same profile set.
+  if (!lastAttempt || now.getTime() - Date.parse(lastAttempt) >= calibrationRefitIntervalMs) {
+    await tryRefreshRoleEquivalences();
+  }
+  if (lastAttempt && now.getTime() - Date.parse(lastAttempt) < calibrationRefitIntervalMs) return;
+  if (await calibrationLabelsSince(activeCalibrationFittedAt()) < calibrationMinNewLabels) return;
+  const rows = await calibrationExamples();
+  if (rows.length < config.calibrationMinLabels) return;
+  const examples: CalibrationExample[] = rows.map((row) => ({
+    regexScore: row.regexScore, lexicalCosine: row.lexicalCosine, source: row.source,
+    ageBand: vacancyRecency({ publishedAt: row.publishedAt }, Date.parse(row.scoreUpdatedAt), 3_650).band,
+    label: row.llmScore >= config.digestMinScore,
+  }));
+  const fit = fitPrefilterCalibration(examples);
+  const incumbent = activeCalibration()
+    ? evaluateCalibration(activeCalibration()!, examples)
+    : evaluateScores(rows.map((row) => row.storedLexicalScore), examples);
+  const tolerance = 0.01;
+  const accepted = fit.candidate.auc >= incumbent.auc - tolerance
+    && fit.candidate.precisionAtTop20 >= incumbent.precisionAtTop20 - tolerance;
+  await saveCalibration(fit.calibration, { candidate: fit.candidate, incumbent,
+    examples: fit.examples, positives: fit.positives, label: `llm_score>=${config.digestMinScore}` }, accepted);
+  console.info(`Calibration refit ${accepted ? 'accepted' : 'rejected'}: candidate auc=${
+    fit.candidate.auc.toFixed(3)} p20=${fit.candidate.precisionAtTop20.toFixed(3)} vs incumbent auc=${
+    incumbent.auc.toFixed(3)} p20=${incumbent.precisionAtTop20.toFixed(3)} on ${fit.examples} examples.`);
+  if (accepted) setActiveCalibration(fit.calibration, now.toISOString());
 }
 
 function loopPorts(): LoopPorts {
@@ -104,6 +140,7 @@ function loopPorts(): LoopPorts {
       await deliverDueNotifications(sendPendingAlerts,
         (userId) => sendDailyDigest(userId, { scheduled: true }), now);
     },
+    calibrate: refitCalibration,
   };
 }
 
@@ -142,6 +179,11 @@ export function startEngineLoop(): void {
       return;
     }
     releaseEngineLock = release;
+    // A previously accepted refit outranks the env bootstrap; failure to load keeps the bootstrap, not silence.
+    await loadActiveCalibration().catch((error) =>
+      console.error(`Loading the active calibration failed: ${errorMessage(error)}`));
+    await loadRoleEquivalenceResolver().catch((error) =>
+      console.error(`Loading role equivalences failed; matching starts with the core vocabulary: ${errorMessage(error)}`));
     for (const hook of extensionStartupHooks) {
       try { await hook(); } catch (error) { console.error(`Extension startup hook failed: ${errorMessage(error)}`); }
     }

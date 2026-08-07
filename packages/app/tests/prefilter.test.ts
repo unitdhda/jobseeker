@@ -65,6 +65,36 @@ await test('the same generic model supports non-design occupations', () => {
   assert.match(result.reasons[0], /Financial accounting/);
 });
 
+await test('role markers let untranslated tracks meet cross-language adverts', () => {
+  const profile: CareerProfile = { version: 1, tracks: [{ name: 'Python engineering',
+    titleVariants: ['Python Developer'], coreSkills: ['machine learning', 'Python'],
+    evidence: ['Python developer building machine learning services'] }] };
+  const cv = 'Python developer. Machine learning services in production.';
+  const russian = prefilterVacancy(cv,
+    vacancy('Разработчик Python', 'Развиваем сервисы машинного обучения на Python.', ['Python']),
+    20, profile);
+  assert.equal(russian.reasons.some((reason) => reason.includes('title-variant similarity: 1.000')), true,
+    'разработчик and developer must meet on the shared role marker');
+  assert.ok(russian.regexScore >= 75, `expected full role evidence, got ${russian.regexScore}`);
+  assert.equal(russian.reasons.some((reason) => reason.includes('machine learning')), true,
+    'the machine-learning skill must be evidenced through машинного обучения');
+  assert.equal(russian.filtered, false);
+
+  const unrelated = prefilterVacancy(cv,
+    vacancy('Коммуникационный дизайнер', 'Фирменный стиль и визуальные кампании.'), 20, profile);
+  assert.equal(unrelated.filtered, true, 'markers must not admit a different occupation');
+});
+
+await test('an expired advert reports expiry separately from the evidence verdict', () => {
+  const fresh = prefilterVacancy(designerCv,
+    vacancy('Senior Communication Designer', 'Brand identity and visual campaigns.'), 20, designerProfile);
+  assert.equal(fresh.expired, false);
+  const stale = prefilterVacancy(designerCv,
+    vacancy('Senior Communication Designer', 'Brand identity and visual campaigns.', [], daysAgo(45)),
+    20, designerProfile);
+  assert.deepEqual([stale.expired, stale.filtered], [true, true]);
+});
+
 await test('constrained platforms can decline incompatible CV tracks without inventing a search', () => {
   assert.equal(v.safeParse(textSearchProfileSchema, { version: 1, searches: [] }).success, true);
 });

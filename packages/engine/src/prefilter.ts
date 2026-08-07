@@ -66,6 +66,8 @@ export function parseStoredCareerProfile(value: unknown, expectedCvHash: string)
 }
 
 import type { VacancyContent } from './contracts.ts';
+import { canonicalRoleToken } from './canon.ts';
+import { identityRoleResolver, type RoleTokenResolver } from './equivalence.ts';
 
 const stop = new Set([
   'and','the','with','for','from','that','this','into','или','для','как','что','при','это','его','она','они',
@@ -90,14 +92,24 @@ function comparableToken(left: string, right: string): boolean {
   return common >= 5 && common / Math.min(left.length, right.length) >= 0.72;
 }
 
-function phrasePresent(phrase: string, textTokens: string[]): boolean {
-  const phraseTokens = normalizedTokens(phrase).filter((token) => !seniority.has(token));
+/**
+ * Role/skill evidence compares canonical role tokens, not raw spellings: разработчик and developer meet on the
+ * same marker, so a track the profile agent left untranslated still sees the vacancy the LLM scorer would accept.
+ * The lexical embedding stays raw — markers aid the role gate, they are too coarse to shape the cosine.
+ */
+function roleTokens(input: string, resolve: RoleTokenResolver): string[] {
+  return normalizedTokens(input).filter((token) => !seniority.has(token))
+    .map((token) => resolve(canonicalRoleToken(token)));
+}
+
+function phrasePresent(phrase: string, textTokens: string[], resolve: RoleTokenResolver): boolean {
+  const phraseTokens = roleTokens(phrase, resolve);
   return phraseTokens.length > 0 && phraseTokens.every((token) => textTokens.some((candidate) => comparableToken(token, candidate)));
 }
 
-function titleSimilarity(left: string, right: string): number {
-  const a = [...new Set(normalizedTokens(left).filter((token) => !seniority.has(token)))];
-  const b = [...new Set(normalizedTokens(right).filter((token) => !seniority.has(token)))];
+function titleSimilarity(left: string, right: string, resolve: RoleTokenResolver): number {
+  const a = [...new Set(roleTokens(left, resolve))];
+  const b = [...new Set(roleTokens(right, resolve))];
   if (!a.length || !b.length) return 0;
   const matchedA = a.filter((token) => b.some((candidate) => comparableToken(token, candidate))).length;
   const matchedB = b.filter((token) => a.some((candidate) => comparableToken(token, candidate))).length;
@@ -116,12 +128,13 @@ function fallbackCareerProfile(cvText: string): CareerProfile {
   }] };
 }
 
-function trackEvidence(track: CareerTrack, vacancy: VacancyContent): { role: number; skills: number; similarity: number; matchedSkills: string[] } {
+function trackEvidence(track: CareerTrack, vacancy: VacancyContent,
+  resolve: RoleTokenResolver): { role: number; skills: number; similarity: number; matchedSkills: string[] } {
   const titleVariants = track.titleVariants.flatMap((variant) => variant.split(/\s+\/\s+/).map((title) => title.trim()).filter(Boolean));
-  const similarity = Math.max(0, ...titleVariants.map((variant) => titleSimilarity(variant, vacancy.name)));
+  const similarity = Math.max(0, ...titleVariants.map((variant) => titleSimilarity(variant, vacancy.name, resolve)));
   const role = Math.round(similarity ** 2 * 75);
-  const vacancyTokens = normalizedTokens(`${vacancy.name}\n${vacancy.description}\n${vacancy.keySkills.join('\n')}`);
-  const matchedSkills = track.coreSkills.filter((skill) => phrasePresent(skill, vacancyTokens));
+  const vacancyTokens = roleTokens(`${vacancy.name}\n${vacancy.description}\n${vacancy.keySkills.join('\n')}`, resolve);
+  const matchedSkills = track.coreSkills.filter((skill) => phrasePresent(skill, vacancyTokens, resolve));
   const skills = track.coreSkills.length ? Math.round(Math.min(1, matchedSkills.length / Math.min(5, track.coreSkills.length)) * 25) : 0;
   return { role, skills, similarity, matchedSkills };
 }
@@ -189,6 +202,8 @@ export interface PrefilterResult {
   lexicalScore: number;
   combinedScore: number;
   filtered: boolean;
+  /** True when the advert's age alone rejected it; no evidence score can admit an expired advert. */
+  expired: boolean;
   reasons: string[];
 }
 
@@ -197,9 +212,9 @@ export function vacancySemanticText(vacancy: VacancyContent): string {
 }
 
 export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimumScore: number,
-  careerProfile?: CareerProfile, maxAgeDays = 30): PrefilterResult {
+  careerProfile?: CareerProfile, maxAgeDays = 30, resolve: RoleTokenResolver = identityRoleResolver): PrefilterResult {
   const profile = careerProfile ?? fallbackCareerProfile(cvText);
-  const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy) }))
+  const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy, resolve) }))
     .sort((left, right) => right.role + right.skills - left.role - left.skills);
   const best = ranked[0]!;
   const regexScore = Math.min(100, best.role + best.skills);
@@ -226,5 +241,5 @@ export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimu
   const filtered = recency.expired || combinedScore < minimumScore;
   if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${maxAgeDays}-day limit`);
   else if (filtered) reasons.push(`combined score below ${minimumScore}`);
-  return { regexScore, lexicalCosine, lexicalScore, combinedScore, filtered, reasons };
+  return { regexScore, lexicalCosine, lexicalScore, combinedScore, filtered, expired: recency.expired, reasons };
 }

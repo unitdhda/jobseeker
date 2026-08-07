@@ -31,7 +31,8 @@ export interface DemandInput {
  * The shortest query text is kept as the unit's representative, it being the broadest formulation of the demand.
  */
 export function compileDemand(demands: readonly DemandInput[], similarityThreshold: number,
-  existing: readonly CompiledUnit[] = []): CompiledDemand {
+  existing: readonly CompiledUnit[] = [],
+  resolve: (token: string) => string = (token) => token): CompiledDemand {
   const units = new Map<string, CompiledUnit>(existing.map((unit) => [unit.unitId, unit]));
   const minted: CompiledUnit[] = [];
   const subscriptions = new Map<string, CompiledSubscription>();
@@ -47,7 +48,7 @@ export function compileDemand(demands: readonly DemandInput[], similarityThresho
       if (!unit) {
         unit = [...units.values()].find((candidate) => candidate.platform === identity.platform
           && candidate.filterSignature === identity.filterSignature
-          && tokenSimilarity(candidate.canonicalTokens, identity.canonicalTokens) >= similarityThreshold);
+          && tokenSimilarity(candidate.canonicalTokens, identity.canonicalTokens, resolve) >= similarityThreshold);
       }
       if (!unit) {
         unit = { ...identity, query: search };

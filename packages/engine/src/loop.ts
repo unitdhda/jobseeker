@@ -23,6 +23,8 @@ export interface DiscoveryPorts {
 export interface JudgmentPorts {
   scoreDue(now: Date): Promise<ScoreDueReport>;
   deliver(now: Date): Promise<void>;
+  /** Optional periodic self-calibration; the port owns its own cadence gating and must be cheap when not due. */
+  calibrate?(now: Date): Promise<void>;
 }
 export interface LoopPorts extends DiscoveryPorts, JudgmentPorts {}
 
@@ -60,6 +62,7 @@ export async function runJudgmentIteration(ports: JudgmentPorts, now: Date): Pro
   const report: JudgmentReport = { stageFailures: [] };
   report.scoring = await stage(report.stageFailures, 'score', () => ports.scoreDue(now)) ?? undefined;
   await stage(report.stageFailures, 'deliver', () => ports.deliver(now));
+  if (ports.calibrate) await stage(report.stageFailures, 'calibrate', () => ports.calibrate!(now));
   return report;
 }
 

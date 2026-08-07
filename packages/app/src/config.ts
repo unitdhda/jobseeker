@@ -10,6 +10,16 @@ function integerEnv(name: string, fallback: number, minimum: number, maximum: nu
   return parsed;
 }
 
+function fractionEnv(name: string, fallback: number, maximum: number): number {
+  const raw = process.env[name];
+  if (raw == null || raw === '') return fallback;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > maximum) {
+    throw new Error(`${name} must be a number between 0 and ${maximum}.`);
+  }
+  return parsed;
+}
+
 function booleanEnv(name: string, fallback: boolean): boolean {
   const raw = process.env[name];
   if (raw == null || raw === '') return fallback;
@@ -110,6 +120,16 @@ export const config = {
   // An advert older than this is rejected outright, however well it matches: it is almost certainly filled.
   // Measured against the advert's own publication date, which every adapter reads from the source.
   prefilterMaxAgeDays: integerEnv('PREFILTER_MAX_AGE_DAYS', 30, 1, 365),
+  // Coefficients from scripts/fit-prefilter-calibration.ts. When set, the stored lexical score becomes the
+  // calibrated P(good)×100, so claimForScoring's best-first order spends the LLM budget where it measurably pays.
+  prefilterCalibrationJson: process.env.PREFILTER_CALIBRATION_JSON?.trim() || null,
+  // The share of prefilter-rejected (but unexpired) matches admitted anyway, buying labels from below the gate
+  // so the calibration cannot freeze its own blind spots. Zero disables exploration.
+  prefilterExplorationRate: fractionEnv('PREFILTER_EXPLORATION_RATE', 0, 0.5),
+  // The daily in-loop refit: fit on the persisted evidence+label pairs, accept only when cross-validated
+  // ordering quality does not regress against the active model. Rows land in `calibrations` either way.
+  calibrationAutoRefit: booleanEnv('CALIBRATION_AUTO_REFIT', true),
+  calibrationMinLabels: integerEnv('CALIBRATION_MIN_LABELS', 300, 50, 100_000),
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),

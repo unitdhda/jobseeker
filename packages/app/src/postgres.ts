@@ -39,20 +39,24 @@ export const store = createStore({
 });
 
 export const {
-  activeUnitQueries, addSpend, addressableDigestPage, applyDemand, approvedUsers, beginApplication,
-  candidatesDueForRefresh, claimForScoring, claimTelegramSession, claimTelegramUpdate, clearSearchProfile,
+  activeStoredCalibration, activeUnitQueries, addSpend, addressableDigestPage, applyDemand, approvedUsers,
+  beginApplication, calibrationExamples, calibrationLabelsSince, candidatesDueForRefresh, claimForScoring,
+  claimTelegramSession, claimTelegramUpdate, clearSearchProfile,
   closePostgresPool, completeTelegramUpdate, createMatches, deleteTelegramSession, deleteUserData,
   deliveredArtifact, digestVacancies, dueUnits, existingCompiledUnits, exportUserData, failApplication,
   failTelegramUpdate, getCvHash, getCvSource, getDeliverySettings, getScoredVacancy,
   getScoredVacancyByApplyId, getSearchProfile, getTelegramSession, getTelegramUser, getVacancy,
-  isApprovedUser, listTelegramUsers, llmUsageSummary, markAlerted, markApplicationDelivered,
+  isApprovedUser, latestCalibrationAttemptAt, listTelegramUsers, llmUsageSummary, loadRoleEquivalences,
+  markAlerted, markApplicationDelivered,
   markApplicationReady, markCandidateClosed, markCandidateFailed, markCandidateNormalized, nextUnitDueAt,
   persistenceReady, purgeExpiredVacancies, queuedListings, recordListingCandidate, recordLlmUsageEvent,
-  recordUnitRun, recordUsage, releaseClaimedTelegramSession, replaceDigestSnapshot, requestAccess,
+  recordUnitRun, recordUsage, releaseClaimedTelegramSession, replaceDigestSnapshot, replaceRoleEquivalences,
+  requestAccess, saveCalibration,
   requireApprovedUser, saveCvSource, saveDeliveredArtifact, saveDeliverySettings, saveScore,
   saveSearchProfile, scoredVacanciesByApplyIdPrefix, scraperSummary, searchScoredVacancies,
   setTelegramSession, setUserLocale, setUserStatus, skipVacancy, spentToday, touchTelegramUser, transitionMatch,
   tryAcquireSingletonLock, unsentHighScoreVacancies, updateClaimedTelegramSession, upsertVacancy,
+  vacanciesForBackfill,
   usageInLast24Hours, userUsageSummaries, withPostgresAdvisoryLock,
 } = store;
 

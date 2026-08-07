@@ -79,7 +79,7 @@ test('match-on-ingest scores every approved user with their own lens and files o
   const filed: unknown[] = [];
   const result = await matchVacancy({
     approvedUserIds: async () => ['u1', 'u2', 'u3'],
-    lexicalScore: async (userId) => ({ u1: 40, u2: 12, u3: 55 })[userId]!,
+    lexicalScore: async (userId) => ({ score: ({ u1: 40, u2: 12, u3: 55 })[userId]!, regexScore: 30, lexicalCosine: 0.1 }),
     matchFloor: 20,
     createMatches: async (candidates) => { filed.push(...candidates); return candidates.length; },
   }, { vacancyId: 7 }, new Date(0));
@@ -92,7 +92,10 @@ test('one user\'s scorer failure does not cost the others their match', async ()
   const filed: unknown[] = [];
   const result = await matchVacancy({
     approvedUserIds: async () => ['u1', 'u2'],
-    lexicalScore: async (userId) => { if (userId === 'u1') throw new Error('bad vocabulary'); return 90; },
+    lexicalScore: async (userId) => {
+      if (userId === 'u1') throw new Error('bad vocabulary');
+      return { score: 90, regexScore: 75, lexicalCosine: 0.2 };
+    },
     matchFloor: 20,
     createMatches: async (candidates) => { filed.push(...candidates); return candidates.length; },
   }, { vacancyId: 9 }, new Date(0));

@@ -91,12 +91,20 @@ export function nextWakeMs(units: readonly { nextRunAt: number }[], nowMs: numbe
   return Math.min(wakeCeilingMs, Math.max(wakeFloorMs, earliest - nowMs));
 }
 
+/**
+ * One lens's verdict on one vacancy. The raw evidence features ride along so persistence can pair them with the
+ * LLM's later judgement — that pairing is the calibration's training data, and recomputing features after the CV
+ * has changed would silently corrupt it.
+ */
+export interface MatchEvidence { score: number; regexScore: number; lexicalCosine: number }
+export interface MatchCandidateInput extends MatchEvidence { userId: string; vacancyId: number }
+
 export interface MatchPorts {
   approvedUserIds(): Promise<string[]>;
-  /** The user's own lens over the vacancy — wired to the lexical prefilter with that user's vocabulary. */
-  lexicalScore(userId: string, vacancy: unknown): Promise<number>;
+  /** The user's own lens over the vacancy; null means the prefilter rejected it outright. */
+  lexicalScore(userId: string, vacancy: unknown): Promise<MatchEvidence | null>;
   matchFloor: number;
-  createMatches(candidates: { userId: string; vacancyId: number; lexicalScore: number }[], now: Date): Promise<number>;
+  createMatches(candidates: MatchCandidateInput[], now: Date): Promise<number>;
 }
 export interface MatchReport { evaluated: number; matched: number; failures: number }
 
@@ -104,12 +112,14 @@ export interface MatchReport { evaluated: number; matched: number; failures: num
 export async function matchVacancy(ports: MatchPorts, vacancy: { vacancyId: number },
   now: Date): Promise<MatchReport> {
   const users = await ports.approvedUserIds();
-  const candidates: { userId: string; vacancyId: number; lexicalScore: number }[] = [];
+  const candidates: MatchCandidateInput[] = [];
   let failures = 0;
   for (const userId of users) {
     try {
-      const score = await ports.lexicalScore(userId, vacancy);
-      if (score >= ports.matchFloor) candidates.push({ userId, vacancyId: vacancy.vacancyId, lexicalScore: score });
+      const evidence = await ports.lexicalScore(userId, vacancy);
+      if (evidence && evidence.score >= ports.matchFloor) {
+        candidates.push({ userId, vacancyId: vacancy.vacancyId, ...evidence });
+      }
     } catch {
       failures += 1;
     }

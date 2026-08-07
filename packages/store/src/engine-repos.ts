@@ -3,8 +3,10 @@
  * legacy repositories until cutover; only engine-runtime code reaches them. Match-state transitions are enforced in
  * the update's where-clause — a lost race means zero rows, never a corrupted state.
  */
-import { assertTransition, type CompiledSubscription, type CompiledUnit, type MatchState } from '@jobseeker/engine';
-import { postgresQuery as q } from './client.ts';
+import {
+  assertTransition, type CompiledSubscription, type CompiledUnit, type MatchState, type RoleEquivalencePair,
+} from '@jobseeker/engine';
+import { postgresQuery as q, withPostgresTransaction } from './client.ts';
 
 export interface DueUnitRow {
   unitId: string; platform: string; query: unknown; cadenceMinutes: number;
@@ -76,15 +78,21 @@ export async function activeUnitQueries(platform: string): Promise<unknown[]> {
     .map((row) => row.query);
 }
 
-export interface MatchCandidate { userId: string; vacancyId: number; lexicalScore: number }
+export interface MatchCandidate {
+  userId: string; vacancyId: number; lexicalScore: number;
+  /** Prefilter evidence frozen at match time — the future training row once the LLM judges this match. */
+  regexScore?: number; lexicalCosine?: number;
+}
 
 /** Ingest: new matches appear as 'matched'; an existing row is never touched — delivery memory is append-only here. */
 export async function createMatches(candidates: readonly MatchCandidate[], now: Date): Promise<number> {
   let created = 0;
   for (const candidate of candidates) {
-    const rows = await q(`insert into matches (user_id, vacancy_id, state, lexical_score, matched_at, updated_at)
-      values ($1, $2, 'matched', $3, $4, $4) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
-      [candidate.userId, candidate.vacancyId, candidate.lexicalScore, now.toISOString()]);
+    const rows = await q(`insert into matches (user_id, vacancy_id, state, lexical_score, lexical_regex_score,
+        lexical_cosine, matched_at, updated_at)
+      values ($1, $2, 'matched', $3, $4, $5, $6, $6) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
+      [candidate.userId, candidate.vacancyId, candidate.lexicalScore, candidate.regexScore ?? null,
+        candidate.lexicalCosine ?? null, now.toISOString()]);
     created += rows.length;
   }
   return created;
@@ -120,4 +128,77 @@ export async function addSpend(userId: string, day: string, costUsd: number, kin
 export async function spentToday(userId: string, day: string): Promise<number> {
   const rows = await q(`select llm_cost_usd from accounts where user_id = $1 and day = $2`, [userId, day]);
   return Number(rows[0]?.llm_cost_usd ?? 0);
+}
+
+/** A scored match whose evidence was frozen at match time — one calibration training row. */
+export interface CalibrationExampleRow {
+  regexScore: number; lexicalCosine: number; source: string; llmScore: number; storedLexicalScore: number;
+  publishedAt: string; scoreUpdatedAt: string;
+}
+
+export async function calibrationExamples(limit = 20_000): Promise<CalibrationExampleRow[]> {
+  const rows = await q(`select m.lexical_regex_score, m.lexical_cosine, m.lexical_score, m.llm_score,
+      m.score_updated_at, v.source, v.published_at
+    from matches m join vacancies v on v.id = m.vacancy_id
+    where m.llm_score is not null and m.lexical_regex_score is not null and m.lexical_cosine is not null
+      and m.score_updated_at is not null
+    order by m.score_updated_at desc limit $1`, [limit]);
+  return rows.map((row) => ({ regexScore: Number(row.lexical_regex_score), lexicalCosine: Number(row.lexical_cosine),
+    source: String(row.source), llmScore: Number(row.llm_score), storedLexicalScore: Number(row.lexical_score ?? 0),
+    publishedAt: new Date(row.published_at as string).toISOString(),
+    scoreUpdatedAt: new Date(row.score_updated_at as string).toISOString() }));
+}
+
+export interface StoredCalibrationRow { id: number; createdAt: string; coefficients: unknown; accepted: boolean }
+
+/** The newest accepted calibration — the model that orders scoring claims right now. */
+export async function activeStoredCalibration(): Promise<StoredCalibrationRow | null> {
+  const rows = await q(`select id, created_at, coefficients, accepted from calibrations
+    where accepted = 1 order by id desc limit 1`);
+  return rows[0] ? rowToCalibration(rows[0]) : null;
+}
+
+/** When any refit last ran, accepted or not — the cadence gate, so a rejected fit is not retried every tick. */
+export async function latestCalibrationAttemptAt(): Promise<string | null> {
+  const rows = await q(`select max(created_at) at from calibrations`);
+  return rows[0]?.at ? new Date(rows[0].at as string).toISOString() : null;
+}
+
+/** Labels that arrived after the active model was fitted — the evidence a refit would newly learn from. */
+export async function calibrationLabelsSince(timestamp: string | null): Promise<number> {
+  const rows = await q(`select count(*) n from matches where llm_score is not null
+    and lexical_regex_score is not null and ($1::timestamptz is null or score_updated_at > $1::timestamptz)`,
+    [timestamp]);
+  return Number(rows[0]?.n ?? 0);
+}
+
+export async function saveCalibration(coefficients: unknown, metrics: unknown,
+  accepted: boolean): Promise<void> {
+  await q(`insert into calibrations (coefficients, metrics, accepted) values ($1::jsonb, $2::jsonb, $3)`,
+    [JSON.stringify(coefficients), JSON.stringify(metrics), accepted ? 1 : 0]);
+}
+
+/** Mining recomputes from all profiles, so the table is replaced wholesale — derived data has no history. */
+export async function replaceRoleEquivalences(pairs: readonly RoleEquivalencePair[]): Promise<void> {
+  await withPostgresTransaction(async (client) => {
+    await client.query('delete from role_equivalences');
+    for (const pair of pairs) {
+      await client.query(`insert into role_equivalences (token_a, token_b, support, updated_at)
+        values ($1, $2, $3, now())`, [pair.tokenA, pair.tokenB, pair.support]);
+    }
+  });
+}
+
+export async function loadRoleEquivalences(minimumSupport = 1): Promise<RoleEquivalencePair[]> {
+  const rows = await q(`select token_a, token_b, support from role_equivalences where support >= $1
+    order by token_a, token_b`, [minimumSupport]);
+  return rows.map((row) => ({ tokenA: String(row.token_a), tokenB: String(row.token_b),
+    support: Number(row.support) }));
+}
+
+function rowToCalibration(row: Record<string, unknown>): StoredCalibrationRow {
+  const coefficients = row.coefficients;
+  return { id: Number(row.id), createdAt: new Date(row.created_at as string).toISOString(),
+    coefficients: typeof coefficients === 'string' ? JSON.parse(coefficients) : coefficients,
+    accepted: Number(row.accepted) === 1 };
 }

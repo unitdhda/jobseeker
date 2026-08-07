@@ -530,6 +530,14 @@ export async function markCandidateFailed(candidate: VacancyCandidate, error: st
 export async function getVacancy(id: number): Promise<Vacancy|null> {
   await ready(); const row=await one('select * from vacancies where id=$1',[id]); return row?rowToVacancy(row):null;
 }
+/** The recent normalized stock a fresh lens has never judged — the input to per-user match backfill. */
+export async function vacanciesForBackfill(userId: string, sinceIso: string, limit: number): Promise<Vacancy[]> {
+  await ready(); return (await q(`select v.* from vacancies v
+    where v.apply_id is not null and v.lifecycle_status='normalized'
+      and coalesce(v.published_at,v.first_seen_at)>=$2
+      and not exists (select 1 from matches m where m.user_id=$1 and m.vacancy_id=v.id)
+    order by v.published_at desc limit $3`,[userId,sinceIso,limit])).map(rowToVacancy);
+}
 /** A user's interaction (skip, apply) may reference a vacancy they were never matched to; the row appears then. */
 async function ensureMatch(userId:string,vacancyId:number,client?:PoolClient):Promise<void>{
   const sql=`insert into matches(user_id,vacancy_id,state,matched_at,updated_at)

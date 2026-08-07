@@ -1,7 +1,11 @@
 export type {
   PlannedSearch, SearchPlan, SearchRecipient, VacancyCandidate, VacancyCandidateInput, VacancyContent, VacancyInput,
 } from './contracts.ts';
-export { searchTokens } from './canon.ts';
+export { canonicalRoleToken, searchTokens } from './canon.ts';
+export {
+  createRoleTokenResolver, identityRoleResolver, mineRoleEquivalences,
+  type RoleEquivalencePair, type RoleTokenResolver, type RoleTrackTitles,
+} from './equivalence.ts';
 export { tokenSimilarity, unitIdentityOf, type UnitIdentity } from './identity.ts';
 export {
   compileDemand, type CompiledDemand, type CompiledSubscription, type CompiledUnit, type DemandInput,
@@ -11,7 +15,8 @@ export { pickDueUnits, type SchedulableUnit } from './pick.ts';
 export { assertTransition, canTransition, deliveredStates, type MatchState } from './match-state.ts';
 export {
   matchVacancy, nextWakeMs, runSchedulerTick,
-  type MatchPorts, type MatchReport, type TickDiscovery, type TickPorts, type TickReport, type TickUnit,
+  type MatchCandidateInput, type MatchEvidence, type MatchPorts, type MatchReport, type TickDiscovery,
+  type TickPorts, type TickReport, type TickUnit,
 } from './runtime.ts';
 export {
   createEngineLoop, drainScoring, engineLoopStatus, runDiscoveryIteration, runJudgmentIteration,
@@ -21,5 +26,12 @@ export {
 export {
   careerProfilePlatformId, careerProfileSchema, careerTrackSchema, normalizeCareerProfileJson,
   parseStoredCareerProfile, prefilterVacancy, vacancyRecency, vacancySemanticText,
-  type CareerProfile, type CareerTrack, type PrefilterResult, type StoredCareerProfile, type VacancyRecency,
+  type CareerProfile, type CareerTrack, type PrefilterResult, type RecencyBand, type StoredCareerProfile,
+  type VacancyRecency,
 } from './prefilter.ts';
+export {
+  calibratedMatchProbability, evaluateCalibration, evaluateScores, fitPrefilterCalibration,
+  parsePrefilterCalibration, prefilterCalibrationSchema,
+  type CalibrationEvaluation, type CalibrationExample, type CalibrationFeatures, type CalibrationFit,
+  type PrefilterCalibration,
+} from './calibration.ts';

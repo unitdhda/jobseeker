@@ -8,6 +8,8 @@ import {
 } from './postgres.ts';
 import { enabledSourceProviderIds, getSearchPlatform, platformSearches } from './vacancies/registry.ts';
 import { compileDemand, type DemandInput } from '@jobseeker/engine';
+import { roleTokenResolver, tryRefreshRoleEquivalences } from './role-equivalence.ts';
+import { backfillUserMatches } from './matching.ts';
 import { activeUnitQueries, applyDemand, existingCompiledUnits } from './postgres.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
@@ -152,9 +154,20 @@ export async function compileUserDemand(userId: string): Promise<{ units: number
       console.error(`Skipping ${platformId} demand for user ${userId}: ${errorMessage(error)}`);
     }
   }
-  const compiled = compileDemand(demands, config.searchClusterSimilarity / 100, await existingCompiledUnits());
+  // Adoption consults the learned vocabulary so бухгалтер and accountant land in one unit; identity hashing does not.
+  const compiled = compileDemand(demands, config.searchClusterSimilarity / 100, await existingCompiledUnits(),
+    roleTokenResolver());
   await applyDemand(userId, compiled.units, compiled.subscriptions, config.unitCadenceFloorMinutes);
-  trace('demand.compiled', { userId, minted: compiled.units.length, subscriptions: compiled.subscriptions.length });
+  // A fresh profile may carry vocabulary no other user has; mine it now so this user's matching starts warm.
+  await tryRefreshRoleEquivalences();
+  // Match-on-ingest never revisits the past: the new lens judges the recent normalized stock here, once, so a
+  // fresh user's first digest draws on everything already discovered instead of starting from zero.
+  const backfilled = await backfillUserMatches(userId).catch((error) => {
+    console.error(`Match backfill failed for user ${userId}: ${errorMessage(error)}`);
+    return 0;
+  });
+  trace('demand.compiled', { userId, minted: compiled.units.length, subscriptions: compiled.subscriptions.length,
+    backfilled });
   return { units: compiled.units.length, subscriptions: compiled.subscriptions.length };
 }
 
