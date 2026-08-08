@@ -147,6 +147,9 @@ export const en: Messages = {
     laneLastRun: (clock: string) => ` (last ${clock})`,
     laneFailures: (failures: string) => ` · failures: ${failures}`,
     schedulerElsewhere: 'scheduler runs outside this process',
+    calibrationOk: (days: string) => `Ordering: calibrated · fitted ${days} d ago`,
+    calibrationStale: (days: string) => `Ordering: calibrated but STALE · fitted ${days} d ago, nothing has replaced it`,
+    calibrationMissing: 'Ordering: NOT calibrated · falling back to the raw evidence score',
   },
 
   cv: {

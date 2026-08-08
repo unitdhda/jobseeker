@@ -28,7 +28,8 @@ import { errorMessage } from './observability.ts';
 import { extensionShutdownHooks, extensionStartupHooks } from './vacancies/providers.ts';
 import { loadRoleEquivalenceResolver, tryRefreshRoleEquivalences } from './role-equivalence.ts';
 import {
-  activeCalibration, activeCalibrationFittedAt, loadActiveCalibration, matchEvidence, setActiveCalibration,
+  activeCalibration, activeCalibrationFittedAt, loadActiveCalibration, matchEvidence,
+  reportCalibrationHealth, setActiveCalibration,
   userLens, type UserLens,
 } from './matching.ts';
 
@@ -117,6 +118,8 @@ async function refitCalibration(now: Date): Promise<void> {
   console.info(`Calibration refit ${accepted ? 'accepted' : 'rejected'} on ${fit.examples} examples `
     + `(${fit.holdoutIndices.length} held out): ${reason}.`);
   if (accepted) setActiveCalibration(fit.calibration, now.toISOString());
+  // A rejected refit is normal; a run of them means the ordering is ageing with nothing to replace it.
+  reportCalibrationHealth(now);
 }
 
 function loopPorts(): LoopPorts {
@@ -205,6 +208,8 @@ export function startEngineLoop(): void {
     // A previously accepted refit outranks the env bootstrap; failure to load keeps the bootstrap, not silence.
     await loadActiveCalibration().catch((error) =>
       console.error(`Loading the active calibration failed: ${errorMessage(error)}`));
+    // Whatever that left us with, say plainly what is ordering the scoring queue before the loop starts using it.
+    reportCalibrationHealth();
     await loadRoleEquivalenceResolver().catch((error) =>
       console.error(`Loading role equivalences failed; matching starts with the core vocabulary: ${errorMessage(error)}`));
     for (const hook of extensionStartupHooks) {

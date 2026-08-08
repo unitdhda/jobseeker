@@ -4,7 +4,9 @@ import { careerProfileSchema, prefilterVacancy, vacancyRecency, type CareerProfi
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
 import { textSearchProfileSchema } from '@jobseeker/sources/examples/habr';
-import { admitEvidence } from '../src/matching.ts';
+import {
+  admitEvidence, calibrationHealth, calibrationStaleAfterDays, setActiveCalibration,
+} from '../src/matching.ts';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
@@ -189,4 +191,28 @@ test('the prefilter reports title similarity and skill coverage separately from 
   assert.ok(strong.skillCoverage > weak.skillCoverage);
   assert.equal(strong.skillCoverage, 1); // both of the track's two core skills appear
   assert.equal(weak.skillCoverage, 0);
+});
+
+test('an uncalibrated ordering reports itself as degraded, not as normal', () => {
+  // Nothing has been loaded in this process, so the queue would be ordered by the raw evidence score. With no
+  // probability gate configured, this report is the only thing that can say so.
+  const missing = calibrationHealth();
+  assert.equal(missing.active, false);
+  assert.equal(missing.ordering, 'raw evidence score');
+  assert.match(missing.message ?? '', /raw evidence score/);
+
+  const calibration = { version: 3 as const, bias: -1, regexScore: 2, regexScoreSquared: 0, lexicalCosine: 1,
+    lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, sources: {}, ageBands: {}, judges: {}, users: {} };
+  const fittedAt = new Date('2026-08-01T00:00:00Z');
+  setActiveCalibration(calibration, fittedAt.toISOString());
+
+  const fresh = calibrationHealth(new Date(fittedAt.getTime() + 86_400_000));
+  assert.equal(fresh.active, true);
+  assert.equal(fresh.stale, false);
+  assert.equal(fresh.message, null, 'a healthy ordering says nothing');
+
+  const stale = calibrationHealth(new Date(fittedAt.getTime() + (calibrationStaleAfterDays + 1) * 86_400_000));
+  assert.equal(stale.active, true);
+  assert.equal(stale.stale, true);
+  assert.match(stale.message ?? '', /nothing has replaced it/);
 });

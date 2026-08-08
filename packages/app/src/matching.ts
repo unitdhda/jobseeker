@@ -50,6 +50,55 @@ function warnUncalibratedGate(): void {
     + 'because the probability gate was meant to replace it, matching is now far more permissive than intended.');
 }
 
+/**
+ * How healthy the thing that orders LLM spending is. With no probability gate the calibration is not a filter,
+ * it is the queue order itself, and losing it is silent: `matchEvidence` falls back to the raw combined score,
+ * same column, same 0..100 range, a different quantity that measured 0.642 against the calibration's 0.715. The
+ * old warning could never say so, because it only fired when PREFILTER_MIN_PROBABILITY was set.
+ *
+ * Staleness counts too. A calibration accepted once and never replaced — auto-refit off, or a gate that stopped
+ * passing — keeps serving indefinitely with nothing to say about it.
+ */
+export const calibrationStaleAfterDays = 7;
+
+export interface CalibrationHealth {
+  active: boolean;
+  fittedAt: string | null;
+  ageDays: number | null;
+  stale: boolean;
+  ordering: 'calibrated probability' | 'raw evidence score';
+  message: string | null;
+}
+
+export function calibrationHealth(now = new Date()): CalibrationHealth {
+  const fittedAt = calibrationFittedAt;
+  const ageDays = fittedAt ? (now.getTime() - Date.parse(fittedAt)) / 86_400_000 : null;
+  const stale = ageDays != null && ageDays > calibrationStaleAfterDays;
+  if (!calibration) {
+    return { active: false, fittedAt, ageDays, stale: false, ordering: 'raw evidence score',
+      message: 'No calibration is active, so the scoring queue is ordered by the raw evidence score. That '
+        + 'ordering is measurably weaker, and nothing else is filtering what the LLM is asked to judge.' };
+  }
+  return { active: true, fittedAt, ageDays, stale, ordering: 'calibrated probability',
+    message: stale
+      ? `The active calibration was fitted ${Math.floor(ageDays!)} days ago and nothing has replaced it. `
+        + 'Refits may be failing or turned off; the ordering is running on stale evidence.'
+      : null };
+}
+
+let lastReportedCalibrationMessage: string | null = null;
+
+/** Reports a degraded ordering once per distinct condition, so a persistent fault is loud but not a flood. */
+export function reportCalibrationHealth(now = new Date()): CalibrationHealth {
+  const health = calibrationHealth(now);
+  if (health.message !== lastReportedCalibrationMessage) {
+    if (health.message) console.error(`Calibration health: ${health.message}`);
+    else if (lastReportedCalibrationMessage) console.info('Calibration health: ordering is calibrated again.');
+    lastReportedCalibrationMessage = health.message;
+  }
+  return health;
+}
+
 export interface UserLens { userId: string; cvText: string; profile: CareerProfile }
 
 /** A user who can judge a vacancy: a CV and a career profile current for it. Others return null and wait. */
