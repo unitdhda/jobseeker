@@ -105,7 +105,7 @@ export const en: Messages = {
   },
 
   charts: {
-    scale: '2 characters per hour · points every 4 hours · ━ and ◐ mean the series coincide',
+    scale: '2 characters per hour · a point every hour · ━ and ◐ mean the series coincide',
     yesterday: 'yesterday',
     today: 'today',
     localTime: 'local time →',

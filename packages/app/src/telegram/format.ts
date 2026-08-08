@@ -71,7 +71,9 @@ function drawUsageSeries(values:number[],maximum:number,marker:'●'|'○'):stri
     for(let vertical=row+1;vertical<nextRow;vertical++)put(vertical,nextColumn,'│');
     put(nextRow,nextColumn,'╰');
   }
-  for(let hour=0;hour<=usagePlotHours;hour+=4)put(rows[hour]!,hour*2,marker,true);
+  // A marker on every hour — every second cell, since an hour is two characters wide. Forced over whatever the
+  // stroke left there, so a data point is never hidden behind the corner that leads into it.
+  for(let hour=0;hour<=usagePlotHours;hour++)put(rows[hour]!,hour*2,marker,true);
   return grid;
 }
 // Both series share one grid, so cells claimed by both are drawn with the heavy stroke instead of

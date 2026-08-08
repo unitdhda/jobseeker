@@ -28,9 +28,9 @@ test('scraper timeline keeps the usage chart geometry with its own legend', () =
   const plotRows = lines.slice(3, 15);
   const left = plotRows[0]!.indexOf('│'), right = plotRows[0]!.lastIndexOf('│');
   assert.equal(right - left - 1, 49, 'two columns per hour across 24 hours');
-  // Flat series: seven four-hourly markers each, no money formatting anywhere on the right axis.
-  assert.equal((chart.match(/●/gu) ?? []).length, 8);
-  assert.equal((chart.match(/○/gu) ?? []).length, 8);
+  // Flat series: a marker on each of the 25 hours plus the legend's own, and no money formatting on either axis.
+  assert.equal((chart.match(/●/gu) ?? []).length, 26);
+  assert.equal((chart.match(/○/gu) ?? []).length, 26);
   assert.doesNotMatch(chart, /\$/u);
 });
 

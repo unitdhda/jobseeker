@@ -7,7 +7,7 @@ const hours=Array.from({length:25},(_,index)=>({
   at:new Date(start+index*3_600_000).toISOString(),tokens:12_000,costUsd:0,
 }));
 
-test('usage timeline renders a fixed dual-axis rectangle with four-hour markers',()=>{
+test('usage timeline renders a fixed dual-axis rectangle with a marker on every hour',()=>{
   const chart=usageTimelineChart(hours,'+00:00','ru'),lines=chart.split('\n');
   assert.equal(lines.length,19);
   const plotRows=lines.slice(3,15),left=plotRows[0]!.indexOf('│'),right=plotRows[0]!.lastIndexOf('│');
@@ -16,8 +16,9 @@ test('usage timeline renders a fixed dual-axis rectangle with four-hour markers'
     assert.equal(line.indexOf('│'),left);assert.equal(line.lastIndexOf('│'),right);
     assert.match(line.slice(left+1,right),/^[ │╭╮─╯╰○●]+$/u);
   }
-  assert.equal((chart.match(/●/gu)??[]).length,8); // seven plot markers plus the legend
-  assert.equal((chart.match(/○/gu)??[]).length,8);
+  // One marker per hour across 25 points — every second cell of the 49-wide plot — plus the legend's own symbol.
+  assert.equal((chart.match(/●/gu)??[]).length,26);
+  assert.equal((chart.match(/○/gu)??[]).length,26);
   assert.match(chart,/12\s+16\s+20\s+00\s+04\s+08\s+12/u);
 });
 
@@ -25,7 +26,7 @@ test('coinciding markers merge into a half-filled circle',()=>{
   const overlapping=hours.map(hour=>({...hour,costUsd:0.12}));
   const chart=usageTimelineChart(overlapping,'+00:00','ru');
   const plot=chart.split('\n').slice(3,15).join('\n');
-  assert.equal((plot.match(/◐/gu)??[]).length,7);
+  assert.equal((plot.match(/◐/gu)??[]).length,25); // every hourly point coincides, so every one merges
   assert.equal((plot.match(/○/gu)??[]).length,0);
   assert.equal((plot.match(/●/gu)??[]).length,0);
 });
@@ -33,7 +34,7 @@ test('coinciding markers merge into a half-filled circle',()=>{
 test('shared cells are drawn with the heavy stroke',()=>{
   const overlapping=hours.map(hour=>({...hour,costUsd:0.12}));
   const plot=usageTimelineChart(overlapping,'+00:00','ru').split('\n').slice(3,15).join('\n');
-  assert.equal((plot.match(/━/gu)??[]).length,42); // the whole shared run minus the seven merged markers
+  assert.equal((plot.match(/━/gu)??[]).length,24); // the 49-cell shared run minus the 25 merged markers
   assert.equal((plot.match(/─/gu)??[]).length,0);
 });
 
