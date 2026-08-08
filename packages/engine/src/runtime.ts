@@ -100,6 +100,8 @@ export interface MatchEvidence {
   score: number; regexScore: number; lexicalCosine: number;
   /** The pair `regexScore` folds together, frozen separately so a later refit can weigh them apart. 0..1. */
   titleSimilarity?: number; skillCoverage?: number;
+  /** Grade distance in [-1, 1], or null when neither title named a grade. Recorded, not yet weighed. */
+  seniorityGap?: number | null;
 }
 export interface MatchCandidateInput extends MatchEvidence { userId: string; vacancyId: number }
 

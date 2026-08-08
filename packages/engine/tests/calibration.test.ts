@@ -204,3 +204,35 @@ test('a single-class holdout is refused rather than scored', () => {
   assert.equal(verdict.accepted, false);
   assert.match(verdict.reason, /single-class/);
 });
+
+test('the seniority gap is signed: asking above and below the CV pull opposite ways', () => {
+  const model = parsePrefilterCalibration(JSON.stringify({
+    version: 3, bias: -1, regexScore: 1, lexicalCosine: 1, seniorityGap: -2, sources: {}, ageBands: {},
+  }));
+  const base = { regexScore: 50, lexicalCosine: 0.1, source: 'hh', ageBand: 'week' as const };
+  const level = calibratedMatchProbability(model, { ...base, seniorityGap: 0 });
+  assert.ok(calibratedMatchProbability(model, { ...base, seniorityGap: 0.4 }) < level, 'above the CV, penalised');
+  assert.ok(calibratedMatchProbability(model, { ...base, seniorityGap: -0.4 }) > level, 'below the CV, rewarded');
+  // Unknown must contribute nothing at all, exactly like a level match under a zero coefficient.
+  assert.equal(calibratedMatchProbability(model, { ...base, seniorityGap: null }), level);
+  assert.equal(calibratedMatchProbability(model, base), level);
+  // Out-of-range values are clamped on both sides rather than trusted.
+  assert.equal(calibratedMatchProbability(model, { ...base, seniorityGap: -9 }),
+    calibratedMatchProbability(model, { ...base, seniorityGap: -1 }));
+});
+
+test('a fit can learn the seniority gap when it is the only signal', async () => {
+  const examples: TrainingExample[] = [];
+  let seed = 19;
+  const random = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  for (let index = 0; index < 600; index++) {
+    const overreach = index % 2 === 0;
+    examples.push({ regexScore: 50, lexicalCosine: 0.15, source: 'hh', ageBand: 'week', scoredAt: index,
+      seniorityGap: overreach ? 0.6 : -0.2,
+      label: overreach ? random() < 0.1 : random() < 0.85 });
+  }
+  const fit = await fitPrefilterCalibration(examples);
+  assert.ok(fit.calibration.seniorityGap < 0,
+    `an advert asking above the CV must earn a negative weight, got ${fit.calibration.seniorityGap}`);
+  assert.ok(fit.candidate.auc > 0.75, `expected a discriminative fit, auc=${fit.candidate.auc}`);
+});

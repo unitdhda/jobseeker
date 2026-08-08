@@ -175,7 +175,7 @@ export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date): Matc
   })) : Math.max(0, Math.round(result.combinedScore));
   const evidence: MatchEvidence = { score: stored, regexScore: result.regexScore,
     lexicalCosine: result.lexicalCosine, titleSimilarity: result.titleSimilarity,
-    skillCoverage: result.skillCoverage };
+    skillCoverage: result.skillCoverage, seniorityGap: result.seniorityGap };
   // The calibrated gate only means anything while a calibration is active; without one `stored` is the raw
   // combined score, which is not a probability and must not be compared against one. A deployment that made the
   // probability its main gate has usually lowered PREFILTER_MIN_SCORE to match, so losing the calibration means
@@ -205,7 +205,8 @@ export async function backfillUserMatches(userId: string, now = new Date()): Pro
     const evidence = matchEvidence(lens, vacancy, now);
     if (evidence) candidates.push({ userId, vacancyId: vacancy.id, lexicalScore: evidence.score,
       regexScore: evidence.regexScore, lexicalCosine: evidence.lexicalCosine,
-      titleSimilarity: evidence.titleSimilarity, skillCoverage: evidence.skillCoverage });
+      titleSimilarity: evidence.titleSimilarity, skillCoverage: evidence.skillCoverage,
+      seniorityGap: evidence.seniorityGap });
   }
   return candidates.length ? createMatches(candidates, now) : 0;
 }

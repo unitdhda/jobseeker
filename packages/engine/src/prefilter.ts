@@ -95,6 +95,31 @@ const seniority = new Set([
   'средний','старший','ведущий','главный','руководитель',
 ]);
 
+/**
+ * The same words, ranked. Grade is deliberately stripped from role tokens so that a senior and a junior backend
+ * developer still meet on one marker — but the LLM scorer's rubric penalizes underqualification and substantial
+ * overqualification, so the difference the role gate throws away is exactly a thing the verdict turns on.
+ */
+const seniorityRanks = new Map<string, number>([
+  ['intern', 0], ['internship', 0], ['стажер', 0], ['стажёр', 0],
+  ['junior', 1], ['младший', 1],
+  ['middle', 2], ['средний', 2],
+  ['senior', 3], ['старший', 3],
+  ['lead', 4], ['ведущий', 4],
+  ['head', 5], ['principal', 5], ['chief', 5], ['главный', 5], ['руководитель', 5],
+]);
+const seniorityRankSpan = 5;
+
+/** The highest grade claimed anywhere in the text, or null when it names none — which most titles do not. */
+function seniorityRank(input: string): number | null {
+  let rank: number | null = null;
+  for (const token of input.normalize('NFKC').toLowerCase().match(/[\p{L}]{2,}/gu) ?? []) {
+    const found = seniorityRanks.get(token);
+    if (found != null && (rank == null || found > rank)) rank = found;
+  }
+  return rank;
+}
+
 function normalizedTokens(input: string): string[] {
   return input.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}+#.]{2,}/gu)
     ?.map((token) => token.replace(/^\.+|\.+$/g, ''))
@@ -229,6 +254,16 @@ export interface PrefilterResult {
    */
   titleSimilarity: number;
   skillCoverage: number;
+  /**
+   * How far the advert's grade sits from the CV's, as (vacancy - cv) / 5 in [-1, 1]: positive means the advert
+   * asks for more seniority than the CV claims, negative means it asks for less. Null when either side names no
+   * grade at all, which is the common case and must not be confused with "the grades match".
+   *
+   * Recorded only. Nothing weighs it yet: like title similarity and skill coverage before it, it cannot earn a
+   * coefficient until enough matches carry it, and folding an unvalidated guess into the score would change
+   * admission on a hunch.
+   */
+  seniorityGap: number | null;
   filtered: boolean;
   /** True when the advert's age alone rejected it; no evidence score can admit an expired advert. */
   expired: boolean;
@@ -250,6 +285,14 @@ export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimu
   if (best.similarity > 0) reasons.push(`title-variant similarity: ${best.similarity.toFixed(3)}`);
   if (best.matchedSkills.length) reasons.push(`evidenced skills: ${best.matchedSkills.slice(0, 8).join(', ')}`);
 
+  const cvRank = seniorityRank(best.track.titleVariants.join('\n'));
+  const vacancyRank = seniorityRank(vacancy.name);
+  const seniorityGap = cvRank == null || vacancyRank == null ? null
+    : Math.max(-1, Math.min(1, (vacancyRank - cvRank) / seniorityRankSpan));
+  if (seniorityGap != null && seniorityGap !== 0) {
+    reasons.push(`seniority gap: ${seniorityGap > 0 ? 'advert asks above' : 'advert asks below'} the CV's grade`);
+  }
+
   const cleanCv = relevanceCvText(cvText);
   const lexicalCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(`${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`));
   const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
@@ -270,6 +313,6 @@ export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimu
   if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${maxAgeDays}-day limit`);
   else if (filtered) reasons.push(`combined score below ${minimumScore}`);
   return { regexScore, lexicalCosine, lexicalScore, combinedScore,
-    titleSimilarity: best.similarity, skillCoverage: best.skillCoverage,
+    titleSimilarity: best.similarity, skillCoverage: best.skillCoverage, seniorityGap,
     filtered, expired: recency.expired, reasons };
 }

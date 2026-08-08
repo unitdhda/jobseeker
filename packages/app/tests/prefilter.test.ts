@@ -203,7 +203,8 @@ test('an uncalibrated ordering reports itself as degraded, not as normal', () =>
   assert.match(missing.message ?? '', /raw evidence score/);
 
   const calibration = { version: 3 as const, bias: -1, regexScore: 2, regexScoreSquared: 0, lexicalCosine: 1,
-    lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, sources: {}, ageBands: {}, judges: {}, users: {} };
+    lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, sources: {}, ageBands: {},
+    judges: {}, users: {} };
   const fittedAt = new Date('2026-08-01T00:00:00Z');
   setActiveCalibration(calibration, fittedAt.toISOString());
 
@@ -232,4 +233,38 @@ test('a user with no verdicts of their own explores harder, and stops once they 
   // Expiry still refuses unconditionally: no amount of exploration is worth a filled advert.
   assert.equal(admitEvidence({ filtered: true, expired: true, belowProbability: false,
     explorationRate: explorationRateFor(0), random: () => 0 }), false);
+});
+
+test('the seniority gap is recorded signed, and absent when neither title names a grade', () => {
+  const leadProfile: CareerProfile = { version: 1, tracks: [
+    { name: 'Backend', titleVariants: ['lead backend developer'], coreSkills: ['Go'],
+      evidence: ['Led a backend team'] }] };
+  const cv = 'Lead backend developer with Go experience.';
+  const gapFor = (title: string) =>
+    prefilterVacancy(cv, vacancy(title, 'Backend work with Go', ['Go']), 20, leadProfile).seniorityGap;
+
+  // The advert asks below the CV's grade, and above it, and the sign has to distinguish the two.
+  assert.ok(gapFor('junior backend developer')! < 0, 'a junior advert sits below a lead CV');
+  assert.equal(gapFor('lead backend developer'), 0, 'the same grade is a gap of zero');
+  assert.ok(gapFor('head of backend')! > 0, 'a head advert sits above a lead CV');
+  // Null, not zero: an advert that names no grade is unknown, which is not the same as matching.
+  assert.equal(gapFor('backend developer'), null);
+
+  const gradelessProfile: CareerProfile = { version: 1, tracks: [
+    { name: 'Backend', titleVariants: ['backend developer'], coreSkills: ['Go'], evidence: ['Backend work'] }] };
+  assert.equal(prefilterVacancy(cv, vacancy('senior backend developer', 'Go', ['Go']), 20, gradelessProfile)
+    .seniorityGap, null, 'a CV naming no grade cannot be compared either');
+});
+
+test('recording the seniority gap does not move the score it is not yet weighed by', () => {
+  // It ships as frozen evidence only. If this starts failing, admission has quietly changed on an unvalidated
+  // guess, which is the thing the split evidence was careful not to do either.
+  const profile: CareerProfile = { version: 1, tracks: [
+    { name: 'Backend', titleVariants: ['lead backend developer'], coreSkills: ['Go'], evidence: ['Backend'] }] };
+  const cv = 'Lead backend developer with Go experience.';
+  const junior = prefilterVacancy(cv, vacancy('junior backend developer', 'Go work', ['Go']), 20, profile);
+  const graded = prefilterVacancy(cv, vacancy('lead backend developer', 'Go work', ['Go']), 20, profile);
+  assert.notEqual(junior.seniorityGap, graded.seniorityGap);
+  // Both titles carry the same role tokens once grade is stripped, so the evidence score must be identical.
+  assert.equal(junior.regexScore, graded.regexScore);
 });

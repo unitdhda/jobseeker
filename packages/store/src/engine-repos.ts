@@ -82,6 +82,8 @@ export interface MatchCandidate {
   userId: string; vacancyId: number; lexicalScore: number;
   /** Prefilter evidence frozen at match time — the future training row once the LLM judges this match. */
   regexScore?: number; lexicalCosine?: number; titleSimilarity?: number; skillCoverage?: number;
+  /** Null is meaningful here: neither side named a grade, which is not the same as the grades agreeing. */
+  seniorityGap?: number | null;
 }
 
 /** Ingest: new matches appear as 'matched'; an existing row is never touched — delivery memory is append-only here. */
@@ -89,10 +91,12 @@ export async function createMatches(candidates: readonly MatchCandidate[], now: 
   let created = 0;
   for (const candidate of candidates) {
     const rows = await q(`insert into matches (user_id, vacancy_id, state, lexical_score, lexical_regex_score,
-        lexical_cosine, lexical_title_similarity, lexical_skill_coverage, matched_at, updated_at)
-      values ($1, $2, 'matched', $3, $4, $5, $6, $7, $8, $8) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
+        lexical_cosine, lexical_title_similarity, lexical_skill_coverage, lexical_seniority_gap,
+        matched_at, updated_at)
+      values ($1, $2, 'matched', $3, $4, $5, $6, $7, $8, $9, $9) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
       [candidate.userId, candidate.vacancyId, candidate.lexicalScore, candidate.regexScore ?? null,
         candidate.lexicalCosine ?? null, candidate.titleSimilarity ?? null, candidate.skillCoverage ?? null,
+        candidate.seniorityGap ?? null,
         now.toISOString()]);
     created += rows.length;
   }
@@ -164,6 +168,8 @@ export interface CalibrationExampleRow {
   publishedAt: string; scoreUpdatedAt: string;
   /** Null on rows matched before these columns existed; the fit reads that as no contribution. */
   titleSimilarity: number | null; skillCoverage: number | null;
+  /** Null both on older rows and whenever neither title named a grade. */
+  seniorityGap: number | null;
   /** The model that produced llmScore, or null on rows scored before the column existed. */
   scoreModel: string | null;
   /** Whose verdict this is. Pooling users hides that "good" is judged per person. */
@@ -172,7 +178,7 @@ export interface CalibrationExampleRow {
 
 export async function calibrationExamples(limit = 20_000): Promise<CalibrationExampleRow[]> {
   const rows = await q(`select m.lexical_regex_score, m.lexical_cosine, m.lexical_score, m.llm_score,
-      m.lexical_title_similarity, m.lexical_skill_coverage, m.score_model, m.user_id,
+      m.lexical_title_similarity, m.lexical_skill_coverage, m.lexical_seniority_gap, m.score_model, m.user_id,
       m.score_updated_at, v.source, v.published_at
     from matches m join vacancies v on v.id = m.vacancy_id
     where m.llm_score is not null and m.lexical_regex_score is not null and m.lexical_cosine is not null
@@ -182,6 +188,7 @@ export async function calibrationExamples(limit = 20_000): Promise<CalibrationEx
     source: String(row.source), llmScore: Number(row.llm_score), storedLexicalScore: Number(row.lexical_score ?? 0),
     titleSimilarity: row.lexical_title_similarity == null ? null : Number(row.lexical_title_similarity),
     skillCoverage: row.lexical_skill_coverage == null ? null : Number(row.lexical_skill_coverage),
+    seniorityGap: row.lexical_seniority_gap == null ? null : Number(row.lexical_seniority_gap),
     scoreModel: row.score_model == null ? null : String(row.score_model),
     userId: String(row.user_id),
     publishedAt: new Date(row.published_at as string).toISOString(),

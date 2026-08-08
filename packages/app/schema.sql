@@ -132,6 +132,9 @@ create table public.matches (
   -- Both 0..1; null on rows matched before these columns existed.
   lexical_title_similarity double precision,
   lexical_skill_coverage double precision,
+  -- (vacancy grade - cv grade) / 5, in [-1, 1]. Null when either side names no grade, which is not the same as
+  -- the grades matching. Recorded for a future refit; nothing weighs it yet.
+  lexical_seniority_gap double precision,
   llm_score integer,
   -- Which model produced llm_score, as the route string the AI layer was asked for. The calibration's corpus
   -- spans whatever routes were live, and models differ in strictness; without this the fit cannot tell a strict

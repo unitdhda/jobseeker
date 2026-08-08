@@ -107,6 +107,7 @@ async function refitCalibration(now: Date): Promise<void> {
     // Null until this match's row was written with the richer evidence; zero is "contributes nothing", which is
     // the honest reading for a row whose features were never recorded.
     titleSimilarity: row.titleSimilarity ?? 0, skillCoverage: row.skillCoverage ?? 0,
+    seniorityGap: row.seniorityGap,
     ageBand: vacancyRecency({ publishedAt: row.publishedAt }, Date.parse(row.scoreUpdatedAt), 3_650).band,
     scoredAt: Date.parse(row.scoreUpdatedAt),
     // Fitting-only: both absorb strictness that is not the match's fault. Undefined on rows predating the column.

@@ -42,6 +42,8 @@ export const prefilterCalibrationSchema = v.strictObject({
   /** Absent from a version 1 document, where the signal was folded into regexScore. */
   titleSimilarity: v.optional(coefficient, 0),
   skillCoverage: v.optional(coefficient, 0),
+  /** Signed, unlike the rest: the advert may ask above or below the CV's grade, and those are not the same. */
+  seniorityGap: v.optional(coefficient, 0),
   sources: v.record(v.string(), coefficient),
   ageBands: v.record(v.string(), coefficient),
   /** Fitting-only intercepts, absent before version 3. Recorded for audit; never read when serving. */
@@ -71,11 +73,15 @@ export interface CalibrationFeatures {
   /** Both 0..1. Rows predating the columns pass 0, which contributes nothing. */
   titleSimilarity?: number;
   skillCoverage?: number;
+  /** -1..1, or null/undefined when neither title named a grade. Absent contributes nothing, like the rest. */
+  seniorityGap?: number | null;
   source: string;
   ageBand: RecencyBand;
 }
 
 const clamp01 = (value: number): number => Math.max(0, Math.min(1, value));
+const clampSigned = (value: number | null | undefined): number =>
+  (value == null ? 0 : Math.max(-1, Math.min(1, value)));
 
 /** P(the LLM would judge this match worth delivering), in [0, 1]. */
 export function calibratedMatchProbability(calibration: PrefilterCalibration,
@@ -93,6 +99,7 @@ function logit(calibration: PrefilterCalibration, features: CalibrationFeatures)
     + calibration.lexicalCosine * cosine01 + calibration.lexicalCosineSquared * cosine01 * cosine01
     + calibration.titleSimilarity * clamp01(features.titleSimilarity ?? 0)
     + calibration.skillCoverage * clamp01(features.skillCoverage ?? 0)
+    + calibration.seniorityGap * clampSigned(features.seniorityGap)
     + (calibration.sources[features.source] ?? 0)
     + (calibration.ageBands[features.ageBand] ?? 0);
 }
@@ -184,6 +191,7 @@ function featureVector(example: TrainingExample, columns: DummyColumns): number[
   const cosine01 = clamp01(example.lexicalCosine * 3);
   return [1, regex01, regex01 * regex01, cosine01, cosine01 * cosine01,
     clamp01(example.titleSimilarity ?? 0), clamp01(example.skillCoverage ?? 0),
+    clampSigned(example.seniorityGap),
     ...columns.sources.map((source) => (source === example.source ? 1 : 0)),
     ...recencyBandNames.map((band) => (band === example.ageBand ? 1 : 0)),
     ...columns.judges.map((judge) => (judge === example.judge ? 1 : 0)),
@@ -195,9 +203,12 @@ function featureVector(example: TrainingExample, columns: DummyColumns): number[
 const descentYieldBudgetMs = 8;
 const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
+/** Bias, the four evidence terms, the two split signals, and the signed seniority gap. */
+const denseFeatureCount = 8;
+
 async function descend(examples: readonly TrainingExample[],
   columns: DummyColumns): Promise<number[]> {
-  const width = 7 + columns.sources.length + recencyBandNames.length
+  const width = denseFeatureCount + columns.sources.length + recencyBandNames.length
     + columns.judges.length + columns.users.length;
   const weights = new Array<number>(width).fill(0);
   const learningRate = 0.5; const l2 = 1e-3; const iterations = 4000;
@@ -223,14 +234,16 @@ async function descend(examples: readonly TrainingExample[],
 
 function toCalibration(weights: readonly number[], columns: DummyColumns): PrefilterCalibration {
   const round = (value: number): number => Number(value.toFixed(4));
-  const bandsAt = 7 + columns.sources.length;
+  const bandsAt = denseFeatureCount + columns.sources.length;
   const judgesAt = bandsAt + recencyBandNames.length;
   const usersAt = judgesAt + columns.judges.length;
   return { version: calibrationVersion, bias: round(weights[0]!), regexScore: round(weights[1]!),
     regexScoreSquared: round(weights[2]!), lexicalCosine: round(weights[3]!),
     lexicalCosineSquared: round(weights[4]!),
     titleSimilarity: round(weights[5]!), skillCoverage: round(weights[6]!),
-    sources: Object.fromEntries(columns.sources.map((source, index) => [source, round(weights[7 + index]!)])),
+    seniorityGap: round(weights[7]!),
+    sources: Object.fromEntries(columns.sources.map((source, index) =>
+      [source, round(weights[denseFeatureCount + index]!)])),
     ageBands: Object.fromEntries(recencyBandNames.map((band, index) =>
       [band, round(weights[bandsAt + index]!)])),
     judges: Object.fromEntries(columns.judges.map((judge, index) => [judge, round(weights[judgesAt + index]!)])),
