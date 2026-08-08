@@ -51,9 +51,9 @@ function syntheticExamples(): CalibrationExample[] {
   return examples;
 }
 
-test('the fit learns real structure and its out-of-fold metrics beat a random ordering', () => {
+test('the fit learns real structure and its out-of-fold metrics beat a random ordering', async () => {
   const examples = syntheticExamples();
-  const fit = fitPrefilterCalibration(examples);
+  const fit = await fitPrefilterCalibration(examples);
   assert.ok(fit.candidate.auc > 0.7, `expected discriminative fit, auc=${fit.candidate.auc}`);
   assert.ok(fit.calibration.sources.rich! > fit.calibration.sources.poor!,
     'the richer source must earn the larger intercept');
@@ -64,9 +64,10 @@ test('the fit learns real structure and its out-of-fold metrics beat a random or
   assert.ok(incumbent.auc > coinFlip.auc + 0.1, 'the model must clearly beat an arbitrary ordering');
 });
 
-test('the fit is deterministic for identical inputs', () => {
+test('the fit is deterministic for identical inputs', async () => {
   const examples = syntheticExamples();
-  assert.deepEqual(fitPrefilterCalibration(examples).calibration, fitPrefilterCalibration(examples).calibration);
+  assert.deepEqual((await fitPrefilterCalibration(examples)).calibration,
+    (await fitPrefilterCalibration(examples)).calibration);
 });
 
 test('malformed calibration JSON fails loudly at parse time', () => {

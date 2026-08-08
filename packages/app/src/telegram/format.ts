@@ -9,8 +9,9 @@ import { engineLoopStatus } from '@jobseeker/engine';
 import { messages, type Locale } from '../i18n/index.ts';
 
 
+// The double quote matters as much as the brackets: escaped output is also placed inside href="…" attributes.
 export function escapeHtml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
 export function sourceLabel(source: string, locale: Locale): string {
   const labels = messages(locale).sources;

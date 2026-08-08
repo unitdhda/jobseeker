@@ -81,7 +81,7 @@ async function refitCalibration(now: Date): Promise<void> {
     ageBand: vacancyRecency({ publishedAt: row.publishedAt }, Date.parse(row.scoreUpdatedAt), 3_650).band,
     label: row.llmScore >= config.digestMinScore,
   }));
-  const fit = fitPrefilterCalibration(examples);
+  const fit = await fitPrefilterCalibration(examples);
   const incumbent = activeCalibration()
     ? evaluateCalibration(activeCalibration()!, examples)
     : evaluateScores(rows.map((row) => row.storedLexicalScore), examples);

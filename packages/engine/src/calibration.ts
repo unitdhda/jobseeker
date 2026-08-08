@@ -88,15 +88,21 @@ export interface CalibrationFit {
 }
 
 function evaluateOrdering(scored: { score: number; label: boolean }[]): CalibrationEvaluation {
-  const positives = scored.filter((entry) => entry.label);
-  const negatives = scored.filter((entry) => !entry.label);
-  let wins = 0;
-  for (const positive of positives) {
-    for (const negative of negatives) {
-      wins += positive.score > negative.score ? 1 : positive.score === negative.score ? 0.5 : 0;
-    }
+  // Mann-Whitney AUC via average ranks: identical to counting every positive/negative pair with ties at half,
+  // but O(n log n) instead of O(positives × negatives), so a full-size labelled corpus evaluates in milliseconds.
+  const positives = scored.reduce((count, entry) => count + (entry.label ? 1 : 0), 0);
+  const negatives = scored.length - positives;
+  const ascending = [...scored].sort((left, right) => left.score - right.score);
+  let positiveRankSum = 0;
+  for (let start = 0; start < ascending.length;) {
+    let end = start;
+    while (end + 1 < ascending.length && ascending[end + 1]!.score === ascending[start]!.score) end++;
+    const averageRank = (start + end) / 2 + 1;
+    for (let index = start; index <= end; index++) if (ascending[index]!.label) positiveRankSum += averageRank;
+    start = end + 1;
   }
-  const auc = positives.length && negatives.length ? wins / (positives.length * negatives.length) : Number.NaN;
+  const auc = positives && negatives
+    ? (positiveRankSum - (positives * (positives + 1)) / 2) / (positives * negatives) : Number.NaN;
   const k = Math.max(1, Math.round(scored.length / 5));
   const top = [...scored].sort((left, right) => right.score - left.score).slice(0, k);
   return { auc, precisionAtTop20: top.filter((entry) => entry.label).length / k };
@@ -127,11 +133,18 @@ function featureVector(example: CalibrationFeatures, sources: readonly string[])
     ...recencyBandNames.map((band) => (band === example.ageBand ? 1 : 0))];
 }
 
-function descend(examples: readonly CalibrationExample[], sources: readonly string[]): number[] {
+// The fitter shares its process with the Telegram receiver and the health endpoints, so a long descent must not
+// hold the event loop; it hands control back whenever it has computed for about this long.
+const descentYieldBudgetMs = 8;
+const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
+
+async function descend(examples: readonly CalibrationExample[],
+  sources: readonly string[]): Promise<number[]> {
   const width = 5 + sources.length + recencyBandNames.length;
   const weights = new Array<number>(width).fill(0);
   const learningRate = 0.5; const l2 = 1e-3; const iterations = 4000;
   const vectors = examples.map((example) => featureVector(example, sources));
+  let lastYield = performance.now();
   for (let iteration = 0; iteration < iterations; iteration++) {
     const gradient = new Array<number>(width).fill(0);
     for (const [row, vector] of vectors.entries()) {
@@ -141,6 +154,10 @@ function descend(examples: readonly CalibrationExample[], sources: readonly stri
     }
     for (let index = 0; index < width; index++) {
       weights[index]! -= learningRate * (gradient[index]! / examples.length + (index === 0 ? 0 : l2 * weights[index]!));
+    }
+    if (performance.now() - lastYield >= descentYieldBudgetMs) {
+      await yieldToEventLoop();
+      lastYield = performance.now();
     }
   }
   return weights;
@@ -156,15 +173,22 @@ function toCalibration(weights: readonly number[], sources: readonly string[]): 
       [band, round(weights[5 + sources.length + index]!)])) };
 }
 
-/**
- * Fits a fresh calibration by full-batch logistic regression and reports pooled k-fold out-of-fold metrics for
- * it. Deterministic for a given example order, so two processes fitting the same rows agree byte for byte.
- */
-export function fitPrefilterCalibration(examples: readonly CalibrationExample[], folds = 5): CalibrationFit {
+/** Sources earn an intercept only where the sample supports one — decided from the rows being fitted. */
+function eligibleSources(examples: readonly CalibrationExample[]): string[] {
   const counts = new Map<string, number>();
   for (const example of examples) counts.set(example.source, (counts.get(example.source) ?? 0) + 1);
-  const sources = [...counts.entries()].filter(([, count]) => count >= minimumSourceExamples)
+  return [...counts.entries()].filter(([, count]) => count >= minimumSourceExamples)
     .map(([source]) => source).sort();
+}
+
+/**
+ * Fits a fresh calibration by full-batch logistic regression and reports pooled k-fold out-of-fold metrics for
+ * it. Each fold selects its source columns from its own training rows, so the out-of-fold metrics never see a
+ * column chosen with the validation fold's help. Deterministic for a given example order, so two processes
+ * fitting the same rows agree byte for byte; asynchronous only to keep the event loop responsive while fitting.
+ */
+export async function fitPrefilterCalibration(examples: readonly CalibrationExample[],
+  folds = 5): Promise<CalibrationFit> {
   let seed = 42;
   const random = (): number => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
   const assignments = examples.map(() => Math.floor(random() * folds));
@@ -173,12 +197,14 @@ export function fitPrefilterCalibration(examples: readonly CalibrationExample[],
     const training = examples.filter((_, index) => assignments[index] !== fold);
     const validation = examples.filter((_, index) => assignments[index] === fold);
     if (!training.length || !validation.length) continue;
-    const model = toCalibration(descend(training, sources), sources);
+    const foldSources = eligibleSources(training);
+    const model = toCalibration(await descend(training, foldSources), foldSources);
     pooled.push(...validation.map((example) => ({
       score: calibratedMatchProbability(model, example), label: example.label })));
   }
+  const sources = eligibleSources(examples);
   return {
-    calibration: toCalibration(descend(examples, sources), sources),
+    calibration: toCalibration(await descend(examples, sources), sources),
     candidate: evaluateOrdering(pooled),
     examples: examples.length,
     positives: examples.filter((example) => example.label).length,

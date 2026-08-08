@@ -354,9 +354,11 @@ export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; 
       for (let attempt=0;attempt<20&&(await txq(client,'select 1 from vacancies where apply_id=$1',[applyId])).length;attempt++) applyId=newApplyId();
       if ((await txq(client,'select 1 from vacancies where apply_id=$1',[applyId])).length) throw new Error('Could not allocate a unique vacancy apply ID.');
       if (id != null) {
+        // A refresh can only make an advert older: adapters fall back to the crawl time when the source hides
+        // the date, and that fallback must never rejuvenate a stored publication date.
         await client.query(`update vacancies set apply_id=$1,name=$2,employer=$3,area=$4,salary_from=$5,salary_to=$6,salary_currency=$7,
           salary_gross=$8,experience=$9,employment=$10,schedule=$11,work_format=$12,description=$13,key_skills_json=$14::jsonb,url=$15,
-          published_at=$16,source_query=$17,content_hash=$18,updated_at=$19,canonical_fingerprint=$20,lifecycle_status='normalized',
+          published_at=least(published_at,$16::timestamptz),source_query=$17,content_hash=$18,updated_at=$19,canonical_fingerprint=$20,lifecycle_status='normalized',
           normalized_vacancy_id=$21 where id=$21`,[applyId,...values,fingerprint,id]);
         return { id, needsScore: true, duplicate: false };
       }
@@ -369,7 +371,8 @@ export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; 
     }
     const normalizedId=Number(existing.id), changed=String(existing.content_hash)!==v.contentHash;
     await client.query(`update vacancies set name=$1,employer=$2,area=$3,salary_from=$4,salary_to=$5,salary_currency=$6,salary_gross=$7,
-      experience=$8,employment=$9,schedule=$10,work_format=$11,description=$12,key_skills_json=$13::jsonb,url=$14,published_at=$15,source_query=$16,
+      experience=$8,employment=$9,schedule=$10,work_format=$11,description=$12,key_skills_json=$13::jsonb,url=$14,
+      published_at=least(published_at,$15::timestamptz),source_query=$16,
       content_hash=$17,updated_at=$18,lifecycle_status='normalized',normalized_vacancy_id=$19 where id=$19`,[...values,normalizedId]);
     // Changed content invalidates undelivered scores; delivered matches keep their memory — the wall holds.
     if (changed) await client.query(`update matches set state='matched',llm_score=null,score_updated_at=null,
@@ -583,7 +586,9 @@ const addressableDigest=`(${currentDigest} or (m.state='scored' and m.llm_score>
  */
 export async function scoredVacanciesByApplyIdPrefix(userId:string,prefix:string):Promise<ScoredVacancy[]>{
   await ready();return(await q(`${scoredSelect} where m.user_id=$1 and v.apply_id like $2
-  order by m.llm_score desc,v.published_at desc limit 2`,[userId,`${prefix}%`])).map(rowToScoredVacancy);}
+  order by m.llm_score desc,v.published_at desc limit 2`,
+  // apply_id is constrained to [a-z]{6}, so escaping the LIKE wildcards is defensive against future callers.
+  [userId,`${prefix.replace(/[\\%_]/g,'\\$&')}%`])).map(rowToScoredVacancy);}
 export async function digestVacancies(userId:string,min:number,high:number,since:string|null,until:string):Promise<ScoredVacancy[]>{await ready();return(await q(`${scoredSelect}
   where m.user_id=$1 and m.llm_score>=$2 and m.llm_score<$3 and m.state='scored' and m.score_updated_at is not null
   and ($4::timestamptz is null or m.score_updated_at>$4::timestamptz) and m.score_updated_at<=$5::timestamptz

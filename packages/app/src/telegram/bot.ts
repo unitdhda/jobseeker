@@ -236,15 +236,25 @@ function configureTelegramBot(): Bot<BotContext> | null {
   instance.use(async (ctx, next) => {
     const currentIdentity = identity(ctx);
     if (!currentIdentity) return;
-    const user = await touchTelegramUser(currentIdentity);
-    // Resolved once per update from the row just written, so every handler below speaks one settled language.
-    ctx.locale = normalizeLocale(user.locale) ?? defaultLocale;
-    ctx.t = messages(ctx.locale);
     const command = ctx.message?.text?.match(/^\/(\w+)/)?.[1]?.toLowerCase();
     // Choosing a language is not a privilege: someone still waiting for access should be able to read the bot,
     // by command or by the picker's own buttons.
     const alwaysAllowed = command === 'start' || command === 'request' || command === 'language'
       || Boolean(ctx.callbackQuery?.data?.startsWith('language:'));
+    // A stranger earns a database row only through the commands open to everyone; arbitrary messages from
+    // unknown accounts are answered from the client language and leave no state behind, so a flood of them
+    // cannot grow the users table.
+    const known = await getTelegramUser(currentIdentity.userId);
+    const user = known || alwaysAllowed ? await touchTelegramUser(currentIdentity) : null;
+    if (!user) {
+      ctx.locale = normalizeLocale(currentIdentity.languageCode) ?? defaultLocale;
+      ctx.t = messages(ctx.locale);
+      await ctx.reply(ctx.t.access.denied(userStatusText('unregistered', ctx.locale)));
+      return;
+    }
+    // Resolved once per update from the row just written, so every handler below speaks one settled language.
+    ctx.locale = normalizeLocale(user.locale) ?? defaultLocale;
+    ctx.t = messages(ctx.locale);
     if (user.status === 'approved' || user.isOwner || alwaysAllowed) await next();
     else await ctx.reply(ctx.t.access.denied(userStatusText(user.status, ctx.locale)));
   });

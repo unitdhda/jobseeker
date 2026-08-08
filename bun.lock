@@ -15,7 +15,7 @@
     },
     "packages/app": {
       "name": "@unitdhda/jobseeker",
-      "version": "0.1.0",
+      "version": "0.1.2",
       "bin": {
         "jobseeker": "bin/jobseeker.mjs",
       },
@@ -24,7 +24,7 @@
         "@hono/node-server": "^2.0.12",
         "@myriaddreamin/typst-ts-node-compiler": "0.7.0",
         "grammy": "1.45.1",
-        "hono": "4.12.32",
+        "hono": "4.12.34",
         "ipaddr.js": "2.5.0",
         "mammoth": "1.12.0",
         "node-html-parser": "9.0.1",
@@ -458,7 +458,7 @@
 
     "grammy": ["grammy@1.45.1", "", { "dependencies": { "@grammyjs/types": "4.0.0", "abort-controller": "^3.0.0", "debug": "^4.4.3", "node-fetch": "^2.7.0" } }, "sha512-Y4VL/hqJMZZxwlUr5ZgM68CFu2iIeEkNLR1cY3+Ww68CIvWARDsoXFix7+31rmyC0+7L85ZI+Pq3E5JSG5+nLQ=="],
 
-    "hono": ["hono@4.12.32", "", {}, "sha512-XcuyW9qE2kJn07PkecMOBd5Vq/hMy7mmGw+idz1yblbg9N17ijJODrvPkn7/dwL3Kulj8LcRJ69DLOWf91dRUg=="],
+    "hono": ["hono@4.12.34", "", {}, "sha512-GqXJqY/xJkJmuloTrnV1ZEXG3fqte+VjkUqoRNZXcrUidiUOP4fMSIHHY4tsqZBK++kVyWmt/AAfSUuy57/eSA=="],
 
     "http-proxy-agent": ["http-proxy-agent@7.0.2", "", { "dependencies": { "agent-base": "^7.1.0", "debug": "^4.3.4" } }, "sha512-T1gkAiYYDWYx3V5Bmyu7HcfcvL7mUrTWiM6yOfa3PIphViJ/gFPbvidQ+veqSOHci/PxBcDabeUNCzpOODJZig=="],
 

@@ -4,8 +4,9 @@
  * credential owns its provider; pi-ai consults provider env variables (OPENAI_API_KEY and friends) only when
  * nothing is stored, so the operator chooses env or auth.json per provider without any code knowing which.
  *
- * OAuth refresh runs inside `modify`, so writes are serialized per provider in-process (promise chain) and
- * cross-process (Postgres advisory lock) — two replicas can never double-refresh a rotated token.
+ * OAuth refresh runs inside `modify`. The store is one document read and rewritten whole, so every write
+ * serializes on one in-process chain and one cross-process Postgres advisory lock: provider-scoped locking would
+ * let two providers' concurrent read-modify-write cycles silently drop each other's credentials.
  */
 import { chmod, mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
@@ -55,11 +56,13 @@ async function writeDocument(document: Record<string, Credential>): Promise<void
   await rename(temporary, path);
 }
 
+const documentLockKey = 'jobseeker-ai-auth';
+
 export function createCredentialStore(): CredentialStore {
-  const chains = new Map<string, Promise<unknown>>();
-  const enqueue = <T>(providerId: string, task: () => Promise<T>): Promise<T> => {
-    const next = (chains.get(providerId) ?? Promise.resolve()).then(task, task);
-    chains.set(providerId, next.catch(() => undefined));
+  let chain: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
+    const next = chain.then(task, task);
+    chain = next.catch(() => undefined);
     return next;
   };
   return {
@@ -71,7 +74,7 @@ export function createCredentialStore(): CredentialStore {
         ({ providerId, type: credential.type }));
     },
     modify(providerId, fn): Promise<Credential | undefined> {
-      return enqueue(providerId, () => withPostgresAdvisoryLock(`jobseeker-ai-auth:${providerId}`, async () => {
+      return enqueue(() => withPostgresAdvisoryLock(documentLockKey, async () => {
         const document = await readDocument();
         const updated = await fn(document[providerId]);
         if (updated === undefined) return document[providerId];
@@ -81,7 +84,7 @@ export function createCredentialStore(): CredentialStore {
       }));
     },
     async delete(providerId: string): Promise<void> {
-      await enqueue(providerId, () => withPostgresAdvisoryLock(`jobseeker-ai-auth:${providerId}`, async () => {
+      await enqueue(() => withPostgresAdvisoryLock(documentLockKey, async () => {
         const document = await readDocument();
         if (providerId in document) { delete document[providerId]; await writeDocument(document); }
         return undefined;

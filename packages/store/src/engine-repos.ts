@@ -110,9 +110,13 @@ export async function transitionMatch(userId: string, vacancyId: number, from: M
 }
 
 export async function claimForScoring(userId: string, limit: number): Promise<number[]> {
+  // A row whose updated_at outruns matched_at came back from a failed scoring batch (or a content reset); it
+  // sits out a cooldown before the next claim, so a batch that fails persistently cannot monopolize the head of
+  // the best-first queue — everything below it gets scored while it waits.
   const rows = await q(`update matches set state = 'queued', updated_at = now()
     where (user_id, vacancy_id) in (
       select user_id, vacancy_id from matches where user_id = $1 and state = 'matched'
+        and (updated_at <= matched_at or updated_at < now() - interval '6 hours')
       order by lexical_score desc nulls last, matched_at desc limit $2 for update skip locked)
     returning vacancy_id`, [userId, limit]);
   return rows.map((row) => Number(row.vacancy_id));

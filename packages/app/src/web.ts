@@ -1,5 +1,6 @@
 // The store composition must run before any module touches a repository.
 import './postgres.ts';
+import { timingSafeEqual } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
 import { config } from './config.ts';
@@ -20,7 +21,9 @@ app.post('/telegram/webhook',async c=>{
   if(!secret||!/^[-A-Za-z0-9_]{32,256}$/.test(secret)){
     console.error('TELEGRAM_WEBHOOK_SECRET must contain 32-256 URL-safe characters.');return c.json({ok:false},503);
   }
-  if(c.req.header('X-Telegram-Bot-Api-Secret-Token')!==secret)return c.json({ok:false},401);
+  const provided=Buffer.from(c.req.header('X-Telegram-Bot-Api-Secret-Token')??'');
+  const expected=Buffer.from(secret);
+  if(provided.length!==expected.length||!timingSafeEqual(provided,expected))return c.json({ok:false},401);
   let update:unknown;try{update=await c.req.json();}catch{return c.json({ok:false},400);}
   const updateId=Number((update as {update_id?:unknown})?.update_id);
   if(!Number.isSafeInteger(updateId)||updateId<0)return c.json({ok:false},400);
