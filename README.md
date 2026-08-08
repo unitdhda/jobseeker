@@ -32,7 +32,8 @@ Jobseeker is not another job-board interface. It is a continuously running searc
 
 1. **Understands the CV** — extracts reusable structured content and generates role-specific search demand.
 2. **Monitors job boards** — runs shared, adaptive searches and stores each listing once.
-3. **Filters before spending** — rejects weak lexical matches before invoking an LLM.
+3. **Filters before spending** — rejects weak lexical matches before invoking an LLM, and re-learns that filter from
+   its own past scoring so the budget keeps going to the vacancies most likely to be worth it.
 4. **Scores fit** — evaluates skills, seniority, responsibilities, location, work format, and explicit blockers.
 5. **Delivers decisions** — sends high-scoring alerts immediately and collects review-worthy roles into digests.
 6. **Helps apply** — prepares a tailored CV or cover letter only when requested.
@@ -92,6 +93,7 @@ language instead, so an application is never written in the wrong one.
 |---|---|
 | **Continuous discovery** | CV-derived searches run on adaptive schedules instead of relying on manual browsing. |
 | **Fit before AI spend** | Cheap lexical matching keeps obviously weak vacancies out of the expensive scoring queue. |
+| **A filter that improves** | The ordering that spends your model budget is re-fitted daily from the service's own past verdicts, and replaced only when it measurably ranks better. |
 | **Shared discovery** | A listing found for one user can be evaluated for others without fetching it again. |
 | **No duplicate delivery** | PostgreSQL state transitions prevent an alerted, digested, skipped, or applied match from resurfacing. |
 | **Application artifacts** | Tailored CVs and letters are generated independently and can be resent instantly. |
@@ -230,6 +232,9 @@ PostgreSQL database, Telegram token, and model credentials.
   Telegram's own platform behavior and policies.
 - Extracted CV text and structure are stored so searches and applications can be regenerated.
 - CV and vacancy text is sent to the configured model provider for profile generation, scoring, and tailoring.
+- Users of one deployment share **search wordings** — never names, contacts, or CV text. Equivalent demand becomes
+  one search so it is fetched once, and an existing wording may be suggested, unattributed, while another user's
+  search profile is generated. Matching and scoring stay private to each user.
 - Cover-letter text and Telegram's file identifier for a delivered PDF may be stored for instant resending; the PDF
   bytes themselves are not stored in PostgreSQL.
 - `/export_me` exports retained personal data.

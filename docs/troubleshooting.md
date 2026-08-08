@@ -75,6 +75,20 @@ Check:
 The daily budget accrues through the UTC day. A user can be temporarily at the paced ceiling without exhausting the
 full daily limit.
 
+**Everything still scores, but the wrong things reach the top.** The order matches are scored in is re-fitted daily
+from past verdicts, so it can change without you touching anything. Check the `Calibration refit` log lines for a
+recent `accepted`, and see [operations](operations.md#watching-the-self-calibrating-prefilter) for how to freeze or
+undo it. Judge it over days rather than one digest — a fit is only adopted when it measures better, but "better on
+average" and "better for the vacancy in front of you" are not the same claim.
+
+**A specific match that will not score, while others around it do.** A batch that fails hands its matches back to
+`matched` so they can be retried — but a match that keeps failing would otherwise sit at the head of a best-first
+queue and be reclaimed on every pass, blocking everything behind it. A returned match therefore waits a few hours
+before it can be claimed again. Nothing is stuck: the rest of the queue is being scored meanwhile, and the match
+returns on its own. The same wait applies after a vacancy's content changes and invalidates an existing score, so a
+rescore is not immediate either. Look for repeated `Scoring batch failure` lines naming the same vacancy id before
+concluding the vacancy itself is the problem.
+
 ### 5. Scores but no Telegram delivery
 
 Check:

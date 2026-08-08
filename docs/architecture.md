@@ -174,6 +174,38 @@ from exhausting the evening budget.
 `accounts` holds budget counters. `usage_events` holds individual operations and LLM token/cost accounting. OAuth and
 subscription prices are catalog estimates unless the provider reports authoritative request cost.
 
+## The prefilter calibrates itself
+
+The budget above is spent best-first, so the order matters as much as the ceiling: whatever the prefilter ranks
+highest is what the LLM looks at before the day's allowance runs out. Measured against the LLM's own later verdicts,
+the raw lexical score is a weak and non-monotonic predictor of that judgement — bands that *look* stronger do not
+reliably score better. Ordering by it wastes budget in a confident-looking way.
+
+So the service learns the ordering from its own history. Every match records the evidence behind it — the role/skill
+score and the lexical cosine, frozen at match time — and every LLM score that later arrives is the label for that
+evidence. Those pairs are free, accumulate on their own, and describe this deployment's actual occupations rather
+than a generic assumption.
+
+Once a day the judgment lane fits a logistic model over them and scores it by cross-validation, with each fold
+judged by a model that never trained on it. The candidate replaces the running one **only if it orders at least as
+well**, on both ranking quality and precision at the top of the queue. Otherwise it is recorded and discarded. Either
+way the attempt lands in `calibrations`, so the history of what was tried and what won is inspectable rather than
+implied.
+
+Two consequences worth understanding before tuning anything:
+
+- **A calibration can only learn from matches it admits.** Everything rejected is a verdict never observed, so the
+  model cannot discover that its own bar is set wrong. `PREFILTER_EXPLORATION_RATE` deliberately scores a small
+  random share of rejected matches to buy exactly those labels. It costs model spend in proportion, and it is the
+  only mechanism that keeps a blind spot from becoming permanent.
+- **The fit runs inside the service.** It yields to the event loop while working, so Telegram and the health
+  endpoints stay responsive while it runs.
+
+Rolling back is deliberately dull: turn `CALIBRATION_AUTO_REFIT` off to freeze the current ordering, or mark the
+active row in `calibrations` as not accepted and the service falls back to the previous accepted one. Coefficients
+are not meant to be hand-written; `PREFILTER_CALIBRATION_JSON` only bootstraps a deployment that has no verdicts of
+its own yet.
+
 ## Telegram delivery
 
 Telegram is split into layers:

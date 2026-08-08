@@ -96,12 +96,8 @@ docker compose --env-file .env up -d --build jobseeker
 reaches the running process immediately: apply only what the current revision tolerates, or stop the service first.
 There is no migration series and no down-migration — recover by shipping a forward-compatible revision.
 
-The current revision records each user's interface language. Apply this before deploying the code that reads it;
-older code ignores the column, so it is safe to apply while the service runs:
-
-```sql
-alter table public.users add column if not exists locale text;
-```
+The current revision needs no schema change. When one is required, this section carries the statement to apply
+first; a column that older code simply ignores is safe to add while the service is running.
 
 ## Rolling back
 
@@ -119,8 +115,34 @@ docker stats --no-stream
 Judge staleness against the database clock, not your own: compare `select now()` with each unit's `next_run_at`
 before concluding that discovery has stopped. A quiet hour is often just cadence.
 
+The probe above assumes the image's own runtime — use `node -e` instead of `bun -e` if yours is Node-based.
+
 Symptom-by-symptom diagnosis — no vacancies, no scores, duplicate alerts, failing documents, OAuth trouble — is in
 [troubleshooting](troubleshooting.md).
+
+## Watching the self-calibrating prefilter
+
+The service re-fits the ordering it feeds the LLM once a day and adopts the result only when it measures no worse
+(see [architecture](architecture.md#the-prefilter-calibrates-itself)). It announces every attempt, so a line per day
+in the log tells you whether anything changed:
+
+```bash
+docker compose logs --since 48h jobseeker | grep 'Calibration refit'
+```
+
+`accepted` means the new ordering took over; `rejected` means the running one held and nothing changed. Both are
+normal — a long run of `rejected` means the current ordering is holding up, not that the mechanism is broken. Every
+attempt is also a row in `calibrations` with its metrics, which is the durable record.
+
+Two controls, both blunt on purpose:
+
+- To freeze the ordering exactly as it is, set `CALIBRATION_AUTO_REFIT=false` and restart.
+- To undo a fit that made things worse, mark the active row in `calibrations` as not accepted; the service falls
+  back to the previous accepted one on restart.
+
+Do not hand-edit coefficients. If you want the ordering to improve rather than merely hold, the lever is
+`PREFILTER_EXPLORATION_RATE`: it buys verdicts from below the current bar, which is the only evidence that can tell
+the model its bar is wrong. It costs model spend in proportion, so raise it deliberately.
 
 ## Backups
 
