@@ -15,16 +15,25 @@
  * Version 2 added titleSimilarity and skillCoverage: `regexScore` folds those two together, and a fit cannot
  * separate signals it never sees. A version 1 document stays valid and carries no coefficient for them, which
  * contributes nothing — so an old accepted calibration keeps serving unchanged until a refit replaces it.
+ *
+ * Version 3 added `judges` and `users`, which are **fitted but never served**. Neither is knowable when a match
+ * is scored — the judge has not run yet, and the user is constant across everything in their own queue — so
+ * neither can change the ordering the prefilter exists to produce. They are nuisance parameters: they exist so
+ * that a strict judge or a demanding user is charged to their own intercept instead of contaminating the
+ * evidence coefficients. Production had at least four scoring routes live in one week with the positive rate
+ * swinging between 22% and 60%, which is exactly the contamination this absorbs. They are written into the
+ * document for the audit trail; `calibratedMatchProbability` ignores them, and the types keep them off the
+ * serving path.
  */
 import * as v from 'valibot';
 import type { RecencyBand } from './prefilter.ts';
 
 const coefficient = v.pipe(v.number(), v.finite());
 
-export const calibrationVersion = 2;
+export const calibrationVersion = 3;
 
 export const prefilterCalibrationSchema = v.strictObject({
-  version: v.union([v.literal(1), v.literal(2)]),
+  version: v.union([v.literal(1), v.literal(2), v.literal(3)]),
   bias: coefficient,
   regexScore: coefficient,
   regexScoreSquared: v.optional(coefficient, 0),
@@ -35,6 +44,9 @@ export const prefilterCalibrationSchema = v.strictObject({
   skillCoverage: v.optional(coefficient, 0),
   sources: v.record(v.string(), coefficient),
   ageBands: v.record(v.string(), coefficient),
+  /** Fitting-only intercepts, absent before version 3. Recorded for audit; never read when serving. */
+  judges: v.optional(v.record(v.string(), coefficient), {}),
+  users: v.optional(v.record(v.string(), coefficient), {}),
 });
 
 export type PrefilterCalibration = v.InferOutput<typeof prefilterCalibrationSchema>;
@@ -88,6 +100,19 @@ function logit(calibration: PrefilterCalibration, features: CalibrationFeatures)
 /** A labelled example: the evidence recorded at match time plus the LLM's later verdict. */
 export interface CalibrationExample extends CalibrationFeatures { label: boolean }
 
+/**
+ * What a fit consumes. The extra fields exist only here, never in `CalibrationFeatures`, because they cannot be
+ * known or used at serving time — see the note on version 3 above.
+ */
+export interface TrainingExample extends CalibrationExample {
+  /** When the verdict landed, in epoch milliseconds. The holdout is the newest tail of these. */
+  scoredAt: number;
+  /** The model that produced the verdict, if it was recorded. */
+  judge?: string;
+  /** Whose verdict it is. */
+  user?: string;
+}
+
 export interface CalibrationEvaluation {
   auc: number;
   /** Precision in the best-ranked fifth — the fraction of top-of-queue claims the LLM would endorse. */
@@ -95,11 +120,22 @@ export interface CalibrationEvaluation {
 }
 
 export interface CalibrationFit {
+  /** Fitted on every example. This is the document that ships. */
   calibration: PrefilterCalibration;
-  /** Pooled out-of-fold metrics: every example judged by a model that never trained on it. */
+  /**
+   * The training-only model measured on the held-out tail. It is not literally the document above — what is
+   * being validated is the fitting procedure, on rows it could not have seen, which is the only question a
+   * daily refit can honestly ask.
+   */
   candidate: CalibrationEvaluation;
+  /** Indices into the caller's array, newest tail, so an incumbent can be judged on identical rows. */
+  holdoutIndices: readonly number[];
+  /** The training-only model's serving score per holdout row, in `holdoutIndices` order. */
+  holdoutScores: readonly number[];
   examples: number;
   positives: number;
+  /** False when the holdout is too small or single-class for any comparison to mean anything. */
+  judgeable: boolean;
 }
 
 function evaluateOrdering(scored: { score: number; label: boolean }[]): CalibrationEvaluation {
@@ -140,13 +176,18 @@ export function evaluateScores(scores: readonly number[],
 const recencyBandNames = ['week', 'fortnight', 'month', 'stale'] as const; // 'today' is the reference class.
 const minimumSourceExamples = 30;
 
-function featureVector(example: CalibrationFeatures, sources: readonly string[]): number[] {
+/** The dummy-coded columns a fit uses beyond the evidence: served (sources) and fitting-only (judges, users). */
+interface DummyColumns { sources: readonly string[]; judges: readonly string[]; users: readonly string[] }
+
+function featureVector(example: TrainingExample, columns: DummyColumns): number[] {
   const regex01 = clamp01(example.regexScore / 100);
   const cosine01 = clamp01(example.lexicalCosine * 3);
   return [1, regex01, regex01 * regex01, cosine01, cosine01 * cosine01,
     clamp01(example.titleSimilarity ?? 0), clamp01(example.skillCoverage ?? 0),
-    ...sources.map((source) => (source === example.source ? 1 : 0)),
-    ...recencyBandNames.map((band) => (band === example.ageBand ? 1 : 0))];
+    ...columns.sources.map((source) => (source === example.source ? 1 : 0)),
+    ...recencyBandNames.map((band) => (band === example.ageBand ? 1 : 0)),
+    ...columns.judges.map((judge) => (judge === example.judge ? 1 : 0)),
+    ...columns.users.map((user) => (user === example.user ? 1 : 0))];
 }
 
 // The fitter shares its process with the Telegram receiver and the health endpoints, so a long descent must not
@@ -154,12 +195,13 @@ function featureVector(example: CalibrationFeatures, sources: readonly string[])
 const descentYieldBudgetMs = 8;
 const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmediate(resolve));
 
-async function descend(examples: readonly CalibrationExample[],
-  sources: readonly string[]): Promise<number[]> {
-  const width = 7 + sources.length + recencyBandNames.length;
+async function descend(examples: readonly TrainingExample[],
+  columns: DummyColumns): Promise<number[]> {
+  const width = 7 + columns.sources.length + recencyBandNames.length
+    + columns.judges.length + columns.users.length;
   const weights = new Array<number>(width).fill(0);
   const learningRate = 0.5; const l2 = 1e-3; const iterations = 4000;
-  const vectors = examples.map((example) => featureVector(example, sources));
+  const vectors = examples.map((example) => featureVector(example, columns));
   let lastYield = performance.now();
   for (let iteration = 0; iteration < iterations; iteration++) {
     const gradient = new Array<number>(width).fill(0);
@@ -179,51 +221,155 @@ async function descend(examples: readonly CalibrationExample[],
   return weights;
 }
 
-function toCalibration(weights: readonly number[], sources: readonly string[]): PrefilterCalibration {
+function toCalibration(weights: readonly number[], columns: DummyColumns): PrefilterCalibration {
   const round = (value: number): number => Number(value.toFixed(4));
+  const bandsAt = 7 + columns.sources.length;
+  const judgesAt = bandsAt + recencyBandNames.length;
+  const usersAt = judgesAt + columns.judges.length;
   return { version: calibrationVersion, bias: round(weights[0]!), regexScore: round(weights[1]!),
     regexScoreSquared: round(weights[2]!), lexicalCosine: round(weights[3]!),
     lexicalCosineSquared: round(weights[4]!),
     titleSimilarity: round(weights[5]!), skillCoverage: round(weights[6]!),
-    sources: Object.fromEntries(sources.map((source, index) => [source, round(weights[7 + index]!)])),
+    sources: Object.fromEntries(columns.sources.map((source, index) => [source, round(weights[7 + index]!)])),
     ageBands: Object.fromEntries(recencyBandNames.map((band, index) =>
-      [band, round(weights[7 + sources.length + index]!)])) };
+      [band, round(weights[bandsAt + index]!)])),
+    judges: Object.fromEntries(columns.judges.map((judge, index) => [judge, round(weights[judgesAt + index]!)])),
+    users: Object.fromEntries(columns.users.map((user, index) => [user, round(weights[usersAt + index]!)])) };
 }
 
-/** Sources earn an intercept only where the sample supports one — decided from the rows being fitted. */
-function eligibleSources(examples: readonly CalibrationExample[]): string[] {
+/** A class earns an intercept only where the sample supports one — decided from the rows being fitted. */
+function eligible(examples: readonly TrainingExample[],
+  key: (example: TrainingExample) => string | undefined): string[] {
   const counts = new Map<string, number>();
-  for (const example of examples) counts.set(example.source, (counts.get(example.source) ?? 0) + 1);
+  for (const example of examples) {
+    const value = key(example);
+    if (value) counts.set(value, (counts.get(value) ?? 0) + 1);
+  }
   return [...counts.entries()].filter(([, count]) => count >= minimumSourceExamples)
-    .map(([source]) => source).sort();
+    .map(([value]) => value).sort();
+}
+
+function dummyColumns(examples: readonly TrainingExample[]): DummyColumns {
+  return {
+    sources: eligible(examples, (example) => example.source),
+    judges: eligible(examples, (example) => example.judge),
+    users: eligible(examples, (example) => example.user),
+  };
+}
+
+/** The tail must be big enough, and mixed enough, for a comparison on it to carry any information. */
+const minimumHoldoutRows = 50;
+const minimumHoldoutPerClass = 5;
+
+/**
+ * Fits a fresh calibration by full-batch logistic regression and validates it on the newest rows only.
+ *
+ * The split is by time, not at random. Random k-fold puts rows from the same hours on both sides of the split,
+ * which flatters a model that will only ever be asked about the future: measured that way the live calibration
+ * looked like a clear win over the raw score (0.715 vs 0.642), while on the rows that arrived after it was
+ * fitted the two were indistinguishable (0.909 vs 0.913). A time split asks the question deployment asks.
+ *
+ * The shipped document is fitted on everything, including the holdout — what the metrics validate is the
+ * procedure, not that exact object. Column eligibility inside the validated model is decided from training rows
+ * alone, so no column is chosen with the holdout's help. Deterministic for a given input; asynchronous only to
+ * keep the event loop responsive while fitting.
+ */
+export async function fitPrefilterCalibration(examples: readonly TrainingExample[],
+  options: { holdoutShare?: number } = {}): Promise<CalibrationFit> {
+  const share = Math.max(0.1, Math.min(0.5, options.holdoutShare ?? 0.25));
+  const order = examples.map((_, index) => index)
+    .sort((left, right) => examples[left]!.scoredAt - examples[right]!.scoredAt || left - right);
+  const split = Math.floor(order.length * (1 - share));
+  const trainingIndices = order.slice(0, split);
+  const holdoutIndices = order.slice(split);
+  const holdout = holdoutIndices.map((index) => examples[index]!);
+  const positivesInHoldout = holdout.filter((example) => example.label).length;
+  const judgeable = trainingIndices.length > 0 && holdout.length >= minimumHoldoutRows
+    && positivesInHoldout >= minimumHoldoutPerClass
+    && holdout.length - positivesInHoldout >= minimumHoldoutPerClass;
+
+  let holdoutScores: number[] = [];
+  let candidate: CalibrationEvaluation = { auc: Number.NaN, precisionAtTop20: Number.NaN };
+  if (judgeable) {
+    const training = trainingIndices.map((index) => examples[index]!);
+    const columns = dummyColumns(training);
+    const validated = toCalibration(await descend(training, columns), columns);
+    // Scored through the serving path, so the judge and user intercepts contribute nothing here either.
+    holdoutScores = holdout.map((example) => calibratedMatchProbability(validated, example));
+    candidate = evaluateOrdering(holdout.map((example, index) => ({
+      score: holdoutScores[index]!, label: example.label })));
+  }
+
+  const columns = dummyColumns(examples);
+  return {
+    calibration: toCalibration(await descend(examples, columns), columns),
+    candidate,
+    holdoutIndices,
+    holdoutScores,
+    examples: examples.length,
+    positives: examples.filter((example) => example.label).length,
+    judgeable,
+  };
+}
+
+export interface HoldoutComparison {
+  accepted: boolean;
+  candidate: CalibrationEvaluation;
+  incumbent: CalibrationEvaluation;
+  /** Candidate minus incumbent AUC on the holdout, and the low end of its paired bootstrap interval. */
+  deltaAuc: number;
+  deltaAucLower: number;
+  holdoutExamples: number;
+  reason: string;
 }
 
 /**
- * Fits a fresh calibration by full-batch logistic regression and reports pooled k-fold out-of-fold metrics for
- * it. Each fold selects its source columns from its own training rows, so the out-of-fold metrics never see a
- * column chosen with the validation fold's help. Deterministic for a given example order, so two processes
- * fitting the same rows agree byte for byte; asynchronous only to keep the event loop responsive while fitting.
+ * Decides whether a candidate ordering may replace the incumbent, on rows both are scored against.
+ *
+ * The comparison is paired and bootstrapped because the naive test it replaces — "accept if AUC is no more than
+ * 0.01 worse" — is finer than its own measurement error: an AUC over a few hundred rows moves by ±0.02–0.03
+ * between samples, so that rule cannot distinguish a real regression from resampling noise. Resampling the same
+ * rows for both models cancels the luck of the draw, leaving the difference itself, and a candidate is adopted
+ * only when the low end of that difference's interval is still no worse than the tolerance.
  */
-export async function fitPrefilterCalibration(examples: readonly CalibrationExample[],
-  folds = 5): Promise<CalibrationFit> {
-  let seed = 42;
-  const random = (): number => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
-  const assignments = examples.map(() => Math.floor(random() * folds));
-  const pooled: { score: number; label: boolean }[] = [];
-  for (let fold = 0; fold < folds; fold++) {
-    const training = examples.filter((_, index) => assignments[index] !== fold);
-    const validation = examples.filter((_, index) => assignments[index] === fold);
-    if (!training.length || !validation.length) continue;
-    const foldSources = eligibleSources(training);
-    const model = toCalibration(await descend(training, foldSources), foldSources);
-    pooled.push(...validation.map((example) => ({
-      score: calibratedMatchProbability(model, example), label: example.label })));
-  }
-  const sources = eligibleSources(examples);
-  return {
-    calibration: toCalibration(await descend(examples, sources), sources),
-    candidate: evaluateOrdering(pooled),
-    examples: examples.length,
-    positives: examples.filter((example) => example.label).length,
+export function compareOnHoldout(candidateScores: readonly number[], incumbentScores: readonly number[],
+  labels: readonly boolean[],
+  options: { tolerance?: number; samples?: number; confidence?: number } = {}): HoldoutComparison {
+  const tolerance = options.tolerance ?? 0.01;
+  const samples = options.samples ?? 500;
+  const confidence = options.confidence ?? 0.95;
+  const candidate = evaluateOrdering(candidateScores.map((score, index) => ({ score, label: labels[index]! })));
+  const incumbent = evaluateOrdering(incumbentScores.map((score, index) => ({ score, label: labels[index]! })));
+  const base = {
+    candidate, incumbent, holdoutExamples: labels.length,
+    deltaAuc: candidate.auc - incumbent.auc, deltaAucLower: Number.NaN,
   };
+  if (!Number.isFinite(candidate.auc) || !Number.isFinite(incumbent.auc)) {
+    return { ...base, accepted: false, reason: 'the holdout is single-class, so neither ordering can be scored' };
+  }
+  let seed = 20_260_808;
+  const random = (): number => { seed = (seed * 1103515245 + 12345) % 2 ** 31; return seed / 2 ** 31; };
+  const deltas: number[] = [];
+  for (let sample = 0; sample < samples; sample++) {
+    const picks = Array.from({ length: labels.length }, () => Math.floor(random() * labels.length));
+    const drawn = picks.map((index) => ({ label: labels[index]!, index }));
+    const resampledCandidate = evaluateOrdering(drawn.map((row) => ({
+      score: candidateScores[row.index]!, label: row.label })));
+    const resampledIncumbent = evaluateOrdering(drawn.map((row) => ({
+      score: incumbentScores[row.index]!, label: row.label })));
+    // A resample that lands single-class says nothing about the difference; skip it rather than score it 0.
+    if (Number.isFinite(resampledCandidate.auc) && Number.isFinite(resampledIncumbent.auc)) {
+      deltas.push(resampledCandidate.auc - resampledIncumbent.auc);
+    }
+  }
+  if (!deltas.length) {
+    return { ...base, accepted: false, reason: 'every bootstrap resample landed single-class' };
+  }
+  deltas.sort((left, right) => left - right);
+  const lower = deltas[Math.min(deltas.length - 1, Math.floor((1 - confidence) * deltas.length))]!;
+  const accepted = lower >= -tolerance;
+  return { ...base, deltaAucLower: lower, accepted,
+    reason: accepted
+      ? `candidate is no worse: AUC delta ${base.deltaAuc.toFixed(3)}, ${(100 * confidence).toFixed(0)}% lower bound ${lower.toFixed(3)} >= -${tolerance}`
+      : `candidate may be worse: AUC delta ${base.deltaAuc.toFixed(3)}, ${(100 * confidence).toFixed(0)}% lower bound ${lower.toFixed(3)} < -${tolerance}` };
 }

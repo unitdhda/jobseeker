@@ -547,15 +547,18 @@ async function ensureMatch(userId:string,vacancyId:number,client?:PoolClient):Pr
     values($1,$2,'matched',$3,$3) on conflict do nothing`;
   if(client) await client.query(sql,[userId,vacancyId,now()]); else await q(sql,[userId,vacancyId,now()]);
 }
-/** Lands a scoring result on a claimed match. Only 'queued' may become 'scored'; a lost claim writes nothing. */
-export async function saveScore(userId:string,vacancyId:number,score:number,primaryTrack:string,summary:string,reasons:string[],gaps:string[],hardRejection:boolean):Promise<void>{
+/**
+ * Lands a scoring result on a claimed match. Only 'queued' may become 'scored'; a lost claim writes nothing.
+ * `model` is the route that produced the score, stored so the calibration can tell judges apart later.
+ */
+export async function saveScore(userId:string,vacancyId:number,score:number,primaryTrack:string,summary:string,reasons:string[],gaps:string[],hardRejection:boolean,model:string|null=null):Promise<void>{
   await ready(); const timestamp=now();
   const alert=score>=storeSettings().alertScore&&!hardRejection;
-  await q(`update matches set state='scored',llm_score=$1,score_updated_at=$2,updated_at=$2,
+  await q(`update matches set state='scored',llm_score=$1,score_updated_at=$2,updated_at=$2,score_model=$9,
       alert_primary_track=$3,alert_summary=$4,alert_reasons=$5::jsonb,alert_gaps=$6::jsonb
     where user_id=$7 and vacancy_id=$8 and state='queued'`,
-    alert?[score,timestamp,primaryTrack,summary,JSON.stringify(reasons),JSON.stringify(gaps),userId,vacancyId]
-      :[score,timestamp,null,null,null,null,userId,vacancyId]);
+    alert?[score,timestamp,primaryTrack,summary,JSON.stringify(reasons),JSON.stringify(gaps),userId,vacancyId,model]
+      :[score,timestamp,null,null,null,null,userId,vacancyId,model]);
 }
 function rowToScoredVacancy(row:Row):ScoredVacancy{return {...rowToVacancy(row),userId:String(row.score_user_id??row.user_id),score:Number(row.score)};}
 function rowToAlertVacancy(row:Row):AlertVacancy{return {...rowToScoredVacancy(row),primaryTrack:String(row.primary_track),summary:String(row.summary),

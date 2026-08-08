@@ -133,6 +133,10 @@ create table public.matches (
   lexical_title_similarity double precision,
   lexical_skill_coverage double precision,
   llm_score integer,
+  -- Which model produced llm_score, as the route string the AI layer was asked for. The calibration's corpus
+  -- spans whatever routes were live, and models differ in strictness; without this the fit cannot tell a strict
+  -- judge from a bad match. Null on rows scored before the column existed.
+  score_model text,
   score_updated_at timestamptz,
   alert_primary_track text,
   alert_summary text,

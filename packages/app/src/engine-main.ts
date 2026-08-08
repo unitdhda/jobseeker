@@ -4,6 +4,7 @@
  * on — the search_units.next_run_at column is the schedule, so there is no cron and no advisory lock; whoever runs
  * this loop owns discovery.
  */
+import { createHash } from 'node:crypto';
 import { config } from './config.ts';
 import {
   createEngineLoop, drainScoring, matchVacancy, nextWakeMs, runSchedulerTick,
@@ -18,8 +19,8 @@ import {
 import { deliverDueNotifications, normalizeListings } from './vacancies/jobs.ts';
 import { closeSources, getSearchPlatform, type SearchPlan } from './vacancies/registry.ts';
 import {
-  evaluateCalibration, evaluateScores, fitPrefilterCalibration, vacancyRecency,
-  type CalibrationExample,
+  calibratedMatchProbability, compareOnHoldout, fitPrefilterCalibration, vacancyRecency,
+  type TrainingExample,
 } from '@jobseeker/engine';
 import { scorePendingVacancies } from './workflows.ts';
 import { llmUsageSince, llmUsageSnapshot } from './ai.ts';
@@ -59,11 +60,17 @@ async function matchOne(lenses: UserLens[], vacancy: Vacancy, now: Date): Promis
 const calibrationRefitIntervalMs = 24 * 3_600_000;
 const calibrationMinNewLabels = 50;
 
+/** A stable, non-reversible key for a user's fitting-only intercept. Never used to look anyone up. */
+function calibrationUserKey(userId: string): string {
+  return createHash('sha256').update(`calibration-user:${userId}`).digest('hex').slice(0, 12);
+}
+
 /**
- * The daily self-calibration: refit on the frozen evidence+label pairs, accept only if pooled out-of-fold
- * ordering quality does not regress against whatever orders claims today (the active model, or the stored
- * lexical scores before any model exists). Every attempt is recorded, so a rejected fit both leaves an audit row
- * and arms the 24-hour gate.
+ * The daily self-calibration: refit on the frozen evidence+label pairs, and adopt the result only if it orders
+ * the newest rows no worse than whatever orders claims today (the active model, or the stored lexical scores
+ * before any model exists). Candidate and incumbent are scored on the same held-out tail and compared with a
+ * paired bootstrap, so a difference inside resampling noise is not mistaken for an improvement. Every attempt
+ * is recorded, so a rejected fit both leaves an audit row and arms the 24-hour gate.
  */
 async function refitCalibration(now: Date): Promise<void> {
   if (!config.calibrationAutoRefit) return;
@@ -76,26 +83,39 @@ async function refitCalibration(now: Date): Promise<void> {
   if (await calibrationLabelsSince(activeCalibrationFittedAt()) < calibrationMinNewLabels) return;
   const rows = await calibrationExamples();
   if (rows.length < config.calibrationMinLabels) return;
-  const examples: CalibrationExample[] = rows.map((row) => ({
+  const examples: TrainingExample[] = rows.map((row) => ({
     regexScore: row.regexScore, lexicalCosine: row.lexicalCosine, source: row.source,
     // Null until this match's row was written with the richer evidence; zero is "contributes nothing", which is
     // the honest reading for a row whose features were never recorded.
     titleSimilarity: row.titleSimilarity ?? 0, skillCoverage: row.skillCoverage ?? 0,
     ageBand: vacancyRecency({ publishedAt: row.publishedAt }, Date.parse(row.scoreUpdatedAt), 3_650).band,
-    label: row.llmScore >= config.digestMinScore,
+    scoredAt: Date.parse(row.scoreUpdatedAt),
+    // Fitting-only: both absorb strictness that is not the match's fault. Undefined on rows predating the column.
+    judge: row.scoreModel ?? undefined,
+    // Pseudonymous on purpose. The intercept only has to separate one person's rows from another's, and the
+    // fitted document is printed to logs and copied into PREFILTER_CALIBRATION_JSON — a place a Telegram user
+    // id must never end up.
+    user: calibrationUserKey(row.userId),
+    label: row.llmScore >= config.calibrationLabelScore,
   }));
   const fit = await fitPrefilterCalibration(examples);
-  const incumbent = activeCalibration()
-    ? evaluateCalibration(activeCalibration()!, examples)
-    : evaluateScores(rows.map((row) => row.storedLexicalScore), examples);
-  const tolerance = 0.01;
-  const accepted = fit.candidate.auc >= incumbent.auc - tolerance
-    && fit.candidate.precisionAtTop20 >= incumbent.precisionAtTop20 - tolerance;
-  await saveCalibration(fit.calibration, { candidate: fit.candidate, incumbent,
-    examples: fit.examples, positives: fit.positives, label: `llm_score>=${config.digestMinScore}` }, accepted);
-  console.info(`Calibration refit ${accepted ? 'accepted' : 'rejected'}: candidate auc=${
-    fit.candidate.auc.toFixed(3)} p20=${fit.candidate.precisionAtTop20.toFixed(3)} vs incumbent auc=${
-    incumbent.auc.toFixed(3)} p20=${incumbent.precisionAtTop20.toFixed(3)} on ${fit.examples} examples.`);
+  const active = activeCalibration();
+  const labels = fit.holdoutIndices.map((index) => examples[index]!.label);
+  // The incumbent is judged on the candidate's holdout, not on the whole corpus: comparing a model on rows it
+  // was fitted on against one that never saw them is how the old gate flattered every refit.
+  const incumbentScores = fit.holdoutIndices.map((index) => (active
+    ? calibratedMatchProbability(active, examples[index]!)
+    : rows[index]!.storedLexicalScore));
+  const verdict = compareOnHoldout(fit.holdoutScores, incumbentScores, labels);
+  const accepted = fit.judgeable && verdict.accepted;
+  const reason = fit.judgeable ? verdict.reason
+    : `holdout too small or single-class (${fit.holdoutIndices.length} rows), so no refit can be justified`;
+  await saveCalibration(fit.calibration, { candidate: verdict.candidate, incumbent: verdict.incumbent,
+    deltaAuc: verdict.deltaAuc, deltaAucLower: verdict.deltaAucLower, holdout: verdict.holdoutExamples,
+    examples: fit.examples, positives: fit.positives, judgeable: fit.judgeable, reason,
+    label: `llm_score>=${config.calibrationLabelScore}` }, accepted);
+  console.info(`Calibration refit ${accepted ? 'accepted' : 'rejected'} on ${fit.examples} examples `
+    + `(${fit.holdoutIndices.length} held out): ${reason}.`);
   if (accepted) setActiveCalibration(fit.calibration, now.toISOString());
 }
 

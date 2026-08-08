@@ -141,11 +141,15 @@ export interface CalibrationExampleRow {
   publishedAt: string; scoreUpdatedAt: string;
   /** Null on rows matched before these columns existed; the fit reads that as no contribution. */
   titleSimilarity: number | null; skillCoverage: number | null;
+  /** The model that produced llmScore, or null on rows scored before the column existed. */
+  scoreModel: string | null;
+  /** Whose verdict this is. Pooling users hides that "good" is judged per person. */
+  userId: string;
 }
 
 export async function calibrationExamples(limit = 20_000): Promise<CalibrationExampleRow[]> {
   const rows = await q(`select m.lexical_regex_score, m.lexical_cosine, m.lexical_score, m.llm_score,
-      m.lexical_title_similarity, m.lexical_skill_coverage,
+      m.lexical_title_similarity, m.lexical_skill_coverage, m.score_model, m.user_id,
       m.score_updated_at, v.source, v.published_at
     from matches m join vacancies v on v.id = m.vacancy_id
     where m.llm_score is not null and m.lexical_regex_score is not null and m.lexical_cosine is not null
@@ -155,6 +159,8 @@ export async function calibrationExamples(limit = 20_000): Promise<CalibrationEx
     source: String(row.source), llmScore: Number(row.llm_score), storedLexicalScore: Number(row.lexical_score ?? 0),
     titleSimilarity: row.lexical_title_similarity == null ? null : Number(row.lexical_title_similarity),
     skillCoverage: row.lexical_skill_coverage == null ? null : Number(row.lexical_skill_coverage),
+    scoreModel: row.score_model == null ? null : String(row.score_model),
+    userId: String(row.user_id),
     publishedAt: new Date(row.published_at as string).toISOString(),
     scoreUpdatedAt: new Date(row.score_updated_at as string).toISOString() }));
 }

@@ -97,18 +97,25 @@ reaches the running process immediately: apply only what the current revision to
 There is no migration series and no down-migration — recover by shipping a forward-compatible revision.
 
 The current revision **does** need a schema change, and it must be applied **before** the code that writes it:
-matching now freezes title similarity and skill coverage alongside the evidence score, and an insert naming
-columns that do not exist fails every match. Both are nullable, and older code ignores them, so this is safe to
-apply while the previous revision is still running:
+scoring now records which model produced each verdict, and an update naming a column that does not exist fails
+every score. It is nullable and older code ignores it, so this is safe to apply while the previous revision is
+still running:
 
 ```sql
-alter table public.matches add column if not exists lexical_title_similarity double precision;
-alter table public.matches add column if not exists lexical_skill_coverage double precision;
+alter table public.matches add column if not exists score_model text;
 ```
 
-Rows matched before the change keep nulls, which the refit reads as contributing nothing. The calibration
-document gains a version 2 with coefficients for the two new features; a stored version 1 stays valid and serves
+Rows scored before the change keep nulls and are simply excluded from the judge intercepts. The calibration
+document gains a version 3 carrying `judges` and `users`; a stored version 1 or 2 stays valid and serves
 unchanged until a refit replaces it, so no calibration rollback is needed to deploy this.
+
+Two behaviour changes ride along and need no migration. The refit now validates on the newest quarter of the
+corpus rather than on random folds, and compares candidate against incumbent on those same rows with a paired
+bootstrap — expect **fewer** refits to be accepted, because the previous gate could not tell a real improvement
+from resampling noise. And `CALIBRATION_LABEL_SCORE` now defines what the calibration calls a positive; it
+defaults to `DIGEST_MIN_SCORE`, so leaving it unset preserves today's behaviour exactly. Set it explicitly
+before changing `DIGEST_MIN_SCORE` for delivery reasons, or the next refit will silently relabel the whole
+corpus.
 
 ## Rolling back
 

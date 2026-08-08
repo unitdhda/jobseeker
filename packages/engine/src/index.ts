@@ -30,8 +30,8 @@ export {
   type VacancyRecency,
 } from './prefilter.ts';
 export {
-  calibratedMatchProbability, evaluateCalibration, evaluateScores, fitPrefilterCalibration,
+  calibratedMatchProbability, compareOnHoldout, evaluateCalibration, evaluateScores, fitPrefilterCalibration,
   parsePrefilterCalibration, prefilterCalibrationSchema,
   type CalibrationEvaluation, type CalibrationExample, type CalibrationFeatures, type CalibrationFit,
-  type PrefilterCalibration,
+  type HoldoutComparison, type PrefilterCalibration, type TrainingExample,
 } from './calibration.ts';

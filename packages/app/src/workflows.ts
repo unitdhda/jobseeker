@@ -242,7 +242,8 @@ async function dispatchScoringBatch(userId: string, vacancies: Vacancy[], provid
     salaryTo:vacancy.salaryTo,salaryCurrency:vacancy.salaryCurrency,salaryGross:vacancy.salaryGross,experience:vacancy.experience,
     employment:vacancy.employment,schedule:vacancy.schedule,workFormat:vacancy.workFormat,
     age:recency.label,ageBand:recency.band,description:vacancy.description,keySkills:vacancy.keySkills};});
-  const result=await generateJson({userId,agent:'score-vacancies',model:provider==='api'?config.scoringFallbackModel:config.scoringModel,
+  const judge=provider==='api'?config.scoringFallbackModel:config.scoringModel;
+  const result=await generateJson({userId,agent:'score-vacancies',model:judge,
     thinking:provider==='api'?config.scoringFallbackThinkingLevel:config.scoringThinkingLevel,schema:scoringResultSchema,
     system:`Score each CV-vacancy match independently. Use no fixed occupation taxonomy and never score keyword overlap without
 role compatibility. Rubric: must-have skills 40, seniority/years 20, responsibilities 15, domain 10, location/work format 10,
@@ -260,7 +261,7 @@ or the same scores array directly. Use these exact field names and no additional
     throw new Error('AI did not return exactly one score per vacancy.');
   for(const score of scores){if(score.hardRejection&&score.score>49)throw new Error(`Hard-rejected vacancy ${score.vacancyId} scored above 49.`);
     await saveScore(userId,score.vacancyId,score.score,score.primaryTrack.slice(0,80),score.summary.slice(0,300),
-      score.reasons.slice(0,3).map(reason=>reason.slice(0,240)),score.gaps.slice(0,3).map(gap=>gap.slice(0,240)),score.hardRejection);}
+      score.reasons.slice(0,3).map(reason=>reason.slice(0,240)),score.gaps.slice(0,3).map(gap=>gap.slice(0,240)),score.hardRejection,judge??null);}
 }
 
 async function scoreBatchAttempt(userId:string,vacancies:Vacancy[],signal:AbortSignal):Promise<void>{

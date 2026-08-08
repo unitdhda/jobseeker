@@ -135,6 +135,10 @@ export const config = {
   // ordering quality does not regress against the active model. Rows land in `calibrations` either way.
   calibrationAutoRefit: booleanEnv('CALIBRATION_AUTO_REFIT', true),
   calibrationMinLabels: integerEnv('CALIBRATION_MIN_LABELS', 300, 50, 100_000),
+  // What the calibration calls a positive. It defaults to the digest threshold because that is the decision the
+  // prefilter is ordering for, but it is its own setting: DIGEST_MIN_SCORE is a delivery knob, and moving it for
+  // inbox reasons would otherwise relabel the entire training corpus on the next refit, silently and backwards.
+  calibrationLabelScore: integerEnv('CALIBRATION_LABEL_SCORE', digestMinScore, 0, 100),
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
