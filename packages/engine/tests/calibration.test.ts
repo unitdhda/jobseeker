@@ -77,3 +77,51 @@ test('malformed calibration JSON fails loudly at parse time', () => {
     version: 1, bias: Number.NaN, regexScore: 0, lexicalCosine: 0, sources: {}, ageBands: {},
   })), /invalid/);
 });
+
+test('a version 1 document still parses and serves exactly as before', () => {
+  // The live deployment is serving a v1 calibration; adding features must not change one of its predictions.
+  const v1 = parsePrefilterCalibration(JSON.stringify({
+    version: 1, bias: -2, regexScore: 3, lexicalCosine: 1.5,
+    sources: { hh: 0.5 }, ageBands: { month: -0.4 },
+  }));
+  assert.equal(v1.version, 1);
+  assert.equal(v1.titleSimilarity, 0);
+  assert.equal(v1.skillCoverage, 0);
+  const features = { regexScore: 40, lexicalCosine: 0.1, source: 'hh', ageBand: 'week' as const };
+  const without = calibratedMatchProbability(v1, features);
+  // The new evidence must move nothing while the coefficients for it are absent.
+  assert.equal(calibratedMatchProbability(v1, { ...features, titleSimilarity: 1, skillCoverage: 1 }), without);
+});
+
+test('a version 2 document weighs the split evidence the old one could not see', () => {
+  const v2 = parsePrefilterCalibration(JSON.stringify({
+    version: 2, bias: -2, regexScore: 1, lexicalCosine: 1,
+    titleSimilarity: 2.5, skillCoverage: 1.5, sources: {}, ageBands: {},
+  }));
+  const base = { regexScore: 40, lexicalCosine: 0.1, source: 'hh', ageBand: 'week' as const };
+  const plain = calibratedMatchProbability(v2, base);
+  assert.ok(calibratedMatchProbability(v2, { ...base, titleSimilarity: 1 }) > plain);
+  assert.ok(calibratedMatchProbability(v2, { ...base, skillCoverage: 1 }) > plain);
+  // Out-of-range evidence is clamped rather than trusted, so a bad row cannot dominate the logit.
+  assert.equal(calibratedMatchProbability(v2, { ...base, titleSimilarity: 5 }),
+    calibratedMatchProbability(v2, { ...base, titleSimilarity: 1 }));
+});
+
+test('a fresh fit emits version 2 and can learn from the split evidence alone', async () => {
+  // regexScore and cosine are held constant, so only the new columns carry the signal: if the fit can separate
+  // these it is genuinely reading them.
+  const examples: CalibrationExample[] = [];
+  let seed = 11;
+  const random = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+  for (let index = 0; index < 400; index++) {
+    const strong = index % 2 === 0;
+    examples.push({ regexScore: 50, lexicalCosine: 0.15, source: 'hh', ageBand: 'week',
+      titleSimilarity: strong ? 0.8 : 0.1, skillCoverage: strong ? 0.9 : 0.05,
+      label: strong ? random() < 0.85 : random() < 0.15 });
+  }
+  const fit = await fitPrefilterCalibration(examples);
+  assert.equal(fit.calibration.version, 2);
+  assert.ok(fit.calibration.titleSimilarity > 0 || fit.calibration.skillCoverage > 0,
+    'the split evidence must earn positive weight when it is the only signal');
+  assert.ok(fit.candidate.auc > 0.75, `expected a discriminative fit, auc=${fit.candidate.auc}`);
+});

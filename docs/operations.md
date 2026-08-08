@@ -96,8 +96,19 @@ docker compose --env-file .env up -d --build jobseeker
 reaches the running process immediately: apply only what the current revision tolerates, or stop the service first.
 There is no migration series and no down-migration — recover by shipping a forward-compatible revision.
 
-The current revision needs no schema change. When one is required, this section carries the statement to apply
-first; a column that older code simply ignores is safe to add while the service is running.
+The current revision **does** need a schema change, and it must be applied **before** the code that writes it:
+matching now freezes title similarity and skill coverage alongside the evidence score, and an insert naming
+columns that do not exist fails every match. Both are nullable, and older code ignores them, so this is safe to
+apply while the previous revision is still running:
+
+```sql
+alter table public.matches add column if not exists lexical_title_similarity double precision;
+alter table public.matches add column if not exists lexical_skill_coverage double precision;
+```
+
+Rows matched before the change keep nulls, which the refit reads as contributing nothing. The calibration
+document gains a version 2 with coefficients for the two new features; a stored version 1 stays valid and serves
+unchanged until a refit replaces it, so no calibration rollback is needed to deploy this.
 
 ## Rolling back
 

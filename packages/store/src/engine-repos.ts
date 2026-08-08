@@ -81,7 +81,7 @@ export async function activeUnitQueries(platform: string): Promise<unknown[]> {
 export interface MatchCandidate {
   userId: string; vacancyId: number; lexicalScore: number;
   /** Prefilter evidence frozen at match time — the future training row once the LLM judges this match. */
-  regexScore?: number; lexicalCosine?: number;
+  regexScore?: number; lexicalCosine?: number; titleSimilarity?: number; skillCoverage?: number;
 }
 
 /** Ingest: new matches appear as 'matched'; an existing row is never touched — delivery memory is append-only here. */
@@ -89,10 +89,11 @@ export async function createMatches(candidates: readonly MatchCandidate[], now: 
   let created = 0;
   for (const candidate of candidates) {
     const rows = await q(`insert into matches (user_id, vacancy_id, state, lexical_score, lexical_regex_score,
-        lexical_cosine, matched_at, updated_at)
-      values ($1, $2, 'matched', $3, $4, $5, $6, $6) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
+        lexical_cosine, lexical_title_similarity, lexical_skill_coverage, matched_at, updated_at)
+      values ($1, $2, 'matched', $3, $4, $5, $6, $7, $8, $8) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
       [candidate.userId, candidate.vacancyId, candidate.lexicalScore, candidate.regexScore ?? null,
-        candidate.lexicalCosine ?? null, now.toISOString()]);
+        candidate.lexicalCosine ?? null, candidate.titleSimilarity ?? null, candidate.skillCoverage ?? null,
+        now.toISOString()]);
     created += rows.length;
   }
   return created;
@@ -138,10 +139,13 @@ export async function spentToday(userId: string, day: string): Promise<number> {
 export interface CalibrationExampleRow {
   regexScore: number; lexicalCosine: number; source: string; llmScore: number; storedLexicalScore: number;
   publishedAt: string; scoreUpdatedAt: string;
+  /** Null on rows matched before these columns existed; the fit reads that as no contribution. */
+  titleSimilarity: number | null; skillCoverage: number | null;
 }
 
 export async function calibrationExamples(limit = 20_000): Promise<CalibrationExampleRow[]> {
   const rows = await q(`select m.lexical_regex_score, m.lexical_cosine, m.lexical_score, m.llm_score,
+      m.lexical_title_similarity, m.lexical_skill_coverage,
       m.score_updated_at, v.source, v.published_at
     from matches m join vacancies v on v.id = m.vacancy_id
     where m.llm_score is not null and m.lexical_regex_score is not null and m.lexical_cosine is not null
@@ -149,6 +153,8 @@ export async function calibrationExamples(limit = 20_000): Promise<CalibrationEx
     order by m.score_updated_at desc limit $1`, [limit]);
   return rows.map((row) => ({ regexScore: Number(row.lexical_regex_score), lexicalCosine: Number(row.lexical_cosine),
     source: String(row.source), llmScore: Number(row.llm_score), storedLexicalScore: Number(row.lexical_score ?? 0),
+    titleSimilarity: row.lexical_title_similarity == null ? null : Number(row.lexical_title_similarity),
+    skillCoverage: row.lexical_skill_coverage == null ? null : Number(row.lexical_skill_coverage),
     publishedAt: new Date(row.published_at as string).toISOString(),
     scoreUpdatedAt: new Date(row.score_updated_at as string).toISOString() }));
 }

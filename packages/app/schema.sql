@@ -128,6 +128,10 @@ create table public.matches (
   -- calibration's training data; they are never recomputed, because the CV may have changed since.
   lexical_regex_score integer,
   lexical_cosine double precision,
+  -- The two signals lexical_regex_score collapses together, kept apart so a refit can weigh them separately.
+  -- Both 0..1; null on rows matched before these columns existed.
+  lexical_title_similarity double precision,
+  lexical_skill_coverage double precision,
   llm_score integer,
   score_updated_at timestamptz,
   alert_primary_track text,

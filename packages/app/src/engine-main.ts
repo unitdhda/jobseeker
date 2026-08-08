@@ -78,6 +78,9 @@ async function refitCalibration(now: Date): Promise<void> {
   if (rows.length < config.calibrationMinLabels) return;
   const examples: CalibrationExample[] = rows.map((row) => ({
     regexScore: row.regexScore, lexicalCosine: row.lexicalCosine, source: row.source,
+    // Null until this match's row was written with the richer evidence; zero is "contributes nothing", which is
+    // the honest reading for a row whose features were never recorded.
+    titleSimilarity: row.titleSimilarity ?? 0, skillCoverage: row.skillCoverage ?? 0,
     ageBand: vacancyRecency({ publishedAt: row.publishedAt }, Date.parse(row.scoreUpdatedAt), 3_650).band,
     label: row.llmScore >= config.digestMinScore,
   }));

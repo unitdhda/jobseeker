@@ -96,7 +96,11 @@ export function nextWakeMs(units: readonly { nextRunAt: number }[], nowMs: numbe
  * LLM's later judgement — that pairing is the calibration's training data, and recomputing features after the CV
  * has changed would silently corrupt it.
  */
-export interface MatchEvidence { score: number; regexScore: number; lexicalCosine: number }
+export interface MatchEvidence {
+  score: number; regexScore: number; lexicalCosine: number;
+  /** The pair `regexScore` folds together, frozen separately so a later refit can weigh them apart. 0..1. */
+  titleSimilarity?: number; skillCoverage?: number;
+}
 export interface MatchCandidateInput extends MatchEvidence { userId: string; vacancyId: number }
 
 export interface MatchPorts {

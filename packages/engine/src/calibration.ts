@@ -9,20 +9,30 @@
  * Feature scaling is part of the contract and must match the fit script byte for byte:
  *   regexScore   -> regexScore / 100, clamped to [0, 1]; its square is a separate coefficient
  *   lexicalCosine -> lexicalCosine * 3, clamped to [0, 1] (cosines land in ~[0, 0.33]); square likewise
+ *   titleSimilarity, skillCoverage -> already 0..1, clamped and used as they are
  *   source, ageBand -> per-key intercepts; an unknown key contributes 0, making it the reference class.
+ *
+ * Version 2 added titleSimilarity and skillCoverage: `regexScore` folds those two together, and a fit cannot
+ * separate signals it never sees. A version 1 document stays valid and carries no coefficient for them, which
+ * contributes nothing — so an old accepted calibration keeps serving unchanged until a refit replaces it.
  */
 import * as v from 'valibot';
 import type { RecencyBand } from './prefilter.ts';
 
 const coefficient = v.pipe(v.number(), v.finite());
 
+export const calibrationVersion = 2;
+
 export const prefilterCalibrationSchema = v.strictObject({
-  version: v.literal(1),
+  version: v.union([v.literal(1), v.literal(2)]),
   bias: coefficient,
   regexScore: coefficient,
   regexScoreSquared: v.optional(coefficient, 0),
   lexicalCosine: coefficient,
   lexicalCosineSquared: v.optional(coefficient, 0),
+  /** Absent from a version 1 document, where the signal was folded into regexScore. */
+  titleSimilarity: v.optional(coefficient, 0),
+  skillCoverage: v.optional(coefficient, 0),
   sources: v.record(v.string(), coefficient),
   ageBands: v.record(v.string(), coefficient),
 });
@@ -46,6 +56,9 @@ export function parsePrefilterCalibration(json: string): PrefilterCalibration {
 export interface CalibrationFeatures {
   regexScore: number;
   lexicalCosine: number;
+  /** Both 0..1. Rows predating the columns pass 0, which contributes nothing. */
+  titleSimilarity?: number;
+  skillCoverage?: number;
   source: string;
   ageBand: RecencyBand;
 }
@@ -66,6 +79,8 @@ function logit(calibration: PrefilterCalibration, features: CalibrationFeatures)
   return calibration.bias
     + calibration.regexScore * regex01 + calibration.regexScoreSquared * regex01 * regex01
     + calibration.lexicalCosine * cosine01 + calibration.lexicalCosineSquared * cosine01 * cosine01
+    + calibration.titleSimilarity * clamp01(features.titleSimilarity ?? 0)
+    + calibration.skillCoverage * clamp01(features.skillCoverage ?? 0)
     + (calibration.sources[features.source] ?? 0)
     + (calibration.ageBands[features.ageBand] ?? 0);
 }
@@ -129,6 +144,7 @@ function featureVector(example: CalibrationFeatures, sources: readonly string[])
   const regex01 = clamp01(example.regexScore / 100);
   const cosine01 = clamp01(example.lexicalCosine * 3);
   return [1, regex01, regex01 * regex01, cosine01, cosine01 * cosine01,
+    clamp01(example.titleSimilarity ?? 0), clamp01(example.skillCoverage ?? 0),
     ...sources.map((source) => (source === example.source ? 1 : 0)),
     ...recencyBandNames.map((band) => (band === example.ageBand ? 1 : 0))];
 }
@@ -140,7 +156,7 @@ const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmedi
 
 async function descend(examples: readonly CalibrationExample[],
   sources: readonly string[]): Promise<number[]> {
-  const width = 5 + sources.length + recencyBandNames.length;
+  const width = 7 + sources.length + recencyBandNames.length;
   const weights = new Array<number>(width).fill(0);
   const learningRate = 0.5; const l2 = 1e-3; const iterations = 4000;
   const vectors = examples.map((example) => featureVector(example, sources));
@@ -165,12 +181,13 @@ async function descend(examples: readonly CalibrationExample[],
 
 function toCalibration(weights: readonly number[], sources: readonly string[]): PrefilterCalibration {
   const round = (value: number): number => Number(value.toFixed(4));
-  return { version: 1, bias: round(weights[0]!), regexScore: round(weights[1]!),
+  return { version: calibrationVersion, bias: round(weights[0]!), regexScore: round(weights[1]!),
     regexScoreSquared: round(weights[2]!), lexicalCosine: round(weights[3]!),
     lexicalCosineSquared: round(weights[4]!),
-    sources: Object.fromEntries(sources.map((source, index) => [source, round(weights[5 + index]!)])),
+    titleSimilarity: round(weights[5]!), skillCoverage: round(weights[6]!),
+    sources: Object.fromEntries(sources.map((source, index) => [source, round(weights[7 + index]!)])),
     ageBands: Object.fromEntries(recencyBandNames.map((band, index) =>
-      [band, round(weights[5 + sources.length + index]!)])) };
+      [band, round(weights[7 + sources.length + index]!)])) };
 }
 
 /** Sources earn an intercept only where the sample supports one — decided from the rows being fitted. */

@@ -169,3 +169,24 @@ test('admission: either gate can reject, exploration still buys a sample, expiry
   assert.equal(admitEvidence({ ...base, expired: true, explorationRate: 1, random: always }), false);
   assert.equal(admitEvidence({ ...base, expired: true, filtered: true, explorationRate: 1, random: always }), false);
 });
+
+test('the prefilter reports title similarity and skill coverage separately from the combined score', () => {
+  const strong = prefilterVacancy(designerCv,
+    vacancy('Communication Designer', 'Create brand identity and visual campaigns for launches.',
+      ['Brand identity', 'Visual campaigns']), 20, designerProfile);
+  const weak = prefilterVacancy(designerCv,
+    vacancy('Senior Fullstack Developer', 'Build backend services with TypeScript.', ['TypeScript']),
+    20, designerProfile);
+
+  // Both are shares, so they stay inside the unit interval whatever the profile looks like.
+  for (const result of [strong, weak]) {
+    assert.ok(result.titleSimilarity >= 0 && result.titleSimilarity <= 1, 'title similarity is a 0..1 share');
+    assert.ok(result.skillCoverage >= 0 && result.skillCoverage <= 1, 'skill coverage is a 0..1 share');
+  }
+  // A matching title and both core skills present must outrank an unrelated role on each signal independently,
+  // which is the whole point of freezing them apart from regexScore.
+  assert.ok(strong.titleSimilarity > weak.titleSimilarity);
+  assert.ok(strong.skillCoverage > weak.skillCoverage);
+  assert.equal(strong.skillCoverage, 1); // both of the track's two core skills appear
+  assert.equal(weak.skillCoverage, 0);
+});

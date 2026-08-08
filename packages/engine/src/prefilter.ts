@@ -146,14 +146,19 @@ function fallbackCareerProfile(cvText: string): CareerProfile {
 }
 
 function trackEvidence(track: CareerTrack, vacancy: VacancyContent,
-  resolve: RoleTokenResolver): { role: number; skills: number; similarity: number; matchedSkills: string[] } {
+  resolve: RoleTokenResolver): { role: number; skills: number; similarity: number; matchedSkills: string[];
+    skillCoverage: number } {
   const titleVariants = track.titleVariants.flatMap((variant) => variant.split(/\s+\/\s+/).map((title) => title.trim()).filter(Boolean));
   const similarity = Math.max(0, ...titleVariants.map((variant) => titleSimilarity(variant, vacancy.name, resolve)));
   const role = Math.round(similarity ** 2 * 75);
   const vacancyTokens = roleTokens(`${vacancy.name}\n${vacancy.description}\n${vacancy.keySkills.join('\n')}`, resolve);
   const matchedSkills = track.coreSkills.filter((skill) => phrasePresent(skill, vacancyTokens, resolve));
-  const skills = track.coreSkills.length ? Math.round(Math.min(1, matchedSkills.length / Math.min(5, track.coreSkills.length)) * 25) : 0;
-  return { role, skills, similarity, matchedSkills };
+  // Scale-free on purpose: a track listing three skills and one listing thirty are both reported as the share of
+  // the evidence that landed, so the number means the same thing across profiles and stays comparable over time.
+  const skillCoverage = track.coreSkills.length
+    ? Math.min(1, matchedSkills.length / Math.min(5, track.coreSkills.length)) : 0;
+  const skills = Math.round(skillCoverage * 25);
+  return { role, skills, similarity, matchedSkills, skillCoverage };
 }
 
 function lexicalEmbedding(input: string): Map<string, number> {
@@ -218,6 +223,12 @@ export interface PrefilterResult {
   lexicalCosine: number;
   lexicalScore: number;
   combinedScore: number;
+  /**
+   * The two signals `regexScore` collapses into one number, kept separately because the calibration can only
+   * learn from what is frozen at match time. Both are 0..1 and independent of how long the CV's skill list is.
+   */
+  titleSimilarity: number;
+  skillCoverage: number;
   filtered: boolean;
   /** True when the advert's age alone rejected it; no evidence score can admit an expired advert. */
   expired: boolean;
@@ -258,5 +269,7 @@ export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimu
   const filtered = recency.expired || combinedScore < minimumScore;
   if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${maxAgeDays}-day limit`);
   else if (filtered) reasons.push(`combined score below ${minimumScore}`);
-  return { regexScore, lexicalCosine, lexicalScore, combinedScore, filtered, expired: recency.expired, reasons };
+  return { regexScore, lexicalCosine, lexicalScore, combinedScore,
+    titleSimilarity: best.similarity, skillCoverage: best.skillCoverage,
+    filtered, expired: recency.expired, reasons };
 }
