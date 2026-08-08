@@ -1,5 +1,5 @@
 export {
-  cvDocumentSchema, normalizeCvDocumentJson, parseCvText,
+  cvDocumentLimits, cvDocumentSchema, normalizeCvDocumentJson, parseCvText,
   type CvBlock, type CvDocument, type CvSection,
 } from './document.ts';
 export { cvPreamble } from './template.ts';

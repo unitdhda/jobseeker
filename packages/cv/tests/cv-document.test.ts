@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
-import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '../src/pdf.ts';
+import { cvDocumentLimits, cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '../src/pdf.ts';
 
 const blocksOf = (document: ReturnType<typeof parseCvText>, title: string) =>
   document.sections.find((section) => section.title === title)?.blocks ?? [];
@@ -65,4 +65,34 @@ test('a drifted document is coerced: type for kind, company/role/period for an e
 
 test('a section whose blocks are all unrecognisable is dropped instead of rendering debris', () => {
   assert.throws(() => parse({ cv: { name: 'Ivan Petrov', contacts: [], sections: [{ title: 'EMPTY', blocks: [{}, null] }] } }));
+});
+
+test('repair clips every count the schema caps, so an over-long CV still lays out', () => {
+  const many = (count: number, make: (index: number) => unknown): unknown[] =>
+    Array.from({ length: count }, (_, index) => make(index));
+  const oversized = {
+    cv: {
+      name: 'Ivan Petrov',
+      contacts: many(12, (index) => `contact-${index}@example.com`),
+      sections: many(18, (index) => ({
+        title: `SECTION ${index}`,
+        blocks: [
+          { kind: 'bullets', items: many(37, (item) => `Shipped feature ${item}`) },
+          { kind: 'facts', items: many(26, (item) => ({ term: `Group ${item}`, detail: 'A, B, C' })) },
+          ...many(48, (block) => ({ kind: 'text', text: `Paragraph ${block}` })),
+        ],
+      })),
+    },
+  };
+  // The raw document is rejected outright; repaired, it validates and keeps its leading content in order.
+  assert.equal(v.safeParse(cvDocumentSchema, oversized.cv).success, false);
+  const document = parse(oversized);
+  assert.equal(document.contacts.length, cvDocumentLimits.contacts);
+  assert.equal(document.sections.length, cvDocumentLimits.sections);
+  assert.equal(document.sections[0]!.title, 'SECTION 0');
+  assert.equal(document.sections[0]!.blocks.length, cvDocumentLimits.blocksPerSection);
+  const bullets = document.sections[0]!.blocks[0]!;
+  assert.equal(bullets.kind === 'bullets' && bullets.items.length, cvDocumentLimits.bullets);
+  const facts = document.sections[0]!.blocks[1]!;
+  assert.equal(facts.kind === 'facts' && facts.items.length, cvDocumentLimits.facts);
 });

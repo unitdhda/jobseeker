@@ -13,12 +13,13 @@ import { backfillUserMatches } from './matching.ts';
 import { activeUnitQueries, applyDemand, existingCompiledUnits } from './postgres.ts';
 import * as v from 'valibot';
 import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
-import { cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '@jobseeker/cv/pdf';
+import { cvDocumentLimits, cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '@jobseeker/cv/pdf';
 import { trace } from './observability.ts';
 import { errorMessage } from './observability.ts';
 import { adaptiveConcurrency, AdaptiveTaskPool } from '@jobseeker/engine/concurrency';
 import {
-  careerProfilePlatformId, careerProfileSchema, normalizeCareerProfileJson, parseStoredCareerProfile, vacancyRecency,
+  careerProfileLimits, careerProfilePlatformId, careerProfileSchema, normalizeCareerProfileJson,
+  parseStoredCareerProfile, vacancyRecency,
   type CareerProfile, type StoredCareerProfile,
 } from '@jobseeker/engine';
 import { compileCvDocument } from './documents.ts';
@@ -53,17 +54,31 @@ export const coverLetterResultSchema=v.pipe(
   v.check(result=>result.coverLetter.length>=80,'Expected a coverLetter of at least 80 characters.'),
 );
 
+/**
+ * The caps are spelled out because the schema is strict and the agent cannot see it: a track carrying thirteen
+ * evidence lines failed a user's whole profile refresh in production, twice over, before the local repair caught
+ * it. The numbers interpolate from the schema's own `careerProfileLimits`, so the two cannot drift apart.
+ */
+export const careerProfileSystemPrompt=`Derive occupation-neutral career tracks solely from explicit CV evidence. Never use a fixed
+occupation or industry taxonomy. Return exactly {"version":1,"tracks":[{"name":"...","titleVariants":["..."],
+"coreSkills":["..."],"evidence":["..."]}]}. The root key is tracks, never careerTracks. Add no other field.
+Each titleVariants item is one title in one language; Russian and English translations must be separate items.
+Translation must not broaden the occupation.
+Contact details, employer technologies and project names are not candidate skills. Do not invent adjacent occupations.
+These array limits are strict and a response that exceeds any of them is rejected in full: 1-${
+  careerProfileLimits.tracks} tracks, 1-${careerProfileLimits.titleVariants}
+titleVariants, at most ${careerProfileLimits.coreSkills} coreSkills, and 1-${
+  careerProfileLimits.evidence} evidence items per track. Select the strongest few rather than listing
+everything the CV supports. Every name, titleVariants and coreSkills item is 2-100 characters; every evidence item is
+2-300 characters.`;
+
 async function ensureCareerProfile(userId: string, cvText: string, cvHash: string, force: boolean): Promise<CareerProfile> {
   const existing = parseStoredCareerProfile(
     await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cvHash,
   );
   if (!force && existing) return existing;
   const generated=await generateJson({userId,agent:'prepare-career-profile',model:config.model,thinking:config.thinkingLevel,
-    schema:careerProfileSchema,system:`Derive occupation-neutral career tracks solely from explicit CV evidence. Never use a fixed
-occupation or industry taxonomy. Return exactly {"version":1,"tracks":[{"name":"...","titleVariants":["..."],
-"coreSkills":["..."],"evidence":["..."]}]}. The root key is tracks, never careerTracks. Each titleVariants item is one title
-in one language; Russian and English translations must be separate items. Translation must not broaden the occupation.
-Contact details, employer technologies and project names are not candidate skills. Do not invent adjacent occupations.`,
+    schema:careerProfileSchema,system:careerProfileSystemPrompt,
     prompt:`Authoritative CV source:\n\n${cvText}`,repair:normalizeCareerProfileJson});
   if(await getCvHash(userId)!==cvHash)throw new Error('CV changed during career-profile generation.');
   await saveSearchProfile(userId,careerProfilePlatformId,{cvHash,profile:generated});
@@ -381,6 +396,12 @@ introduction","bullets":["..."]} — a dated record. Put every date in "meta" an
 Use "entry" for every job, and one "facts" block per skills section rather than many "text" blocks. Inside any string,
 **bold** and *italic* are the only markup; no Markdown, HTML, Typst, code, headings or bullet characters. Do not style
 section labels or add separator lines — the template does that.
+
+These limits are strict and a response that exceeds any of them is rejected in full: at most ${
+  cvDocumentLimits.contacts} contacts, ${cvDocumentLimits.sections} sections, ${
+  cvDocumentLimits.blocksPerSection} blocks per section, ${cvDocumentLimits.bullets} items in a "bullets" or entry
+"bullets" list, and ${cvDocumentLimits.facts} items in a "facts" block. Keep the most relevant contacts and merge
+related skill groups rather than overrunning a limit.
 
 Return no cover letter. It is requested separately.`;
 

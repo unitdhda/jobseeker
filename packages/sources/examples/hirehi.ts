@@ -16,7 +16,9 @@ export const hireHiSpecializations=[
 const facets=['all','remote','intern','junior','middle','senior','lead','head'] as const;
 const searchSchema=v.strictObject({name:v.pipe(v.string(),v.minLength(2),v.maxLength(80)),
   rationale:v.pipe(v.string(),v.minLength(2),v.maxLength(300)),specialization:v.picklist(hireHiSpecializations),facet:v.picklist(facets)});
-export const hireHiSearchProfileSchema=v.strictObject({version:v.literal(1),searches:v.pipe(v.array(searchSchema),v.maxLength(8),
+/** Declared to the profile agent as `maxSearches`: the schema rejects the whole profile past this count. */
+export const maxHireHiSearches=8;
+export const hireHiSearchProfileSchema=v.strictObject({version:v.literal(1),searches:v.pipe(v.array(searchSchema),v.maxLength(maxHireHiSearches),
   v.check(searches=>new Set(searches.map(search=>`${search.facet}:${search.specialization}`)).size===searches.length,
     'HireHi searches must use unique facet and specialization pairs'))});
 export type HireHiSearchProfile=v.InferOutput<typeof hireHiSearchProfileSchema>;
@@ -26,10 +28,11 @@ export const hireHiPlatform:SearchPlatform<typeof hireHiSearchProfileSchema>={
   id:'hirehi',name:'HireHi',hosts:['hirehi.ru','www.hirehi.ru'],schema:hireHiSearchProfileSchema,template:()=>({platform:'hirehi',version:1,
     purpose:'Validated public HireHi SEO landing pages. The adapter does not call the disallowed HireHi search API.',
     jsonShape:{version:1,searches:[{name:'Supported CV track',rationale:'direct CV evidence',specialization:'one listed specialization',facet:'all'}]},
-    capabilities:{specializations:hireHiSpecializations,facets,facetMeaning:{all:'all levels and work formats',remote:'remote vacancies',
+    capabilities:{maxSearches:maxHireHiSearches,specializations:hireHiSpecializations,facets,facetMeaning:{all:'all levels and work formats',remote:'remote vacancies',
       intern:'intern grade',junior:'junior grade',middle:'middle grade',senior:'senior grade',lead:'lead grade',head:'head grade'}},
     rules:['Choose only listed specialization and facet values.','Use all unless the CV clearly supports a narrower facet.',
       'Prefer precise specializations over development.','Do not substitute an adjacent occupation.',
+      `Return at most ${maxHireHiSearches} searches; more than that is rejected in full rather than trimmed.`,
       'Return an empty searches array when HireHi has no specialization supported by the CV.']}),
 };
 

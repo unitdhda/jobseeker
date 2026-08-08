@@ -5,16 +5,23 @@ const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
 const title = v.pipe(label,v.check((value) => !/\s[\/|]\s/.test(value),
   'Each title variant must contain one title in one language; put translations in separate array items.'));
 
+/**
+ * The one place these caps are written down. The schema enforces them, the repair below clips to them, and the
+ * agent prompt quotes them — a track carrying thirteen evidence lines failed a user's whole profile refresh in
+ * production because the prompt named no limit at all.
+ */
+export const careerProfileLimits = { tracks: 10, titleVariants: 16, coreSkills: 30, evidence: 8 } as const;
+
 export const careerTrackSchema = v.strictObject({
   name: label,
-  titleVariants: v.pipe(v.array(title), v.minLength(1), v.maxLength(16)),
-  coreSkills: v.pipe(v.array(label), v.maxLength(30)),
-  evidence: v.pipe(v.array(evidenceText), v.minLength(1), v.maxLength(8)),
+  titleVariants: v.pipe(v.array(title), v.minLength(1), v.maxLength(careerProfileLimits.titleVariants)),
+  coreSkills: v.pipe(v.array(label), v.maxLength(careerProfileLimits.coreSkills)),
+  evidence: v.pipe(v.array(evidenceText), v.minLength(1), v.maxLength(careerProfileLimits.evidence)),
 });
 
 export const careerProfileSchema = v.strictObject({
   version: v.literal(1),
-  tracks: v.pipe(v.array(careerTrackSchema), v.minLength(1), v.maxLength(10)),
+  tracks: v.pipe(v.array(careerTrackSchema), v.minLength(1), v.maxLength(careerProfileLimits.tracks)),
 });
 
 export type CareerTrack = v.InferOutput<typeof careerTrackSchema>;
@@ -29,19 +36,29 @@ export interface StoredCareerProfile {
 }
 
 /**
- * Splits the one mistake the career-profile agent repeats: several titles packed into a single variant, usually a
- * role and its translation joined by " / ". Only the separator the schema rejects is split, so a title that already
- * validates is never rewritten. This runs on the raw JSON after the model has failed to correct itself.
+ * Repairs the mistakes the career-profile agent repeats, on the raw JSON after the model has failed to correct
+ * itself. Packed titles — several titles in one variant, usually a role and its translation joined by " / " — are
+ * split on exactly the separator the schema rejects, so a title that already validates is never rewritten.
+ * Advisory arrays that overrun their schema caps (13 evidence lines where 8 are allowed cost a whole refresh in
+ * production) are clipped: dropping excess advisory lines is strictly better than failing the profile.
  */
 const packedTitleSeparator = /\s+[\/|]\s+/;
 export function normalizeCareerProfileJson(value: unknown): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
   const root = value as Record<string, unknown>;
   if (!Array.isArray(root.tracks)) return value;
-  return { ...root, tracks: root.tracks.map((track) => {
+  return { ...root, tracks: root.tracks.slice(0, careerProfileLimits.tracks).map((track) => {
     if (!track || typeof track !== 'object' || Array.isArray(track)) return track;
-    const entry = track as Record<string, unknown>;
-    if (!Array.isArray(entry.titleVariants)) return track;
+    const entry = { ...(track as Record<string, unknown>) };
+    const clip = (key: 'evidence' | 'coreSkills'): void => {
+      const value = entry[key];
+      if (Array.isArray(value) && value.length > careerProfileLimits[key]) {
+        entry[key] = value.slice(0, careerProfileLimits[key]);
+      }
+    };
+    clip('evidence');
+    clip('coreSkills');
+    if (!Array.isArray(entry.titleVariants)) return entry;
     const seen = new Set<string>();
     const titleVariants: unknown[] = [];
     for (const variant of entry.titleVariants) {
@@ -53,7 +70,7 @@ export function normalizeCareerProfileJson(value: unknown): unknown {
         titleVariants.push(title);
       }
     }
-    return { ...entry, titleVariants: titleVariants.slice(0, 16) };
+    return { ...entry, titleVariants: titleVariants.slice(0, careerProfileLimits.titleVariants) };
   }) };
 }
 

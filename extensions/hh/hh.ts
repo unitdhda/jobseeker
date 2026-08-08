@@ -17,6 +17,9 @@ const hours = ['HOURS_2', 'HOURS_3', 'HOURS_4', 'HOURS_5', 'HOURS_6', 'HOURS_7',
 const labels = ['with_address', 'accept_handicapped', 'not_from_agency', 'accept_kids', 'accredited_it', 'low_performance', 'internship', 'night_shifts', 'with_salary', 'accept_teens', 'accept_labor_contract'] as const;
 const currencies = ['AZN', 'BYR', 'EUR', 'GEL', 'KGS', 'KZT', 'RUR', 'UAH', 'USD', 'UZS'] as const;
 
+/** Declared to the profile agent as `maxSearches`: the schema rejects the whole profile past this count. */
+export const maxHhSearches = 8;
+
 export const hhSearchProfileSchema = v.strictObject({
   version: v.literal(1),
   searches: v.pipe(v.array(v.strictObject({
@@ -47,7 +50,7 @@ export const hhSearchProfileSchema = v.strictObject({
     })),
     periodDays: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(30))),
     orderBy: v.optional(v.picklist(['publication_time', 'salary_desc', 'salary_asc', 'relevance'])),
-  })), v.minLength(1), v.maxLength(8)),
+  })), v.minLength(1), v.maxLength(maxHhSearches)),
 });
 
 export type HhSearchProfile = v.InferOutput<typeof hhSearchProfileSchema>;
@@ -75,6 +78,7 @@ export function hhPlatform(areaId: string): SearchPlatform<typeof hhSearchProfil
     },
     capabilities: {
       configuredDefaultArea: areaId,
+      maxSearches: maxHhSearches,
       searchFields, experiences, employmentForms, workFormats, workSchedules: schedules,
       workingHours: hours, labels, currencies,
       education: ['not_required_or_not_specified', 'special_secondary', 'higher'],
@@ -88,7 +92,8 @@ export function hhPlatform(areaId: string): SearchPlatform<typeof hhSearchProfil
       'Use only capabilities listed by this template; omit unsupported or unknown filters.',
       'Every search must include areas; use configuredDefaultArea unless the CV explicitly supports another location.',
       'Never infer salary, work format, education, licences, or availability merely from a job title.',
-      'Prefer several complementary searches over one over-filtered search.',
+      `Prefer several complementary searches over one over-filtered search, but return at most ${
+        maxHhSearches}: more than that is rejected in full rather than trimmed.`,
       'Omit professionalRoles unless an exact verified HH role ID was supplied by operator configuration.',
       'Use strict filters only when they are explicit in the CV or operator input; recall matters.',
     ],

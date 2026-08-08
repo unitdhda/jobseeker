@@ -9,6 +9,12 @@ import * as v from 'valibot';
  * states what each block is, and the template decides how it looks.
  */
 
+/**
+ * The counts the schema enforces, the repair clips to, and the tailoring prompt quotes. Kept in one place because
+ * a limit the agent is never told about is a limit it discovers by having its whole answer rejected.
+ */
+export const cvDocumentLimits = { contacts: 8, sections: 14, blocksPerSection: 40, bullets: 30, facts: 20 } as const;
+
 /** Emphasis inside a run of text. `**bold**` and `*italic*` are the only markup; everything else is literal. */
 const inline = (max: number) => v.pipe(v.string(), v.trim(), v.maxLength(max));
 const filled = (max: number) => v.pipe(inline(max), v.minLength(1));
@@ -19,7 +25,7 @@ const textBlockSchema = v.object({ kind: v.literal('text'), text: filled(2_000) 
 /** An unordered list. One achievement, responsibility or project per item. */
 const bulletsBlockSchema = v.object({
   kind: v.literal('bullets'),
-  items: v.pipe(v.array(filled(600)), v.minLength(1), v.maxLength(30)),
+  items: v.pipe(v.array(filled(600)), v.minLength(1), v.maxLength(cvDocumentLimits.bullets)),
 });
 
 /**
@@ -32,20 +38,21 @@ const entryBlockSchema = v.object({
   subtitle: v.optional(inline(300)),
   meta: v.optional(inline(160)),
   text: v.optional(inline(1_500)),
-  bullets: v.optional(v.pipe(v.array(filled(600)), v.maxLength(30))),
+  bullets: v.optional(v.pipe(v.array(filled(600)), v.maxLength(cvDocumentLimits.bullets))),
 });
 
 /** Label-and-value rows: skill groups, languages, tooling. Rendered as an aligned two-column grid. */
 const factsBlockSchema = v.object({
   kind: v.literal('facts'),
-  items: v.pipe(v.array(v.object({ term: filled(120), detail: filled(800) })), v.minLength(1), v.maxLength(20)),
+  items: v.pipe(v.array(v.object({ term: filled(120), detail: filled(800) })), v.minLength(1),
+    v.maxLength(cvDocumentLimits.facts)),
 });
 
 const blockSchema = v.variant('kind', [textBlockSchema, bulletsBlockSchema, entryBlockSchema, factsBlockSchema]);
 
 const sectionSchema = v.object({
   title: filled(80),
-  blocks: v.pipe(v.array(blockSchema), v.minLength(1), v.maxLength(40)),
+  blocks: v.pipe(v.array(blockSchema), v.minLength(1), v.maxLength(cvDocumentLimits.blocksPerSection)),
 });
 
 /**
@@ -67,8 +74,8 @@ const contactSchema = v.pipe(
 export const cvDocumentSchema = v.object({
   name: filled(120),
   headline: v.optional(inline(200)),
-  contacts: v.pipe(v.array(contactSchema), v.maxLength(8)),
-  sections: v.pipe(v.array(sectionSchema), v.minLength(1), v.maxLength(14)),
+  contacts: v.pipe(v.array(contactSchema), v.maxLength(cvDocumentLimits.contacts)),
+  sections: v.pipe(v.array(sectionSchema), v.minLength(1), v.maxLength(cvDocumentLimits.sections)),
 });
 
 export type CvDocument = v.InferOutput<typeof cvDocumentSchema>;
@@ -198,7 +205,9 @@ export function normalizeCvDocumentJson(value: unknown): unknown {
           detail: text(item.detail) ?? text(item.value) ?? list(item.items).join(', ') }))
         .filter((item) => item.term && item.detail)
       : [];
-    if (kind === 'facts' || (!kind && facts.length > 0)) return facts.length ? { kind: 'facts', items: facts } : null;
+    if (kind === 'facts' || (!kind && facts.length > 0)) {
+      return facts.length ? { kind: 'facts', items: facts.slice(0, cvDocumentLimits.facts) } : null;
+    }
     if (title) {
       const subtitle = text(block.subtitle) ?? text(block.role) ?? text(block.position) ?? text(block.degree);
       const meta = text(block.meta) ?? text(block.period) ?? text(block.dates) ?? text(block.date)
@@ -207,28 +216,32 @@ export function normalizeCvDocumentJson(value: unknown): unknown {
       // Absent fields are omitted rather than set to undefined, so a coerced entry is indistinguishable from one the
       // model got right the first time.
       return { kind: 'entry', title, ...subtitle ? { subtitle } : {}, ...meta ? { meta } : {},
-        ...summary ? { text: summary } : {}, ...items.length ? { bullets: items } : {} };
+        ...summary ? { text: summary } : {},
+        ...items.length ? { bullets: items.slice(0, cvDocumentLimits.bullets) } : {} };
     }
-    if (items.length) return { kind: 'bullets', items };
+    if (items.length) return { kind: 'bullets', items: items.slice(0, cvDocumentLimits.bullets) };
     const body = text(block.text) ?? text(block.summary) ?? text(block.description) ?? text(block.content);
     return body ? { kind: 'text', text: body } : null;
   };
 
+  // Clipping to the schema's own counts turns a rejected answer into a slightly shorter CV, which is the better
+  // outcome for a deliverable the user is waiting on. It only ever runs after the model has failed to comply.
   const sections = (Array.isArray(source.sections) ? source.sections : []).map(record)
     .filter((section): section is Record<string, unknown> => section != null)
     .map((section) => ({
       title: text(section.title) ?? text(section.heading) ?? text(section.name) ?? '',
       blocks: (Array.isArray(section.blocks) ? section.blocks : [section.blocks ?? section.content ?? section.items])
-        .map(blockOf).filter((block) => block != null),
+        .map(blockOf).filter((block) => block != null).slice(0, cvDocumentLimits.blocksPerSection),
     }))
-    .filter((section) => section.title && section.blocks.length > 0);
+    .filter((section) => section.title && section.blocks.length > 0)
+    .slice(0, cvDocumentLimits.sections);
 
   return {
     ...root,
     cv: {
       name: text(source.name) ?? text(source.fullName) ?? '',
       headline: text(source.headline) ?? text(source.title) ?? text(source.role),
-      contacts: contactList(source.contacts ?? source.contact),
+      contacts: contactList(source.contacts ?? source.contact).slice(0, cvDocumentLimits.contacts),
       sections,
     },
   };

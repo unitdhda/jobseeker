@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import * as v from 'valibot';
-import { careerProfileSchema, normalizeCareerProfileJson } from '@jobseeker/engine';
+import { careerProfileLimits, careerProfileSchema, normalizeCareerProfileJson } from '@jobseeker/engine';
 import { describeValidationIssues } from '../src/ai.ts';
+import { cvDocumentLimits } from '@jobseeker/cv/pdf';
+import { careerProfileSystemPrompt, tailorSystemPrompt } from '../src/workflows.ts';
 
 const packed = {
   version: 1,
@@ -61,6 +63,44 @@ test('repair drops duplicates and fragments that cannot be titles', () => {
     titleVariants: ['Developer / developer', 'Developer', 'QA / x'] }] };
   const repaired = normalizeCareerProfileJson(messy) as typeof messy;
   assert.deepEqual(repaired.tracks[0]!.titleVariants, ['Developer', 'QA']);
+});
+
+test('the agent prompt states every cap the schema enforces', () => {
+  // The incident this guards: the prompt described the JSON shape but named no limit, so the agent had no way to
+  // know eight evidence items was the maximum until validation rejected its whole answer.
+  for (const limit of Object.values(careerProfileLimits)) {
+    assert.match(careerProfileSystemPrompt, new RegExp(`\\b${limit}\\b`, 'u'));
+  }
+  assert.match(careerProfileSystemPrompt, /rejected in full/u);
+});
+
+test('the CV tailoring prompt states every count the document schema enforces', () => {
+  for (const limit of Object.values(cvDocumentLimits)) {
+    assert.match(tailorSystemPrompt, new RegExp(`\\b${limit}\\b`, 'u'));
+  }
+  assert.match(tailorSystemPrompt, /rejected in full/u);
+});
+
+test('repair clips every array the schema caps, including the track list', () => {
+  const tooManyTracks = { version: 1, tracks: Array.from({ length: 14 }, (_, index) => ({
+    name: `Track ${index}`, titleVariants: ['Developer'], coreSkills: [], evidence: ['Shipped services'] })) };
+  assert.equal(v.safeParse(careerProfileSchema, tooManyTracks).success, false);
+  const repaired = v.safeParse(careerProfileSchema, normalizeCareerProfileJson(tooManyTracks));
+  assert.equal(repaired.success, true);
+  assert.equal(repaired.output!.tracks.length, careerProfileLimits.tracks);
+});
+
+test('repair clips oversized advisory arrays to their schema caps', () => {
+  // The failure seen in production: 13 evidence lines where the schema allows 8, unchanged across retries.
+  const oversized = { version: 1, tracks: [{ name: 'Track', titleVariants: ['Developer'],
+    coreSkills: Array.from({ length: 33 }, (_, index) => `skill${index}`),
+    evidence: Array.from({ length: 13 }, (_, index) => `Shipped project ${index}`) }] };
+  assert.equal(v.safeParse(careerProfileSchema, oversized).success, false);
+  const repaired = v.safeParse(careerProfileSchema, normalizeCareerProfileJson(oversized));
+  assert.equal(repaired.success, true);
+  assert.equal(repaired.output!.tracks[0]!.evidence.length, careerProfileLimits.evidence);
+  assert.equal(repaired.output!.tracks[0]!.evidence[0], 'Shipped project 0');
+  assert.equal(repaired.output!.tracks[0]!.coreSkills.length, careerProfileLimits.coreSkills);
 });
 
 test('repair passes through values it does not understand', () => {

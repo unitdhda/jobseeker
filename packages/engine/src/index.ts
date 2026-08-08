@@ -24,7 +24,7 @@ export {
   type JudgmentReport, type LaneClock, type LoopPorts, type NormalizeReport, type ScoringPolicy, type ScoringPorts,
 } from './loop.ts';
 export {
-  careerProfilePlatformId, careerProfileSchema, careerTrackSchema, normalizeCareerProfileJson,
+  careerProfileLimits, careerProfilePlatformId, careerProfileSchema, careerTrackSchema, normalizeCareerProfileJson,
   parseStoredCareerProfile, prefilterVacancy, vacancyRecency, vacancySemanticText,
   type CareerProfile, type CareerTrack, type PrefilterResult, type RecencyBand, type StoredCareerProfile,
   type VacancyRecency,
