@@ -192,6 +192,23 @@ well**, on both ranking quality and precision at the top of the queue. Otherwise
 way the attempt lands in `calibrations`, so the history of what was tried and what won is inspectable rather than
 implied.
 
+By default the calibration decides only the *order*: admission is still the raw evidence gate
+(`PREFILTER_MIN_SCORE`). `PREFILTER_MIN_PROBABILITY` additionally refuses matches whose calibrated probability is
+too low, which is the sharper of the two filters because it acts on the signal that was actually measured against
+LLM verdicts. It is off by default, because the cost of a gate is paid in matches the user never sees, and the
+right height for it is a property of a given deployment's data rather than a value worth hardcoding.
+
+Once a deployment trusts its calibration, the better arrangement is to make the probability the **main** gate and
+demote the raw score to a low backstop. Gating hard on the raw score means gating on the weaker signal, and the
+two are not interchangeable at equal savings: the same reduction in spend costs several times more delivered
+alerts when taken from the raw score instead of the calibrated one. Measure it on your own data before moving
+either, because both the raw score's weakness and the calibration's strength are deployment-specific.
+
+The backstop matters. A calibration can be absent — a fresh database, a rejected fit history, a failed load — and
+the probability gate simply does not apply when there is none. If `PREFILTER_MIN_SCORE` was lowered on the
+assumption that the probability gate would hold the line, that combination admits nearly everything. Matching
+logs a single loud error when it finds itself in exactly that state.
+
 Two consequences worth understanding before tuning anything:
 
 - **A calibration can only learn from matches it admits.** Everything rejected is a verdict never observed, so the

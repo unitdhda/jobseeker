@@ -4,6 +4,7 @@ import { careerProfileSchema, prefilterVacancy, vacancyRecency, type CareerProfi
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
 import { textSearchProfileSchema } from '@jobseeker/sources/examples/habr';
+import { admitEvidence } from '../src/matching.ts';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
@@ -143,4 +144,28 @@ await test('contact details do not create skill evidence', () => {
     vacancy('Telegram Bot Developer', 'Develop Telegram integrations.', ['Telegram']), 20, designerProfile);
   assert.equal(result.filtered, true);
   assert.equal(result.reasons.some((reason) => reason.startsWith('evidenced skills: Telegram')), false);
+});
+
+test('admission: either gate can reject, exploration still buys a sample, expiry never does', () => {
+  const never = () => 1;   // exploration dice that always lose
+  const always = () => 0;  // …and always win
+  const base = { filtered: false, expired: false, belowProbability: false, explorationRate: 0 };
+
+  // Passing both gates is admitted without consulting the dice at all.
+  assert.equal(admitEvidence({ ...base, random: never }), true);
+
+  // Either gate alone rejects, and with exploration off that is final — rate 0 means the dice never win.
+  assert.equal(admitEvidence({ ...base, filtered: true, explorationRate: 0, random: always }), false);
+  assert.equal(admitEvidence({ ...base, filtered: true, explorationRate: 1, random: always }), true);
+  assert.equal(admitEvidence({ ...base, filtered: true, explorationRate: 0, random: never }), false);
+  assert.equal(admitEvidence({ ...base, belowProbability: true, explorationRate: 0, random: never }), false);
+
+  // The calibrated gate rejects matches the raw gate was happy with — the point of adding it.
+  assert.equal(admitEvidence({ ...base, belowProbability: true, explorationRate: 0.1, random: never }), false);
+  // …but exploration keeps sampling from beyond that new boundary, so the calibration is not left blind there.
+  assert.equal(admitEvidence({ ...base, belowProbability: true, explorationRate: 0.1, random: always }), true);
+
+  // An expired advert is refused whatever the dice say.
+  assert.equal(admitEvidence({ ...base, expired: true, explorationRate: 1, random: always }), false);
+  assert.equal(admitEvidence({ ...base, expired: true, filtered: true, explorationRate: 1, random: always }), false);
 });

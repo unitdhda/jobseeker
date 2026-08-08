@@ -27,6 +27,7 @@ export function activeCalibrationFittedAt(): string | null { return calibrationF
 export function setActiveCalibration(next: PrefilterCalibration, fittedAt: string): void {
   calibration = next;
   calibrationFittedAt = fittedAt;
+  uncalibratedGateWarned = false;
 }
 
 /** A previously accepted refit outranks the env bootstrap; an invalid stored row keeps the bootstrap, loudly. */
@@ -40,6 +41,15 @@ export async function loadActiveCalibration(): Promise<void> {
   }
 }
 
+let uncalibratedGateWarned = false;
+function warnUncalibratedGate(): void {
+  if (uncalibratedGateWarned) return;
+  uncalibratedGateWarned = true;
+  console.error(`PREFILTER_MIN_PROBABILITY=${config.prefilterMinProbability} is set but no calibration is active, `
+    + `so admission falls back to PREFILTER_MIN_SCORE=${config.prefilterMinScore} alone. If that floor was lowered `
+    + 'because the probability gate was meant to replace it, matching is now far more permissive than intended.');
+}
+
 export interface UserLens { userId: string; cvText: string; profile: CareerProfile }
 
 /** A user who can judge a vacancy: a CV and a career profile current for it. Others return null and wait. */
@@ -51,11 +61,33 @@ export async function userLens(userId: string): Promise<UserLens | null> {
   return profile ? { userId, cvText: cv.cvText, profile } : null;
 }
 
+export interface AdmissionInput {
+  /** The raw evidence gate's verdict — combined score below PREFILTER_MIN_SCORE. */
+  filtered: boolean;
+  /** Too old to be worth anyone's time; never admitted and never explored. */
+  expired: boolean;
+  /** The calibrated gate's verdict, already resolved against an active calibration by the caller. */
+  belowProbability: boolean;
+  explorationRate: number;
+  random?: () => number;
+}
+
+/**
+ * Whether a match reaches the scoring queue. Either gate can reject it, but a rejection is never final on its
+ * own: the exploration dice admit a slice regardless, because a gate that only ever sees what it already admits
+ * cannot learn that it is set wrong. Expiry is the one unconditional refusal — no verdict on a filled advert is
+ * worth buying.
+ */
+export function admitEvidence(input: AdmissionInput): boolean {
+  if (input.expired) return false;
+  if (!input.filtered && !input.belowProbability) return true;
+  return (input.random ?? Math.random)() < input.explorationRate;
+}
+
 /**
  * One lens's verdict: the stored score orders claimForScoring's spending, so it is the calibrated probability
  * when one is active and the raw combined score otherwise; the raw evidence rides along as the future training
- * row. An expired advert is never admitted. Below the evidence floor, the exploration rate admits a random
- * slice anyway — those LLM scores are the only labels the calibration ever gets from beyond the gate.
+ * row.
  */
 export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date): MatchEvidence | null {
   const result = prefilterVacancy(
@@ -69,9 +101,15 @@ export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date): Matc
   })) : Math.max(0, Math.round(result.combinedScore));
   const evidence: MatchEvidence = { score: stored, regexScore: result.regexScore,
     lexicalCosine: result.lexicalCosine };
-  if (!result.filtered) return evidence;
-  if (result.expired) return null;
-  return Math.random() < config.prefilterExplorationRate ? evidence : null;
+  // The calibrated gate only means anything while a calibration is active; without one `stored` is the raw
+  // combined score, which is not a probability and must not be compared against one. A deployment that made the
+  // probability its main gate has usually lowered PREFILTER_MIN_SCORE to match, so losing the calibration means
+  // falling back to a floor that was never meant to hold the line on its own. Say so, once, loudly.
+  if (config.prefilterMinProbability > 0 && active == null) warnUncalibratedGate();
+  const belowProbability = active != null && config.prefilterMinProbability > 0
+    && stored < config.prefilterMinProbability;
+  return admitEvidence({ filtered: result.filtered, expired: result.expired, belowProbability,
+    explorationRate: config.prefilterExplorationRate }) ? evidence : null;
 }
 
 const backfillScanLimit = 3_000;
