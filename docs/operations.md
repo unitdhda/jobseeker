@@ -92,32 +92,25 @@ docker compose --env-file .env up -d --build jobseeker
 
 **CLI** — `npm update @unitdhda/jobseeker`, then restart the service.
 
-**Schema changes** ship before the code that needs them. Every instance shares one database, so an applied change
-reaches the running process immediately: apply only what the current revision tolerates, or stop the service first.
-There is no migration series and no down-migration — recover by shipping a forward-compatible revision.
+**Schema.** `packages/app/schema.sql` is always the complete current schema, written as if creating the database
+from nothing. There is no migration series, no down-migration, and no per-release upgrade note: the file is the
+only description of what the database should look like, and it is kept whole rather than accumulated in pieces.
 
-The current revision **does** need a schema change, and it must be applied **before** the code that writes it:
-scoring now records which model produced each verdict, and an update naming a column that does not exist fails
-every score. It is nullable and older code ignores it, so this is safe to apply while the previous revision is
-still running:
+For a new database, `jobseeker db init` applies it. For a database that already exists, reconcile it against the
+file — `schema.sql` says what the columns are, and adding a missing nullable column is safe while the service is
+running, because every instance shares one database and every statement in the code names its columns explicitly.
+Widen before the code that writes it, never after, and recover from a mistake by shipping a forward-compatible
+revision rather than by reverting the database.
 
-```sql
-alter table public.matches add column if not exists score_model text;
-```
-
-Rows scored before the change keep nulls and are simply excluded from the judge intercepts. The calibration
-document gains a version 3 carrying `judges` and `users`; a stored version 1 or 2 stays valid and serves
-unchanged until a refit replaces it, so no calibration rollback is needed to deploy this.
-
-Two behaviour changes ride along and need no migration. The refit now validates on the newest quarter of the
-corpus rather than on random folds, and compares candidate against incumbent on those same rows with a paired
+Behaviour changes in the current revision that need nothing applied: the refit validates on the newest quarter of
+the corpus rather than on random folds, and compares candidate against incumbent on those same rows with a paired
 bootstrap — expect **fewer** refits to be accepted, because the previous gate could not tell a real improvement
-from resampling noise. The judgment lane also gained an hourly `retire` stage: matches whose advert passed
-`PREFILTER_MAX_AGE_DAYS` while still waiting for the scoring budget move from `matched` to `expired`, so what was
-passed over stops being indistinguishable from what is still pending. And `CALIBRATION_LABEL_SCORE` now defines what the calibration calls a positive; it
-defaults to `DIGEST_MIN_SCORE`, so leaving it unset preserves today's behaviour exactly. Set it explicitly
-before changing `DIGEST_MIN_SCORE` for delivery reasons, or the next refit will silently relabel the whole
-corpus.
+from resampling noise. The judgment lane gained an hourly `retire` stage, so matches whose advert passed
+`PREFILTER_MAX_AGE_DAYS` while still waiting for the scoring budget move from `matched` to `expired` instead of
+staying indistinguishable from what is still pending. And `CALIBRATION_LABEL_SCORE` now defines what the
+calibration calls a positive; it defaults to `DIGEST_MIN_SCORE`, so leaving it unset preserves today's behaviour
+exactly. Set it explicitly before changing `DIGEST_MIN_SCORE` for delivery reasons, or the next refit will
+silently relabel the whole corpus.
 
 ## Rolling back
 

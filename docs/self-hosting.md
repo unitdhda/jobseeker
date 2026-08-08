@@ -180,9 +180,9 @@ npx jobseeker db init
 ```
 
 It prints how many tables it created. `db init` refuses a database that already has tables in `public`: it is an
-initializer, not a migration tool, and there is no upgrade path onto an unrelated existing schema or migration
-series to replay. Later schema changes are applied to live databases as reviewed one-off statements — see
-[operations](operations.md#upgrading).
+initializer, not a migration tool, and there is no migration series to replay. `schema.sql` is always written
+whole, as the complete current schema — so on an existing database you reconcile it against that file rather than
+replaying a history of changes. See [operations](operations.md#upgrading).
 
 Back the database up from the start. It holds every CV, search profile, match, and generated artifact; the schema
 can be recreated from the package, but the data cannot.
@@ -383,8 +383,8 @@ survive every choice:
 - one process per bot token receives Telegram updates;
 - the database backups from step 4 actually restore — test one before you need it.
 
-Upgrades are `npm update @unitdhda/jobseeker` followed by a restart. Read the release notes for schema changes
-first: the schema is applied by you, not by the upgrade.
+Upgrades are `npm update @unitdhda/jobseeker` followed by a restart. Compare the packaged `schema.sql` against
+your database first: the schema is applied by you, not by the upgrade.
 
 ## Running from a checkout
 
