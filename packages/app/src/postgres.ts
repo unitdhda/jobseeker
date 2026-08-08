@@ -54,7 +54,7 @@ export const {
   recordUnitRun, recordUsage, releaseClaimedTelegramSession, replaceDigestSnapshot, replaceRoleEquivalences,
   requestAccess, saveCalibration,
   requireApprovedUser, saveCvSource, saveDeliveredArtifact, saveDeliverySettings, saveScore,
-  saveSearchProfile, scoredVacanciesByApplyIdPrefix, scraperSummary, searchScoredVacancies,
+  saveSearchProfile, scoredMatchCount, scoredVacanciesByApplyIdPrefix, scraperSummary, searchScoredVacancies,
   setTelegramSession, setUserLocale, setUserStatus, skipVacancy, spentToday, touchTelegramUser, transitionMatch,
   tryAcquireSingletonLock, unsentHighScoreVacancies, updateClaimedTelegramSession, upsertVacancy,
   vacanciesForBackfill,

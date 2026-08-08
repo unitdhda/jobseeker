@@ -11,7 +11,8 @@ import {
   type CareerProfile, type MatchEvidence, type PrefilterCalibration, type StoredCareerProfile,
 } from '@jobseeker/engine';
 import {
-  activeStoredCalibration, createMatches, getCvSource, getSearchProfile, vacanciesForBackfill, type Vacancy,
+  activeStoredCalibration, createMatches, getCvSource, getSearchProfile, scoredMatchCount, vacanciesForBackfill,
+  type Vacancy,
 } from './postgres.ts';
 import { roleTokenResolver } from './role-equivalence.ts';
 import { errorMessage } from './observability.ts';
@@ -99,7 +100,13 @@ export function reportCalibrationHealth(now = new Date()): CalibrationHealth {
   return health;
 }
 
-export interface UserLens { userId: string; cvText: string; profile: CareerProfile }
+export interface UserLens {
+  userId: string;
+  cvText: string;
+  profile: CareerProfile;
+  /** Verdicts this user already has. Decides how hard admission explores; see `explorationRateFor`. */
+  labels: number;
+}
 
 /** A user who can judge a vacancy: a CV and a career profile current for it. Others return null and wait. */
 export async function userLens(userId: string): Promise<UserLens | null> {
@@ -107,7 +114,23 @@ export async function userLens(userId: string): Promise<UserLens | null> {
   if (!cv) return null;
   const profile = parseStoredCareerProfile(
     await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256);
-  return profile ? { userId, cvText: cv.cvText, profile } : null;
+  if (!profile) return null;
+  return { userId, cvText: cv.cvText, profile, labels: await scoredMatchCount(userId).catch(() => Number.MAX_SAFE_INTEGER) };
+}
+
+/**
+ * How much of what the gates reject to buy anyway, for this user.
+ *
+ * A new user is the worst case for the ordering and the highest-stakes moment for the service: their queue is
+ * ranked by a calibration fitted entirely on other people's verdicts, and a backfill can drop thousands of
+ * matches into a queue drained at a daily rate. Until they have verdicts of their own, admission explores
+ * harder — the extra spend is bounded and buys the labels that make their own ordering possible. A failure to
+ * count labels falls back to the steady rate rather than the expensive one.
+ */
+export function explorationRateFor(labels: number): number {
+  return labels < config.prefilterBootstrapLabels
+    ? Math.max(config.prefilterExplorationRate, config.prefilterBootstrapExplorationRate)
+    : config.prefilterExplorationRate;
 }
 
 export interface AdmissionInput {
@@ -161,7 +184,7 @@ export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date): Matc
   const belowProbability = active != null && config.prefilterMinProbability > 0
     && stored < config.prefilterMinProbability;
   return admitEvidence({ filtered: result.filtered, expired: result.expired, belowProbability,
-    explorationRate: config.prefilterExplorationRate }) ? evidence : null;
+    explorationRate: explorationRateFor(lens.labels) }) ? evidence : null;
 }
 
 const backfillScanLimit = 3_000;

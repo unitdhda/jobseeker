@@ -123,6 +123,12 @@ export async function claimForScoring(userId: string, limit: number): Promise<nu
   return rows.map((row) => Number(row.vacancy_id));
 }
 
+/** How many verdicts this user has of their own — the evidence any ordering for them is founded on. */
+export async function scoredMatchCount(userId: string): Promise<number> {
+  const rows = await q(`select count(*) n from matches where user_id = $1 and llm_score is not null`, [userId]);
+  return Number(rows[0]?.n ?? 0);
+}
+
 /**
  * Retires matches whose advert outlived the prefilter's age limit before anyone judged them.
  *

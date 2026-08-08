@@ -4,8 +4,9 @@ import { careerProfileSchema, prefilterVacancy, vacancyRecency, type CareerProfi
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
 import { textSearchProfileSchema } from '@jobseeker/sources/examples/habr';
+import { config } from '../src/config.ts';
 import {
-  admitEvidence, calibrationHealth, calibrationStaleAfterDays, setActiveCalibration,
+  admitEvidence, calibrationHealth, calibrationStaleAfterDays, explorationRateFor, setActiveCalibration,
 } from '../src/matching.ts';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
@@ -215,4 +216,20 @@ test('an uncalibrated ordering reports itself as degraded, not as normal', () =>
   assert.equal(stale.active, true);
   assert.equal(stale.stale, true);
   assert.match(stale.message ?? '', /nothing has replaced it/);
+});
+
+test('a user with no verdicts of their own explores harder, and stops once they have some', () => {
+  // The defaults: 0.35 until 200 labels, then whatever the steady rate is (0 unless configured).
+  assert.equal(explorationRateFor(0), 0.35);
+  assert.equal(explorationRateFor(199), 0.35);
+  assert.equal(explorationRateFor(200), config.prefilterExplorationRate);
+  assert.equal(explorationRateFor(5_000), config.prefilterExplorationRate);
+  // Exploration is what turns a rejection into a label, so the elevated rate has to actually admit rejects.
+  const rejected = { filtered: true, expired: false, belowProbability: false };
+  const admitted = admitEvidence({ ...rejected, explorationRate: explorationRateFor(0), random: () => 0.2 });
+  assert.equal(admitted, true, 'a fresh user buys a sample of what the gate rejects');
+  assert.equal(admitEvidence({ ...rejected, explorationRate: explorationRateFor(0), random: () => 0.9 }), false);
+  // Expiry still refuses unconditionally: no amount of exploration is worth a filled advert.
+  assert.equal(admitEvidence({ filtered: true, expired: true, belowProbability: false,
+    explorationRate: explorationRateFor(0), random: () => 0 }), false);
 });

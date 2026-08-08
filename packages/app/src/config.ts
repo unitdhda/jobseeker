@@ -126,6 +126,10 @@ export const config = {
   // The share of prefilter-rejected (but unexpired) matches admitted anyway, buying labels from below the gate
   // so the calibration cannot freeze its own blind spots. Zero disables exploration.
   prefilterExplorationRate: fractionEnv('PREFILTER_EXPLORATION_RATE', 0, 0.5),
+  // A user with no verdicts of their own is ordered entirely by other people's; these buy them their own. The
+  // elevated rate applies until they cross the label count, then admission returns to the steady rate.
+  prefilterBootstrapExplorationRate: fractionEnv('PREFILTER_BOOTSTRAP_EXPLORATION_RATE', 0.35, 1),
+  prefilterBootstrapLabels: integerEnv('PREFILTER_BOOTSTRAP_LABELS', 200, 0, 100_000),
   // Minimum calibrated P(good), as a percentage, for a match to reach the scoring queue. Applies only while a
   // calibration is active, because without one the stored score is the raw evidence score and means something
   // else entirely. Zero leaves admission to the raw gate alone. Rejections here still face the exploration dice,
