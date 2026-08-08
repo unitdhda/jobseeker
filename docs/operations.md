@@ -112,7 +112,9 @@ unchanged until a refit replaces it, so no calibration rollback is needed to dep
 Two behaviour changes ride along and need no migration. The refit now validates on the newest quarter of the
 corpus rather than on random folds, and compares candidate against incumbent on those same rows with a paired
 bootstrap — expect **fewer** refits to be accepted, because the previous gate could not tell a real improvement
-from resampling noise. And `CALIBRATION_LABEL_SCORE` now defines what the calibration calls a positive; it
+from resampling noise. The judgment lane also gained an hourly `retire` stage: matches whose advert passed
+`PREFILTER_MAX_AGE_DAYS` while still waiting for the scoring budget move from `matched` to `expired`, so what was
+passed over stops being indistinguishable from what is still pending. And `CALIBRATION_LABEL_SCORE` now defines what the calibration calls a positive; it
 defaults to `DIGEST_MIN_SCORE`, so leaving it unset preserves today's behaviour exactly. Set it explicitly
 before changing `DIGEST_MIN_SCORE` for delivery reasons, or the next refit will silently relabel the whole
 corpus.

@@ -123,6 +123,23 @@ export async function claimForScoring(userId: string, limit: number): Promise<nu
   return rows.map((row) => Number(row.vacancy_id));
 }
 
+/**
+ * Retires matches whose advert outlived the prefilter's age limit before anyone judged them.
+ *
+ * Only 'matched' rows are touched: 'queued' means a scorer holds a claim, and racing it would lose a verdict
+ * already paid for. The prefilter refuses to admit an advert this old in the first place, so a match still
+ * waiting past the limit is one the budget never reached — the state machine already allows matched -> expired,
+ * nothing was writing it, and the difference between "passed over" and "still pending" was invisible.
+ */
+export async function expireStaleMatches(maxAgeDays: number, now: Date): Promise<number> {
+  const rows = await q(`update matches m set state = 'expired', updated_at = $2
+    from vacancies v
+    where v.id = m.vacancy_id and m.state = 'matched' and m.llm_score is null
+      and v.published_at < $2::timestamptz - make_interval(days => $1::int)
+    returning m.vacancy_id`, [maxAgeDays, now.toISOString()]);
+  return rows.length;
+}
+
 export async function addSpend(userId: string, day: string, costUsd: number, kind: 'scores' | 'applications' | 'search_profiles'): Promise<void> {
   await q(`insert into accounts (user_id, day, llm_cost_usd, ${kind})
     values ($1, $2, $3, 1)

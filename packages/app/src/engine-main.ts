@@ -12,7 +12,7 @@ import {
 } from '@jobseeker/engine';
 import {
   addSpend, approvedUsers, calibrationExamples, calibrationLabelsSince, createMatches,
-  dueUnits, getVacancy, latestCalibrationAttemptAt, nextUnitDueAt,
+  dueUnits, expireStaleMatches, getVacancy, latestCalibrationAttemptAt, nextUnitDueAt,
   tryAcquireSingletonLock,
   recordUnitRun, saveCalibration, spentToday, type Vacancy,
 } from './postgres.ts';
@@ -60,6 +60,24 @@ async function matchOne(lenses: UserLens[], vacancy: Vacancy, now: Date): Promis
 
 const calibrationRefitIntervalMs = 24 * 3_600_000;
 const calibrationMinNewLabels = 50;
+
+const retireIntervalMs = 3_600_000;
+let lastRetiredAt = 0;
+
+/**
+ * Retires matches the budget never reached before their advert aged out. Hourly is ample for a 30-day limit,
+ * and it keeps the judgment lane's two-minute wake cheap.
+ */
+async function retireStaleMatches(now: Date): Promise<number> {
+  if (now.getTime() - lastRetiredAt < retireIntervalMs) return 0;
+  lastRetiredAt = now.getTime();
+  const retired = await expireStaleMatches(config.prefilterMaxAgeDays, now);
+  if (retired) {
+    console.info(`Retired ${retired} matches whose advert passed the ${config.prefilterMaxAgeDays}-day limit `
+      + 'before the scoring budget reached them.');
+  }
+  return retired;
+}
 
 /** A stable, non-reversible key for a user's fitting-only intercept. Never used to look anyone up. */
 function calibrationUserKey(userId: string): string {
@@ -167,6 +185,7 @@ function loopPorts(): LoopPorts {
         (userId) => sendDailyDigest(userId, { scheduled: true }), now);
     },
     calibrate: refitCalibration,
+    retire: retireStaleMatches,
   };
 }
 

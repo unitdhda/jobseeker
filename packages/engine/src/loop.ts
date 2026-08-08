@@ -25,6 +25,13 @@ export interface JudgmentPorts {
   deliver(now: Date): Promise<void>;
   /** Optional periodic self-calibration; the port owns its own cadence gating and must be cheap when not due. */
   calibrate?(now: Date): Promise<void>;
+  /**
+   * Optional retirement of matches whose advert aged out before anyone judged them. The queue is drained in
+   * score order against a bounded budget, so its tail is never reached; without this those matches stay
+   * "waiting" forever and the count of what was passed over cannot be told from what is still pending. Owns its
+   * own cadence gating, like `calibrate`.
+   */
+  retire?(now: Date): Promise<number>;
 }
 export interface LoopPorts extends DiscoveryPorts, JudgmentPorts {}
 
@@ -34,7 +41,7 @@ export interface DiscoveryReport {
   matched: number;
   stageFailures: string[];
 }
-export interface JudgmentReport { scoring?: ScoreDueReport; stageFailures: string[] }
+export interface JudgmentReport { scoring?: ScoreDueReport; retired?: number; stageFailures: string[] }
 
 async function stage<T>(failures: string[], name: string, run: () => Promise<T>): Promise<T | null> {
   try {
@@ -62,6 +69,7 @@ export async function runJudgmentIteration(ports: JudgmentPorts, now: Date): Pro
   const report: JudgmentReport = { stageFailures: [] };
   report.scoring = await stage(report.stageFailures, 'score', () => ports.scoreDue(now)) ?? undefined;
   await stage(report.stageFailures, 'deliver', () => ports.deliver(now));
+  if (ports.retire) report.retired = await stage(report.stageFailures, 'retire', () => ports.retire!(now)) ?? undefined;
   if (ports.calibrate) await stage(report.stageFailures, 'calibrate', () => ports.calibrate!(now));
   return report;
 }
