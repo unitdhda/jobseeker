@@ -389,6 +389,13 @@ function rowToCandidate(row: Row): VacancyCandidate {
     combinedScore: row.combined_score == null ? null : Number(row.combined_score) };
 }
 /**
+ * The age past which a listing is no longer worth normalizing. Discovery and the normalization queue read the
+ * same cutoff, so a listing can never be recorded as pending work the queue is guaranteed to refuse.
+ */
+const listingAgeCutoff = (): string =>
+  new Date(Date.now() - storeSettings().prefilterMaxAgeDays * 86_400_000).toISOString();
+
+/**
  * Engine-world discovery: the listing lands in the shared store and nothing else. Who sees it is decided at match
  * time by every user's own vocabulary, not by whose search fetched it. Returns whether the listing is new here.
  */
@@ -399,6 +406,12 @@ export async function recordListingCandidate(raw: VacancyCandidateInput): Promis
   return withPostgresTransaction(async (client) => {
     const existing=(await txq(client,'select id,listing_hash from vacancies where source=$1 and source_id=$2 for update',
       [input.source,input.sourceId]))[0];
+    // A listing already older than the cutoff is unfulfillable work: `queuedListings` will never select it, and
+    // retention will never drop it either, because that keys on `last_seen_at` and every rediscovery bumps it.
+    // Recording one leaves a row that sits in 'discovered' forever. Only the insert is skipped -- an existing row
+    // is still updated, because it may already be normalized and it is the deduplication memory that stops a
+    // still-advertised listing from being rediscovered as new.
+    if(!existing && publishedAt != null && publishedAt < listingAgeCutoff()) return false;
     if(!existing) await client.query(`insert into vacancies(source,source_id,url,published_at,first_seen_at,updated_at,listing_search_name,
       listing_title,listing_summary,listing_payload,listing_hash,lifecycle_status,last_seen_at) values($1,$2,$3,$4,$5,$5,$6,$7,$8,$9::jsonb,$10,'discovered',$5)`,
       [input.source,input.sourceId,input.url,publishedAt??timestamp,timestamp,input.searchName,input.title,summary,payload,hash]);
@@ -498,7 +511,7 @@ export async function scraperSummary(): Promise<ScraperSummary> {
 
 export async function queuedListings(limit: number): Promise<VacancyCandidate[]> {
   await ready();
-  const freshest = new Date(Date.now() - storeSettings().prefilterMaxAgeDays * 86_400_000).toISOString();
+  const freshest = listingAgeCutoff();
   return (await q(`select * from vacancies where lifecycle_status in ('discovered','failed')
     and (normalization_retry_at is null or normalization_retry_at<=$1) and source=any($3::text[])
     and published_at>=$4 order by published_at desc limit $2`,

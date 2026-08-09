@@ -62,6 +62,19 @@ try {
   await d.saveDeliverySettings(userId, { startMinutes: 540, endMinutes: 1320, digestMinutes: 570, timezone: '+03:00' });
   assert.equal(await d.getCvHash(userId), `cv-${suffix}`);
 
+  // Discovery refuses a listing already past the normalization cutoff: the queue would never select it, and
+  // retention keys on last_seen_at, which every rediscovery bumps -- so the row would sit in 'discovered' forever.
+  // A listing that is merely old-to-us but freshly published must still be recorded.
+  const staleListing = { source: 'hh', sourceId: `${sourceId}-stale`, url: `https://hh.ru/vacancy/${suffix}0`,
+    searchName: 'integration', title: 'Ancient Integration Engineer', summary: 'Posted long ago', payload: null };
+  assert.equal(await d.recordListingCandidate({ ...staleListing,
+    publishedAt: new Date(Date.now() - 400 * 86_400_000).toISOString() }), false);
+  assert.deepEqual(await postgresQuery('select id from vacancies where source=$1 and source_id=$2',
+    [staleListing.source, staleListing.sourceId]), []);
+  assert.equal(await d.recordListingCandidate({ ...staleListing, sourceId: `${sourceId}-fresh`,
+    url: `https://hh.ru/vacancy/${suffix}1`, publishedAt: new Date().toISOString() }), true);
+  await postgresQuery('delete from vacancies where source=$1 and source_id=$2', ['hh', `${sourceId}-fresh`]);
+
   const saved = await d.upsertVacancy({ source: 'hh', sourceId, name: 'Postgres Integration Engineer',
     employer: 'Integration Employer', area: 'Remote', salaryFrom: null, salaryTo: null, salaryCurrency: null,
     salaryGross: null, experience: 'senior', employment: 'full', schedule: 'full', workFormat: 'remote',
