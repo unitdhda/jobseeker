@@ -1,5 +1,5 @@
 
-import { type CompanyListing, type CompanyListingPage, type CompanySite } from '@jobseeker/sources/drivers/company-site';
+import type { CompanyListing, CompanyListingPage, CompanySite } from '@jobseeker/sources/drivers/company-site';
 import { asObject, companyVacancyInput, createCompanySiteSource, examplePages, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 
 function objectNames(value: unknown): string[] {

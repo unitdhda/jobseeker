@@ -4,7 +4,7 @@
  * page's plain anchors and normalization reads the vacancy page's h1/main text.
  */
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { type JsonObject } from '@jobseeker/sources';
+import type { JsonObject } from '@jobseeker/sources';
 
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
 import { createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, mainVacancyText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';

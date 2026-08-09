@@ -5,7 +5,7 @@
  * instead of scraping the styled markup.
  */
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { type JsonObject } from '@jobseeker/sources';
+import type { JsonObject } from '@jobseeker/sources';
 
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
 import { asObject, createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, plainText, postingMatchesQuery, sourceUserAgent, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';

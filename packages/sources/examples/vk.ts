@@ -1,6 +1,6 @@
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 
-import { type CompanyListing, type CompanyListingPage, type CompanySite } from '@jobseeker/sources/drivers/company-site';
+import type { CompanyListing, CompanyListingPage, CompanySite } from '@jobseeker/sources/drivers/company-site';
 import { asObject, createCompanySiteSource, examplePages, hashedVacancy, htmlText, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 
 const employer = 'VK';

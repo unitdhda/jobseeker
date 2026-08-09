@@ -5,7 +5,7 @@
 import * as v from 'valibot';
 import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { type JsonObject, type SearchPlan, type SearchPlatform } from '@jobseeker/sources';
+import type { JsonObject, SearchPlan, SearchPlatform } from '@jobseeker/sources';
 import { asObject, createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, plainText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
 
 /** Federal region code; defaults to Москва, matching the default HH area. */

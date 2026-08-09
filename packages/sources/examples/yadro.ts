@@ -1,6 +1,6 @@
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
 
-import { type ApiListing, type ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
+import type { ApiListing, ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
 import { asObject, createApiSource, examplePages, hashedVacancy, htmlText, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 

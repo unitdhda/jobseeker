@@ -45,7 +45,7 @@ export const rabotaPlatform = textPlatform('rabota', 'Работа.ру', [
 
 import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { type JsonObject, type SearchPlan } from '@jobseeker/sources';
+import type { JsonObject, SearchPlan } from '@jobseeker/sources';
 import { asObject, htmlText, jobPostings, plainText, russianDate, structuredVacancy, VacancySearchCollector } from './toolkit.ts';
 
 type TextSearch = TextSearchProfile['searches'][number];

@@ -1,4 +1,4 @@
-import { type AtsProvider } from '@jobseeker/sources/drivers/ats';
+import type { AtsProvider } from '@jobseeker/sources/drivers/ats';
 import { atsHosts, atsProviders, atsSearchProfileSchema, configuredBoards, createAtsSource, exampleAtsBoards, initToolkit, postingMatchesQuery, type SourceExtensionApi } from './toolkit.ts';
 
 export {
