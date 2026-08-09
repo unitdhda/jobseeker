@@ -408,10 +408,10 @@ Everything above about configuration, the database, extensions, and ownership ap
 carries the example providers under `packages/sources/examples` ready to copy into `extensions/`, and
 `packages/app/schema.sql` is the same file the package ships.
 
-For a long-running deployment from a checkout the repository provides a multi-stage `Dockerfile` with a
-browser-capable runtime target, a Compose topology under `docker/`, a seccomp profile for Chromium, and the
-release and rollback procedures in [operations](operations.md). Do not copy live host values into documentation or
-source control.
+Running from a checkout suits development. For a long-running deployment, install the published package — either
+under a supervisor, or in the container described by the reference directory under `docker/vps/`, which brings a
+Compose topology, an image recipe, and a seccomp profile for Chromium. Release and rollback procedures are in
+[operations](operations.md). Do not copy live host values into documentation or source control.
 
 ## Production checklist
 

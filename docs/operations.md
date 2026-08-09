@@ -3,10 +3,12 @@
 Jobseeker is a single long-running process. There are two sensible ways to run it, and they differ only in
 packaging:
 
-- **a container** — the repository's `Dockerfile` and Compose topology, which is what a deployment with
-  browser-backed sources wants, since those need Chromium and a pinned system layer;
+- **a container** — an image that installs the published package, which is what a deployment with browser-backed
+  sources wants, since those need Chromium and a pinned system layer;
 - **the CLI directly** — `jobseeker start` under systemd or any supervisor, which is enough when your sources are
   API-backed.
+
+Both install the same npm package. The container adds isolation and a system layer around it.
 
 Everything below applies to both. For first-time setup — database, bot, credentials, sources — see
 [self-hosting](self-hosting.md).
@@ -27,8 +29,15 @@ Everything below applies to both. For first-time setup — database, bot, creden
 
 ## Running as a container
 
-The repository provides a multi-stage `Dockerfile` (build the `worker` target), a Compose topology under
-`docker/`, and a Chromium seccomp profile. From the deployment directory holding `compose.yaml` and its `.env`:
+The repository provides a reference deployment directory under `docker/vps/` — a Compose topology, the image
+recipe beside it, and the version pin — plus a Chromium seccomp profile. Your deployment directory holds:
+
+```text
+compose.yaml  Dockerfile  package.json  seccomp-chromium.json  extensions/  .env
+```
+
+`package.json` pins the release, `extensions/` holds this deployment's own modules, and the image installs the
+package from the registry. Then:
 
 ```bash
 docker compose --env-file .env up -d --build
@@ -83,14 +92,22 @@ answer is *no webhook*. Print only the derived booleans, never the URL, which ma
 Do not force a discovery pass afterwards; wait for a due unit. The judgment lane wakes on its own every two
 minutes, so scoring and delivery resume without help.
 
-**Container** — update the source checkout the image builds from, then rebuild and restart:
+**Container** — change the pinned version, then rebuild and restart:
 
 ```bash
-git fetch origin main && git reset --hard FETCH_HEAD && git log --oneline -1
+# in the deployment directory, edit package.json:
+#   "@unitdhda/jobseeker": "<new version>"
 docker compose --env-file .env up -d --build jobseeker
+docker compose logs --since 5m jobseeker | grep -E 'Extensions loaded|Engine loop started'
 ```
 
-**CLI** — `npm update @unitdhda/jobseeker`, then restart the service.
+The startup line reports how many providers the extensions registered. Compare it with what you expect before
+walking away: a deployment that loses an extension still starts and reports healthy, and simply discovers less.
+
+**CLI** — `npm install @unitdhda/jobseeker@<new version>`, then restart the service.
+
+**Extensions.** They are yours, so an upgrade does not touch them. When a release changes the api an extension
+uses, update the extension in the same rebuild — the loader fails the process if a module cannot be imported.
 
 **Schema.** `packages/app/schema.sql` is always the complete current schema, written as if creating the database
 from nothing. There is no migration series, no down-migration, and no per-release upgrade note: the file is the
