@@ -52,8 +52,8 @@ npx jobseeker start
 At startup the service loads ESM modules from `./extensions` (override with `JOBSEEKER_EXTENSIONS`). Each module
 default-exports `register(api)`; through `api` an extension registers vacancy-source providers and additional AI
 providers, hooks startup/shutdown, and reaches the bundled source toolkit — generic drivers for JSON APIs,
-first-party career sites, JSON-LD boards, and ATS boards. The application carries the drivers, never a catalogue
-of employers.
+first-party career sites, JSON-LD boards, and ATS boards. The application carries the drivers, and a deployment
+chooses which employers it follows.
 
 Ready-made providers for ~19 public sources live in the repository under `packages/sources/examples` as files to
 copy into the extensions directory, where each registers itself:
@@ -70,7 +70,7 @@ dependencies in the extensions directory's own `package.json`.
 
 - **One process per bot token.** Telegram delivers each update once; a second poller silently splits them.
 - **One engine loop.** The loop guards itself with a PostgreSQL advisory lock: a second `RUN_JOBS=true` process
-  logs that the lock is held and idles instead of duplicating discovery and delivery.
+  logs that the lock is held and idles until the holder releases it.
 - The schema of record is the packaged `schema.sql`; `jobseeker db init` applies it to an empty database only.
 - PDF generation uses the bundled OFL fonts (JetBrains Mono, Spectral); point `TYPST_FONT_PATHS` elsewhere to
   override.

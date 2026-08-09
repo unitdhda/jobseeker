@@ -17,13 +17,13 @@ instances without configuration or pool leakage.
 - `telegram-repos.ts` — expiring Telegram sessions and durable webhook-update claims.
 
 Source listing shapes come from `@jobseeker/engine/contracts`; persisted CV shapes come from
-`@jobseeker/cv/extract`. Runtime modules call named repositories rather than issuing raw SQL.
+`@jobseeker/cv/extract`. Runtime modules call named repositories.
 
-Two invariants live here, in SQL rather than convention:
+Two invariants live here, enforced in SQL:
 
 1. **The delivered wall** — a match in `alerted`, `digested`, `skipped`, `applying`, or `applied` can never be
    re-created or re-delivered; ingest is `on conflict do nothing`, transitions check their source state.
 2. **Scores land only on claims** — `saveScore` updates only a row in `queued`, so a lost scoring race is a
-   no-op, never a corruption.
+   no-op.
 
 Tested through the app's integration suite (`bun run test:postgres`) and the migration gates.

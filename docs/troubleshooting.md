@@ -78,7 +78,7 @@ full daily limit.
 **Everything still scores, but the wrong things reach the top.** The order matches are scored in is re-fitted daily
 from past verdicts, so it can change without you touching anything. Check the `Calibration refit` log lines for a
 recent `accepted`, and see [operations](operations.md#watching-the-self-calibrating-prefilter) for how to freeze or
-undo it. Judge it over days rather than one digest — a fit is only adopted when it measures better, but "better on
+undo it. Judge it over days — a fit is only adopted when it measures better, but "better on
 average" and "better for the vacancy in front of you" are not the same claim.
 
 **A specific match that will not score, while others around it do.** A batch that fails hands its matches back to
@@ -111,10 +111,10 @@ Check:
 
 Current parsing checks closed-page markers before waiting and again after timeout. If errors persist:
 
-1. inspect only safe page-state markers, not the full personal browsing profile;
+1. inspect only safe page-state markers;
 2. verify the persistent browser profile is writable and survives restarts;
 3. solve captcha interactively in that same profile;
-4. confirm the failure is per page, not caused by a batch-wide deadline;
+4. confirm the failure is per page by checking whether other pages in the same batch succeeded;
 5. add a parser fixture before changing selectors.
 
 Do not add HH browser parallelism as a timeout fix.
@@ -131,7 +131,7 @@ Check:
 - hard-rejection reasons;
 - missing versus explicitly incompatible requirements;
 - the model ID and reasoning level recorded for that event;
-- distributions across fresh data rather than one vacancy.
+- distributions across fresh data.
 
 Changing alert thresholds can create delivery spikes and should follow a distribution/yield review.
 
@@ -157,7 +157,7 @@ Delivered artifacts are keyed to the CV hash.
 
 - Same user + vacancy + artifact + unchanged CV → resend cached artifact.
 - Changed CV hash → regenerate and replace the artifact.
-- CV cache stores a Telegram `file_id`, not PDF bytes.
+- CV cache stores a Telegram `file_id`.
 - Letter cache stores the delivered text.
 
 If an unchanged request regenerates, inspect `matches.application_artifacts` for the artifact key and matching
@@ -254,7 +254,7 @@ Check:
 - the typed reference contains only one to six letters;
 - the prefix resolves uniquely among the user's scored vacancies.
 
-The bold text is the minimum unique prefix, not the only valid prefix. Any longer unambiguous prefix and the full ID
+The bold text is the minimum unique prefix. Any longer unambiguous prefix and the full ID
 must resolve.
 
 ## Database readiness fails

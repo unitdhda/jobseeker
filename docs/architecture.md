@@ -55,7 +55,7 @@ provider factories register through `setProvider`. Collection options contain on
 provider factories own page limits, regions, boards, and browser configuration/state. Discovery, normalization, and
 shutdown receive an explicit `SourceContext`; there is no ambient source runtime. **No concrete source lives in the
 application at all**: extensions register providers at startup through the same public API, so a deployment's source
-set is configuration rather than a release. Reusable API, grouped ATS, company-site, and JSON-LD wrappers all return
+set is configuration. Reusable API, grouped ATS, company-site, and JSON-LD wrappers all return
 ordinary `createSourceProvider` providers without putting a source catalogue back inside the package; the example
 providers shipped with `@jobseeker/sources` demonstrate those four composition paths. The application owns one
 production store and source collection. Trusted provider metadata is assembled first so the
@@ -71,12 +71,12 @@ A source profile contains searches derived from a CV. Compilation converts those
 - a **subscription**, connecting one user to that unit while retaining the user's own search name and source query.
 
 Equivalent demand from different users becomes one fetch. Compilation is the only clustering moment: unit identity
-does not drift at runtime, and profile regeneration can adopt an existing compatible unit instead of minting a new
-one.
+does not drift at runtime, and profile regeneration adopts an existing compatible unit when one already covers the
+same demand.
 
 `search_units.next_run_at` is the only discovery schedule. A unit that produces novelty tightens its cadence toward
-the configured floor; quiet runs stretch it toward the ceiling. Failed source runs remain due rather than being
-silently rescheduled as successes.
+the configured floor; quiet runs stretch it toward the ceiling. A failed source run leaves its unit due, so the
+next tick retries it.
 
 ## Listing-only discovery
 
@@ -190,8 +190,8 @@ Two of those signals are weighted by how unusual a word is across the adverts th
 (`idf_vocabulary`, rebuilt daily alongside role equivalences). It matters because matching on "designer" — a word
 half the board uses — is far weaker evidence than matching on "communication designer", and a token-overlap ratio
 cannot tell them apart: it saturates at 1.0 for half of all matches, and that half converted *worse* than the band
-beneath it. Rarity is a separate number rather than a reweighting of the ratio, because weighting a ratio leaves a
-full match at 1.0 however common its words are — that was measured, and it changed nothing. The same weighting
+beneath it. Rarity is a separate number, because a ratio leaves a full match at 1.0 however common its words are.
+The same weighting
 applied to the body cosine removes what was largely a document-length meter: the old cosine rose with advert
 length while advert quality fell, and the rarity-weighted one is flat across length bands.
 
@@ -203,10 +203,9 @@ A constant among varying labels is noise, and a descent will fit noise happily.
 Once a day the judgment lane fits a logistic model over them and scores it by cross-validation, with each fold
 judged by a model that never trained on it. The candidate replaces the running one **only if it orders at least as
 well**, on both ranking quality and precision at the top of the queue. Otherwise it is recorded and discarded. Either
-way the attempt lands in `calibrations`, so the history of what was tried and what won is inspectable rather than
-implied.
+way the attempt lands in `calibrations`, so the history of what was tried and what won is inspectable.
 
-The ordering is computed when the queue is drained, not when a match is created. Only the evidence is frozen; the
+The ordering is computed when the queue is drained. Only the evidence is frozen; the
 number derived from it is a function of a model that changes, so freezing that too caused two faults. Rows written
 under different models held different quantities in one column and were sorted against each other regardless — on
 production, rows averaging 47.9 on a 1..89 range next to rows averaging 31.4 on a 5..74 range. And an accepted
@@ -218,12 +217,12 @@ By default the calibration decides only the *order*: admission is still the raw 
 (`PREFILTER_MIN_SCORE`). `PREFILTER_MIN_PROBABILITY` additionally refuses matches whose calibrated probability is
 too low, which is the sharper of the two filters because it acts on the signal that was actually measured against
 LLM verdicts. It is off by default, because the cost of a gate is paid in matches the user never sees, and the
-right height for it is a property of a given deployment's data rather than a value worth hardcoding.
+right height for it is a property of a given deployment's data.
 
 Once a deployment trusts its calibration, the better arrangement is to make the probability the **main** gate and
 demote the raw score to a low backstop. Gating hard on the raw score means gating on the weaker signal, and the
 two are not interchangeable at equal savings: the same reduction in spend costs several times more delivered
-alerts when taken from the raw score instead of the calibrated one. Measure it on your own data before moving
+alerts when taken from the raw score. Measure it on your own data before moving
 either, because both the raw score's weakness and the calibration's strength are deployment-specific.
 
 The backstop matters. A calibration can be absent — a fresh database, a rejected fit history, a failed load — and
@@ -285,7 +284,7 @@ registered. Role-specific model IDs come only from configuration:
 - `AI_SCORING_FALLBACK_MODEL` — optional fallback.
 
 Credentials come from provider environment variables or the provider-keyed credential store. When private runtime
-storage is configured, that document is held there encrypted instead of on local disk. OAuth refresh is serialized in-process and
+storage is configured, that document is held there encrypted. OAuth refresh is serialized in-process and
 with a PostgreSQL transaction lock so rotating refresh tokens cannot be refreshed concurrently by two workers.
 
 ## PostgreSQL schema
@@ -306,8 +305,8 @@ with a PostgreSQL transaction lock so rotating refresh tokens cannot be refreshe
 | `telegram_updates` | Durable webhook-update processing state |
 
 Source and platform IDs are validated by the application-owned provider collection; `SEARCH_PLATFORMS` is checked
-against that collection's provider metadata rather than a second hard-coded ID list. PostgreSQL deliberately does
-not repeat the collection as an enum-style `CHECK`, so adding an adapter does not require another schema migration.
+against that collection's provider metadata. The schema leaves source identity to the collection, so adding an
+adapter requires no schema migration.
 
 ## Deployment surfaces
 

@@ -4,13 +4,13 @@
 instance-scoped registration, explicitly injected runtime context, strict HTTP/SSRF boundary, normalization helpers,
 and generic source drivers.
 
-It is deliberately **not a provider catalogue**. Concrete vacancy sources are deployment concerns: they live in
-extensions, which register them at startup through this package's public API (see
-[`extensions/README.md`](../../extensions/README.md)). The package ships example providers under `examples` — an
-extension may register them as they are, adapt them, or ignore them entirely.
+Concrete vacancy sources are deployment concerns: they live in extensions, which register them at startup through
+the api the application injects (see [`extensions/README.md`](../../extensions/README.md)). The package ships
+reference providers under `examples` as files a deployment copies into its extensions directory, adapts, or
+ignores.
 
-Ozon, RWB, Yandex, Avito, hh.ru, and the other examples are exactly that: providers assembled above this package.
-Their identities, hosts, codecs, browser ownership, and deployment settings do not belong here.
+Ozon, RWB, Yandex, and Avito are providers assembled above this package. Their identities, hosts, codecs, and
+deployment settings belong with the deployment that runs them.
 
 ## Package boundary
 
@@ -254,7 +254,7 @@ export function exampleApiSource(options = {}) {
 ```
 
 The driver budgets pages across planned searches, records bounded candidates, follows codec-provided cursors, fetches
-optional detail JSON, and isolates normalization failures per candidate. Ozon and RWB are application-owned examples.
+optional detail JSON, and isolates normalization failures per candidate. Ozon and RWB are worked examples of it.
 
 ### ATS driver
 
@@ -293,13 +293,13 @@ Providers can declare optional planning capabilities:
 - `mergeText: 'or'` means equivalent text demand may be combined into one OR query.
 
 The provider schema validates generated search profiles, while `template()` tells the profile generator what the source
-accepts. Source-specific query language and restrictions stay with the concrete provider, not in a package-wide map.
+accepts. Source-specific query language and restrictions stay with the concrete provider.
 
 ## Privacy and observability
 
 A search query can be derived from private CV content. Concrete providers and drivers must not put raw queries,
 rationales, or query-bearing URLs into traces. Trace source ID, page/cursor position, result counts, and bounded error
-summaries instead. Candidate `sourceQuery` is internal matching provenance, not observability output.
+summaries instead. Candidate `sourceQuery` is internal matching provenance, kept out of traces.
 
 ## Application composition example
 

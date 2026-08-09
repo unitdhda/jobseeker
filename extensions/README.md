@@ -1,6 +1,6 @@
 # Extensions
 
-This directory belongs to the deployment, not to the repository. Nothing in it is tracked except this file: the
+This directory belongs to the deployment. Nothing in it is tracked except this file: the
 application registers no vacancy sources and no extra AI providers by itself, and it has no opinion about which
 ones you run.
 
@@ -17,7 +17,7 @@ published, so they cannot be imported at runtime. Type-only imports are erased o
 ## Getting sources
 
 The repository ships reference providers for about nineteen public sources under
-[`packages/sources/examples`](../packages/sources/examples). They are files to copy, not a package to import:
+[`packages/sources/examples`](../packages/sources/examples). They are files to copy:
 
 ```bash
 cp -r packages/sources/examples extensions/examples

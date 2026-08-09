@@ -18,9 +18,9 @@ Everything below applies to both. For first-time setup — database, bot, creden
   may be configured.
 - **One engine loop.** `RUN_JOBS=true` expresses intent; the loop starts only once its process takes a PostgreSQL
   advisory lock. A second one logs `Another process holds the engine-loop lock` and idles — a misconfiguration to
-  fix, not a supported topology.
+  fix.
 - **PostgreSQL is the only runtime database**, and `packages/app/schema.sql` is its only schema of record.
-- **The deployment's `extensions/` directory and environment file are assets, not build output.** They are
+- **The deployment's `extensions/` directory and environment file are assets you own.** They are
   untracked by design. Back them up, and never `git clean` or `rsync --delete` over them.
 - Never print environment values, tokens, database URLs, OAuth state, encryption keys, or user data — including
   into this document, which deliberately contains no addresses, ports, or paths.
@@ -42,7 +42,7 @@ Worth knowing about that topology:
 - the root filesystem is read-only with a `tmpfs` for `/tmp` and a named volume for `/app/data`, so anything that
   must survive a recreation belongs on a volume or in object storage. Credentials in a local `auth.json` do **not**
   survive; see [the credential store](self-hosting.md#where-credentials-are-kept);
-- extensions are copied into the image at build time, so changing your sources means rebuilding, not restarting;
+- extensions are copied into the image at build time, so changing your sources means rebuilding;
 - the health port is published on loopback only.
 
 ## Running the CLI directly
@@ -94,23 +94,16 @@ docker compose --env-file .env up -d --build jobseeker
 
 **Schema.** `packages/app/schema.sql` is always the complete current schema, written as if creating the database
 from nothing. There is no migration series, no down-migration, and no per-release upgrade note: the file is the
-only description of what the database should look like, and it is kept whole rather than accumulated in pieces.
+only description of what the database should look like, and it is kept whole.
 
 For a new database, `jobseeker db init` applies it. For a database that already exists, reconcile it against the
 file — `schema.sql` says what the columns are, and adding a missing nullable column is safe while the service is
 running, because every instance shares one database and every statement in the code names its columns explicitly.
-Widen before the code that writes it, never after, and recover from a mistake by shipping a forward-compatible
-revision rather than by reverting the database.
+Widen before the code that writes it, and recover from a mistake by shipping a forward-compatible revision.
 
-Behaviour changes in the current revision that need nothing applied: the refit validates on the newest quarter of
-the corpus rather than on random folds, and compares candidate against incumbent on those same rows with a paired
-bootstrap — expect **fewer** refits to be accepted, because the previous gate could not tell a real improvement
-from resampling noise. The judgment lane gained an hourly `retire` stage, so matches whose advert passed
-`PREFILTER_MAX_AGE_DAYS` while still waiting for the scoring budget move from `matched` to `expired` instead of
-staying indistinguishable from what is still pending. And `CALIBRATION_LABEL_SCORE` now defines what the
-calibration calls a positive; it defaults to `DIGEST_MIN_SCORE`, so leaving it unset preserves today's behaviour
-exactly. Set it explicitly before changing `DIGEST_MIN_SCORE` for delivery reasons, or the next refit will
-silently relabel the whole corpus.
+`CALIBRATION_LABEL_SCORE` defines what the calibration counts as a positive. It defaults to `DIGEST_MIN_SCORE`,
+which ties the label to the delivery bar. Set it explicitly before you change `DIGEST_MIN_SCORE` for delivery
+reasons, because the next refit relabels the whole corpus at whatever value is in force.
 
 ## Rolling back
 
@@ -125,10 +118,10 @@ docker compose logs --since 6h jobseeker | grep -E 'Engine (tick|discovery|judgm
 docker stats --no-stream
 ```
 
-Judge staleness against the database clock, not your own: compare `select now()` with each unit's `next_run_at`
-before concluding that discovery has stopped. A quiet hour is often just cadence.
+Judge staleness against the database clock: compare `select now()` with each unit's `next_run_at` before
+concluding that discovery has stopped. A quiet hour is often just cadence.
 
-The probe above assumes the image's own runtime — use `node -e` instead of `bun -e` if yours is Node-based.
+The probe above assumes the image's own runtime — use `node -e` if yours is Node-based.
 
 Symptom-by-symptom diagnosis — no vacancies, no scores, duplicate alerts, failing documents, OAuth trouble — is in
 [troubleshooting](troubleshooting.md).
@@ -144,7 +137,7 @@ docker compose logs --since 48h jobseeker | grep 'Calibration refit'
 ```
 
 `accepted` means the new ordering took over; `rejected` means the running one held and nothing changed. Both are
-normal — a long run of `rejected` means the current ordering is holding up, not that the mechanism is broken. Every
+normal — a long run of `rejected` means the current ordering is holding up. Every
 attempt is also a row in `calibrations` with its metrics, which is the durable record.
 
 Two controls, both blunt on purpose:
@@ -153,7 +146,7 @@ Two controls, both blunt on purpose:
 - To undo a fit that made things worse, mark the active row in `calibrations` as not accepted; the service falls
   back to the previous accepted one on restart.
 
-Do not hand-edit coefficients. If you want the ordering to improve rather than merely hold, the lever is
+Do not hand-edit coefficients. To make the ordering improve, the lever is
 `PREFILTER_EXPLORATION_RATE`: it buys verdicts from below the current bar, which is the only evidence that can tell
 the model its bar is wrong. It costs model spend in proportion, so raise it deliberately.
 

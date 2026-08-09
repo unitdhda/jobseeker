@@ -42,7 +42,8 @@ every provider the loaded extensions supplied — the application constructs non
 
 There is also no `app -> sources/examples` edge. The application bundles the generic drivers, never the example
 providers: `packages/sources/examples` is a directory a deployment copies into its extensions directory, where the
-files bind the toolkit from the injected api rather than importing workspace packages that are never published.
+files bind the toolkit from the injected api, because the workspace packages they would otherwise import are never
+published.
 That keeps a catalogue of named employers out of the published application. There is also no
 `engine -> cv` edge: CV/application generation is a cross-domain workflow coordinated in
 `packages/app/src/workflows.ts`; engine owns matching and state policy, while CV owns extraction, structured

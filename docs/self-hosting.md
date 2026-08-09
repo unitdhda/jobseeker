@@ -28,8 +28,8 @@ There are two ways to run it, and they differ only in where the code comes from:
 Fonts for PDF generation ship inside the package (JetBrains Mono and Spectral, both OFL), so nothing is required
 there unless you want different ones.
 
-Source feasibility depends on network egress. Probe sources from the machine that will run discovery, not only from
-a laptop.
+Source feasibility depends on network egress. Probe sources from the machine that will run discovery, because its
+egress is what decides which of them work.
 
 ## 1. Install
 
@@ -146,7 +146,7 @@ host at all: `DATABASE_URL=postgres://jobseeker:<password>@db:5432/jobseeker` wi
 
 ### An existing PostgreSQL server
 
-Create a dedicated database and role rather than reusing an existing one — `jobseeker db init` expects the `public`
+Create a dedicated database and role — `jobseeker db init` expects the `public`
 schema to be empty:
 
 ```bash
@@ -180,9 +180,9 @@ npx jobseeker db init
 ```
 
 It prints how many tables it created. `db init` refuses a database that already has tables in `public`: it is an
-initializer, not a migration tool, and there is no migration series to replay. `schema.sql` is always written
-whole, as the complete current schema — so on an existing database you reconcile it against that file rather than
-replaying a history of changes. See [operations](operations.md#upgrading).
+initializer, and there is no migration series to replay. `schema.sql` is always written whole, as the complete
+current schema — so on an existing database you reconcile it against that file. See
+[operations](operations.md#upgrading).
 
 Back the database up from the start. It holds every CV, search profile, match, and generated artifact; the schema
 can be recreated from the package, but the data cannot.
@@ -214,8 +214,7 @@ The list covers every provider in the pi-ai catalog plus any an extension regist
 it supports: an OAuth flow (browser or device code, for subscription plans) or an API key, typed invisibly. The
 credential is written under the provider's id, which is the same id you name in `AI_MODEL`.
 
-If you already have an `auth.json` — from pi, or from an earlier deployment — import it instead of logging in
-again:
+If you already have an `auth.json` — from pi, or from an earlier deployment — import it directly:
 
 ```bash
 npx jobseeker credentials             # reads AI_AUTH_FILE, or ./auth/auth.json
@@ -272,8 +271,8 @@ is wired in without touching the application.
 providers. At startup the service scans `./extensions` (override with `JOBSEEKER_EXTENSIONS`) for ESM modules —
 single files, or subdirectories with an `index.*` — and calls each module's default-exported `register(api)`.
 
-The bundled `@jobseeker/sources` toolkit reaches extensions through that `api` — the generic drivers, not a
-catalogue of employers. Ready-made providers for about 19 public sources ship in the repository as files to copy,
+The bundled `@jobseeker/sources` toolkit reaches extensions through that `api`, supplying the generic drivers.
+Ready-made providers for about 19 public sources ship in the repository as files to copy,
 not as something the application imports:
 
 ```bash
@@ -365,7 +364,7 @@ Expected startup signals:
 - `/ready` reports PostgreSQL persistence.
 
 If a second instance is already running the loop, the new process logs `Another process holds the engine-loop lock`
-and stays idle instead — which is a configuration mistake to fix, not a supported topology.
+and stays idle — which is a configuration mistake to fix.
 
 ## 9. First-use flow
 
@@ -388,7 +387,7 @@ survive every choice:
 - the database backups from step 4 actually restore — test one before you need it.
 
 Upgrades are `npm update @unitdhda/jobseeker` followed by a restart. Compare the packaged `schema.sql` against
-your database first: the schema is applied by you, not by the upgrade.
+your database first: you apply the schema yourself.
 
 ## Running from a checkout
 

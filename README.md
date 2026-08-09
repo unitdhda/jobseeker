@@ -70,7 +70,7 @@ not block scoring or Telegram delivery.
 
 ## What arrives in Telegram
 
-Each alert is designed to support a decision rather than merely announce a URL:
+Each alert carries what a decision needs:
 
 - a calibrated `0–100` fit score;
 - a short assessment of the match;
@@ -91,7 +91,7 @@ language instead, so an application is never written in the wrong one.
 
 | Capability | What it solves |
 |---|---|
-| **Continuous discovery** | CV-derived searches run on adaptive schedules instead of relying on manual browsing. |
+| **Continuous discovery** | CV-derived searches run on adaptive schedules. |
 | **Fit before AI spend** | Cheap lexical matching keeps obviously weak vacancies out of the expensive scoring queue. |
 | **A filter that improves** | The ordering that spends your model budget is re-fitted daily from the service's own past verdicts, and replaced only when it measurably ranks better. |
 | **Shared discovery** | A listing found for one user can be evaluated for others without fetching it again. |
@@ -117,13 +117,13 @@ drivers for the surfaces sites actually expose, and ready-made example providers
 | `createJsonLdBoardSource` | Enumerated boards with schema.org `JobPosting` | Avito Careers, Geekjob, Kontur Careers |
 | `createSourceProvider` | Anything else, including browser-backed sources | Habr Career, Rabota.ru, HireHi, Работа России; a browser-backed source such as hh.ru is a deployment's own extension |
 
-The example providers ship as files to copy (`cp -r packages/sources/examples extensions/examples`), not as
-something the application imports — the published package carries the drivers, never a catalogue of employers.
+The example providers ship as files to copy (`cp -r packages/sources/examples extensions/examples`); the published
+package carries the drivers, and a deployment chooses which employers it follows.
 
 A provider declares every host it may touch, fetches only through the injected HTTP client, and is registered
 independently of whether it participates in discovery: `SEARCH_PLATFORMS` decides that separately, so a source can stay
 registered for normalization and URL validation while contributing no new searches. An extension owns its own runtime
-dependencies, so a browser-driven source keeps Playwright next to itself instead of in the application.
+dependencies, so a browser-driven source keeps Playwright next to itself.
 
 Source availability depends on network egress and the source's current behavior. An example existing does not mean it
 should be enabled in every deployment; probe it from the machine that will actually scrape it.
@@ -209,12 +209,12 @@ ships to npm.
 The [workspace dependency graph](docs/dependency-graph.md) documents and enforces the allowed import directions.
 PostgreSQL is the only runtime database and `packages/app/schema.sql` is its single schema of record — there is no
 migration series. `search_units.next_run_at` owns the discovery schedule, and the loop takes a PostgreSQL advisory
-lock, so a second `RUN_JOBS=true` process idles instead of duplicating work. Telegram has no such guard: exactly one
+lock, so a second `RUN_JOBS=true` process idles until the holder releases it. Telegram has no such guard: exactly one
 process per bot token may receive updates.
 
 ## AI providers and cost
 
-Inference goes through [Pi AI](https://github.com/earendil-works/pi-ai). Model selection is configuration, not code:
+Inference goes through [Pi AI](https://github.com/earendil-works/pi-ai). Model selection is configuration:
 
 - `AI_MODEL` handles search-profile and application generation;
 - `AI_SCORING_MODEL` handles high-volume vacancy scoring;
@@ -256,7 +256,7 @@ PostgreSQL database, Telegram token, and model credentials.
 
 ## Project status
 
-Jobseeker is a production-used personal service, not a hosted public SaaS. It is designed for a small number of users
+Jobseeker is a production-used personal service. It is designed for a small number of users
 per deployment and assumes an operator comfortable with Docker, PostgreSQL, Telegram bots, browser automation, and
 model credentials.
 
