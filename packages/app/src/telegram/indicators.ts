@@ -1,12 +1,9 @@
 import { InlineKeyboard } from 'grammy';
-import { config } from '../config.ts';
 import { errorMessage } from '../observability.ts';
-import { messages, userLocale } from '../i18n/index.ts';
 import {
   getBot,
   isMissingTelegramMessageError,
   isUnchangedMessageError,
-  ownerUserId,
   retryAfterMilliseconds,
   targetChat,
 } from './api.ts';
@@ -23,9 +20,6 @@ export interface EditableIndicator {
   /** Replaces the indicator with its own result instead of deleting it, so one message carries the whole task. */
   finish(text: string, keyboard?: InlineKeyboard): Promise<void>;
 }
-export type CycleStatusPhase = 'scraping' | 'filtering' | 'normalization' | 'scoring';
-export interface CycleStatus { set(phase: CycleStatusPhase, current?: number, total?: number): void; stop(): Promise<void> }
-
 export async function startEditableIndicator(userId: string, initialLabel: string): Promise<EditableIndicator | null> {
   const api = getBot().api; const chat = await targetChat(userId);
   try {
@@ -90,19 +84,4 @@ export async function startEditableIndicator(userId: string, initialLabel: strin
       },
     };
   } catch (error) { console.warn(`Could not start task indicator: ${errorMessage(error)}`); return null; }
-}
-
-export async function startCycleStatus(): Promise<CycleStatus | null> {
-  if (!process.env.TELEGRAM_BOT_TOKEN || !config.telegramUserId) return null;
-  // The cycle indicator is only ever shown to the owner, so it speaks the owner's language.
-  const text = messages(await userLocale(ownerUserId())).cycle;
-  const indicator = await startEditableIndicator(ownerUserId(), text.scraping);
-  if (!indicator) return null;
-  return {
-    set(phase, current, total) {
-      const label = text[phase];
-      indicator.setLabel(current == null || total == null ? label : text.progress(label, current, total));
-    },
-    stop: () => indicator.stop(),
-  };
 }

@@ -30,7 +30,3 @@ export async function userLocale(userId: string): Promise<Locale> {
   const user = await getTelegramUser(userId);
   return normalizeLocale(user?.locale) ?? defaultLocale;
 }
-
-export async function userMessages(userId: string): Promise<Messages> {
-  return messages(await userLocale(userId));
-}

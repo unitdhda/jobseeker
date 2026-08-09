@@ -381,9 +381,6 @@ export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; 
     return { id: normalizedId, needsScore: changed, duplicate: false };
   });
 }
-export async function hasVacancySourceId(source: string, sourceId: string): Promise<boolean> {
-  await ready(); return Boolean((await q('select 1 from vacancies where source=$1 and source_id=$2 and apply_id is not null', [source, sourceId])).length);
-}
 function rowToCandidate(row: Row): VacancyCandidate {
   return { source: String(row.source), sourceId: String(row.source_id), url: String(row.url),
     searchName: String(row.discovery_search_name ?? row.listing_search_name), title: String(row.listing_title),

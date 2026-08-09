@@ -288,14 +288,6 @@ export const ru = {
       + 'успехе или ошибке, затем повторите запрос.',
   },
 
-  cycle: {
-    scraping: 'Ищу вакансии',
-    filtering: 'Фильтрую',
-    normalization: 'Обрабатываю',
-    scoring: 'Оцениваю',
-    progress: (label: string, current: number, total: number) => `${label} (${current}/${total})`,
-  },
-
   personalData: {
     confirmPrompt: 'Это навсегда удалит ваше резюме, поисковые настройки, оценки, решения, сохранённые отклики, '
       + 'статистику, настройки доставки и выбранный язык интерфейса. Общая база вакансий останется. '

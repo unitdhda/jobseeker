@@ -281,14 +281,6 @@ export const en: Messages = {
       + 'additional language-model calls. Wait for the message that reports success or failure, then ask again.',
   },
 
-  cycle: {
-    scraping: 'Searching for vacancies',
-    filtering: 'Filtering',
-    normalization: 'Parsing',
-    scoring: 'Scoring',
-    progress: (label: string, current: number, total: number) => `${label} (${current}/${total})`,
-  },
-
   personalData: {
     confirmPrompt: 'This permanently deletes your CV, search settings, scores, decisions, stored applications, '
       + 'statistics, delivery settings and your chosen interface language. The shared vacancy database stays. '
