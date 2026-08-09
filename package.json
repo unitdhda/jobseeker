@@ -7,7 +7,7 @@
     "build": "cd packages/app && bun run build",
     "start": "bun packages/app/dist/server.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts",
+    "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts extensions/*/*.test.ts",
     "test:postgres": "bun --env-file=.env packages/app/tests/database-postgres.integration.ts",
     "cv:prepare": "bun packages/app/src/scripts/prepare-cv.ts"
   },
