@@ -12,7 +12,7 @@ import { roleTokenResolver, tryRefreshRoleEquivalences } from './role-equivalenc
 import { backfillUserMatches } from './matching.ts';
 import { activeUnitQueries, applyDemand, existingCompiledUnits } from './postgres.ts';
 import * as v from 'valibot';
-import { clearApplicationArtifacts, stageApplicationArtifacts, type GeneratedApplication } from './documents.ts';
+import { type GeneratedApplication } from './documents.ts';
 import { cvDocumentLimits, cvDocumentSchema, normalizeCvDocumentJson, parseCvText } from '@jobseeker/cv/pdf';
 import { trace } from './observability.ts';
 import { errorMessage } from './observability.ts';
@@ -433,7 +433,6 @@ export async function tailorApplication(userId: string, vacancyId: number,
   }
   const vacancy = await getScoredVacancy(userId, vacancyId);
   if (!vacancy) throw new Error(`Scored vacancy ${vacancyId} was not found for this user.`);
-  clearApplicationArtifacts(userId, vacancyId);
   await beginApplication(userId, vacancyId);
   try {
     const cv=await getCvSource(userId);if(!cv)throw new Error('The authoritative CV source was not found.');
@@ -450,9 +449,8 @@ export async function tailorApplication(userId: string, vacancyId: number,
         schema:coverLetterResultSchema,system:coverLetterSystemPrompt,prompt});
       application={tailoredCvPdf:null,coverLetter:letter.coverLetter};
     }
-    stageApplicationArtifacts(userId,vacancyId,application);await markApplicationReady(userId,vacancyId);return application;
+    await markApplicationReady(userId,vacancyId);return application;
   } catch (error) {
-    clearApplicationArtifacts(userId, vacancyId);
     try { await failApplication(userId, vacancyId, error instanceof Error ? error.message : String(error)); }
     catch (statusError) { console.error(`Could not persist failed application status: ${errorMessage(statusError)}`); }
     throw error;

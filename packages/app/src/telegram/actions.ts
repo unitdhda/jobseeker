@@ -13,7 +13,6 @@ import {
 import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from '@jobseeker/engine';
 import { refreshUserInWorker, tailorApplicationInWorker } from '../worker-client.ts';
 import { type ApplicationArtifact } from '../postgres.ts';
-import { clearApplicationArtifacts } from '../documents.ts';
 import { maximumCvBytes } from '../cv.ts';
 import { readResponseBytes } from '../http.ts';
 import { errorMessage } from '../observability.ts';
@@ -99,7 +98,6 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
       { reply_markup: keyboard }).catch((notificationError)=>
       console.error(`Could not send application failure notice: ${errorMessage(notificationError)}`));
   } finally {
-    clearApplicationArtifacts(userId, vacancyId);
     await lease.release().catch((releaseError)=>console.warn(`Could not release application workflow: ${errorMessage(releaseError)}`));
   }
 }
