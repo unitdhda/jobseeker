@@ -31,7 +31,7 @@ import { type UserWorkflowLease } from './workflow-lock.ts';
 import { messages, userLocale, type Locale } from '../i18n/index.ts';
 
 
-export const refreshingUsers = new Set<string>();
+const refreshingUsers = new Set<string>();
 async function startApplicationLoader(userId: string, applyId: string,
   artifact: ApplicationArtifact, locale: Locale): Promise<ApplicationLoader | null> {
   const indicator = await startEditableIndicator(userId, `${artifactLabels(locale)[artifact].loader} · ${applyId}`);

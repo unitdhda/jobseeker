@@ -13,7 +13,7 @@ import { applicationKeyboard, digestPageMessage, digestPageSize, escapeHtml, sal
 import { messages, userLocale } from '../i18n/index.ts';
 
 
-export async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy): Promise<void> {
+async function sendHighScoreAlert(userId: string, vacancy: AlertVacancy): Promise<void> {
   if (!await isApprovedUser(userId)) throw new Error('User access is not approved.');
   const locale = await userLocale(userId); const alert = messages(locale).alert;
   const reasons = vacancy.reasons.slice(0, 3).map((item) => `• ${escapeHtml(item)}`).join('\n');

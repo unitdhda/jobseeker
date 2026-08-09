@@ -638,7 +638,7 @@ export function startTelegramBot(): void {
   } });
 }
 
-export async function initializeTelegramWebhookHandler(): Promise<void> {
+async function initializeTelegramWebhookHandler(): Promise<void> {
   if (config.telegramMode !== 'webhook') return;
   const instance = configureTelegramBot();
   if (!instance) throw new Error('TELEGRAM_BOT_TOKEN is required for webhook mode.');

@@ -40,6 +40,22 @@ test('the monorepo has the four domain workspaces plus the application package',
   }
 });
 
+test('the app declares every dependency it inherits by bundling its workspaces', async () => {
+  // vite bundles @jobseeker/* into dist, so a workspace's runtime dependency becomes an import of the published
+  // app and has to be declared — at one version, since only one copy is installed beside the bundle.
+  const app = JSON.parse(await readFile('packages/app/package.json', 'utf8')) as
+    { dependencies: Record<string, string> };
+  for (const name of domainPackages) {
+    const manifest = JSON.parse(await readFile(`packages/${name}/package.json`, 'utf8')) as
+      { dependencies?: Record<string, string> };
+    for (const [dependency, version] of Object.entries(manifest.dependencies ?? {})) {
+      if (dependency.startsWith('@jobseeker/')) continue;
+      assert.equal(app.dependencies[dependency], version,
+        `packages/app must declare ${dependency}@${version} for the bundled ${name} workspace`);
+    }
+  }
+});
+
 test('the extension tree is pinned, and its typecheck-only twin at the root cannot drift', async () => {
   // extensions/ is deliberately not a workspace: a deployment adds its own modules there. That costs it the root
   // lockfile, so it carries one of its own and the image installs with --frozen-lockfile.

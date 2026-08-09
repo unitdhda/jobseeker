@@ -157,7 +157,7 @@ export function existingUnitsAdvisory(queries: readonly unknown[], limit = advis
     + 'searches converge. Never trade CV fit for reuse; ignore entries that do not match the CV.';
 }
 
-export async function compileUserDemand(userId: string): Promise<{ units: number; subscriptions: number }> {
+async function compileUserDemand(userId: string): Promise<{ units: number; subscriptions: number }> {
   const demands: DemandInput[] = [];
   for (const platformId of enabledSourceProviderIds) {
     const profile = await getSearchProfile<unknown>(userId, platformId);
@@ -291,7 +291,7 @@ async function scoreBatchAttempt(userId:string,vacancies:Vacancy[],signal:AbortS
   }
 }
 
-export async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
+async function scoreBatch(userId: string, vacancies: Vacancy[]): Promise<void> {
   await requireApprovedUser(userId);
   if (!vacancies.length) return;
   const vacancyIds=vacancies.map(vacancy=>vacancy.id),batch=`[${vacancyIds.join(',')}]`;
