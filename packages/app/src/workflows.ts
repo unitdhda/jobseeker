@@ -2,14 +2,14 @@ import { createHash } from 'node:crypto';
 import { generateJson } from './ai.ts';
 import { config } from './config.ts';
 import {
-  applicationAgents, beginApplication, claimForScoring, failApplication, getCvHash, getCvSource, getScoredVacancy,
+  applicationAgents, beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy,
   getSearchProfile, getVacancy, markApplicationReady, recordUsage, requireApprovedUser, saveScore, saveSearchProfile,
   transitionMatch, usageInLast24Hours, type ApplicationArtifact, type Vacancy,
 } from './postgres.ts';
 import { enabledSourceProviderIds, getSearchPlatform, platformSearches } from './vacancies/registry.ts';
 import { compileDemand, type DemandInput } from '@jobseeker/engine';
 import { roleTokenResolver, tryRefreshRoleEquivalences } from './role-equivalence.ts';
-import { backfillUserMatches } from './matching.ts';
+import { backfillUserMatches, claimForScoring } from './matching.ts';
 import { activeUnitQueries, applyDemand, existingCompiledUnits } from './postgres.ts';
 import * as v from 'valibot';
 import { type GeneratedApplication } from './documents.ts';

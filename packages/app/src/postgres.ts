@@ -40,29 +40,31 @@ export const store = createStore({
 
 export const {
   activeStoredCalibration, activeUnitQueries, addSpend, addressableDigestPage, applyDemand, approvedUsers,
-  beginApplication, calibrationExamples, calibrationLabelsSince, candidatesDueForRefresh, claimForScoring,
+  beginApplication, calibrationExamples, calibrationLabelsSince, candidatesDueForRefresh,
   claimTelegramSession, claimTelegramUpdate, clearSearchProfile,
   closePostgresPool, completeTelegramUpdate, createMatches, deleteTelegramSession, deleteUserData,
   deliveredArtifact, digestVacancies, dueUnits, existingCompiledUnits, expireStaleMatches, exportUserData,
   failApplication,
   failTelegramUpdate, getCvHash, getCvSource, getDeliverySettings, getScoredVacancy,
   getScoredVacancyByApplyId, getSearchProfile, getTelegramSession, getTelegramUser, getVacancy,
-  isApprovedUser, latestCalibrationAttemptAt, listTelegramUsers, llmUsageSummary, loadRoleEquivalences,
+  isApprovedUser, latestCalibrationAttemptAt, listTelegramUsers, llmUsageSummary, loadIdfVocabulary,
+  loadRoleEquivalences,
   markAlerted, markApplicationDelivered,
   markApplicationReady, markCandidateClosed, markCandidateFailed, markCandidateNormalized, nextUnitDueAt,
+  pendingMatchesForScoring, claimMatches,
   persistenceReady, purgeExpiredVacancies, queuedListings, recordListingCandidate, recordLlmUsageEvent,
   recordUnitRun, recordUsage, releaseClaimedTelegramSession, replaceDigestSnapshot, replaceRoleEquivalences,
-  requestAccess, saveCalibration,
+  requestAccess, replaceIdfVocabulary, saveCalibration,
   requireApprovedUser, saveCvSource, saveDeliveredArtifact, saveDeliverySettings, saveScore,
   saveSearchProfile, scoredMatchCount, scoredVacanciesByApplyIdPrefix, scraperSummary, searchScoredVacancies,
   setTelegramSession, setUserLocale, setUserStatus, skipVacancy, spentToday, touchTelegramUser, transitionMatch,
   tryAcquireSingletonLock, unsentHighScoreVacancies, updateClaimedTelegramSession, upsertVacancy,
-  vacanciesForBackfill,
+  vacanciesForBackfill, vacancyTextBatch,
   usageInLast24Hours, userUsageSummaries, withPostgresAdvisoryLock,
 } = store;
 
 export { applicationAgents } from '@jobseeker/store';
 export type {
-  AlertVacancy, ApplicationArtifact, DeliverySettings, ScoredVacancy, ScraperHour, ScraperSummary,
+  AlertVacancy, ApplicationArtifact, DeliverySettings, PendingMatch, ScoredVacancy, ScraperHour, ScraperSummary,
   TelegramIdentity, TelegramUser, UsageHour, Vacancy, VacancyInput,
 } from '@jobseeker/store';

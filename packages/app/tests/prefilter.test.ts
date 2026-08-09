@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { careerProfileSchema, prefilterVacancy, vacancyRecency, type CareerProfile } from '@jobseeker/engine';
+import {
+  buildIdfVocabulary, careerProfileSchema, combinedEvidenceScore, createIdfLookup, prefilterVacancy,
+  uniformIdfLookup, vacancyRecency,
+  type CareerProfile, type PrefilterCalibration,
+} from '@jobseeker/engine';
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
 import { textSearchProfileSchema } from '@jobseeker/sources/examples/habr';
 import { config } from '../src/config.ts';
 import {
-  admitEvidence, calibrationHealth, calibrationStaleAfterDays, explorationRateFor, setActiveCalibration,
+  admitEvidence, calibrationHealth, calibrationStaleAfterDays, explorationRateFor, matchEvidence,
+  matchOrderingScore, setActiveCalibration,
 } from '../src/matching.ts';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
@@ -203,8 +208,8 @@ test('an uncalibrated ordering reports itself as degraded, not as normal', () =>
   assert.match(missing.message ?? '', /raw evidence score/);
 
   const calibration = { version: 3 as const, bias: -1, regexScore: 2, regexScoreSquared: 0, lexicalCosine: 1,
-    lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, sources: {}, ageBands: {},
-    judges: {}, users: {} };
+    lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, specificity: 0,
+    lexicalCosineIdf: 0, sources: {}, ageBands: {}, judges: {}, users: {} };
   const fittedAt = new Date('2026-08-01T00:00:00Z');
   setActiveCalibration(calibration, fittedAt.toISOString());
 
@@ -267,4 +272,127 @@ test('recording the seniority gap does not move the score it is not yet weighed 
   assert.notEqual(junior.seniorityGap, graded.seniorityGap);
   // Both titles carry the same role tokens once grade is stripped, so the evidence score must be identical.
   assert.equal(junior.regexScore, graded.regexScore);
+});
+
+test('the stored evidence score is the raw score whether or not a calibration is active', () => {
+  // The regression this locks down: the column used to hold the calibrated probability when one was active and
+  // the raw score otherwise, so two rows written days apart were not the same quantity, and the queue sorted
+  // them against each other anyway. Production had rows averaging 47.9 on 1..89 next to rows averaging 31.4 on
+  // 5..74. Whatever ordering is in force, what gets frozen must not move.
+  const lens = { userId: 'u1', cvText: designerCv, profile: designerProfile, labels: 10_000 };
+  const advert = vacancy('Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity']);
+  const now = new Date();
+
+  const active: PrefilterCalibration = { version: 3, bias: -9, regexScore: 0, regexScoreSquared: 0,
+    lexicalCosine: 0, lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, specificity: 0, lexicalCosineIdf: 0,
+    sources: {}, ageBands: {}, judges: {}, users: {} };
+  const underCalibration = matchEvidence(lens, advert, now, active);
+  const uncalibrated = matchEvidence(lens, advert, now, null);
+
+  assert.ok(underCalibration && uncalibrated);
+  assert.equal(underCalibration.score, uncalibrated.score);
+  assert.equal(underCalibration.score, prefilterVacancy(designerCv, advert, config.prefilterMinScore,
+    designerProfile, config.prefilterMaxAgeDays).combinedScore);
+});
+
+test('claim-time ordering follows the calibration in force, and a refit reorders the existing backlog', () => {
+  // Freezing the ordering score at match time meant an accepted refit only ever reached rows matched after it.
+  // The backlog it was fitted to improve kept the opinion of whichever model was live when it was created.
+  const published = new Date().toISOString();
+  const pending = [
+    { vacancyId: 1, matchedAt: published, source: 'hh', publishedAt: published,
+      regexScore: 80, lexicalCosine: 0.02, titleSimilarity: 1, skillCoverage: 0.2, seniorityGap: null, specificity: null,
+      lexicalCosineIdf: null },
+    { vacancyId: 2, matchedAt: published, source: 'hh', publishedAt: published,
+      regexScore: 40, lexicalCosine: 0.16, titleSimilarity: 0.5, skillCoverage: 0.9, seniorityGap: null, specificity: null,
+      lexicalCosineIdf: null },
+  ];
+  const now = new Date();
+  const base = { version: 3 as const, bias: 0, regexScoreSquared: 0, lexicalCosineSquared: 0,
+    titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, specificity: 0, lexicalCosineIdf: 0,
+    sources: {}, ageBands: {}, judges: {}, users: {} };
+  const rank = (calibration: PrefilterCalibration | null) => [...pending]
+    .sort((left, right) => matchOrderingScore(right, now, calibration) - matchOrderingScore(left, now, calibration))
+    .map((entry) => entry.vacancyId);
+
+  // A model that trusts the regex evidence prefers the first; one that trusts the cosine prefers the second.
+  assert.deepEqual(rank({ ...base, regexScore: 6, lexicalCosine: 0 }), [1, 2]);
+  assert.deepEqual(rank({ ...base, regexScore: 0, lexicalCosine: 6 }), [2, 1]);
+  // The rows never changed — only the model did. That is the whole point of scoring at claim time.
+
+  // With no calibration the order is the raw evidence score, recomputed from the same frozen columns.
+  assert.equal(matchOrderingScore(pending[0]!, now, null),
+    combinedEvidenceScore(80, 0.02, 1));
+});
+
+test('the ordering score reads the advert age now, not when the match was created', () => {
+  // A refit labels each row with the band the advert was in when the verdict landed, so serving has to ask the
+  // same question. A band frozen at match time drifts away from the coefficient that was fitted for it.
+  const calibration: PrefilterCalibration = { version: 3, bias: 0, regexScore: 0, regexScoreSquared: 0,
+    lexicalCosine: 0, lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0,
+    specificity: 0, lexicalCosineIdf: 0, sources: {}, ageBands: { stale: -5 }, judges: {}, users: {} };
+  const candidate = { vacancyId: 1, matchedAt: daysAgo(40), source: 'hh', publishedAt: daysAgo(40),
+    regexScore: 60, lexicalCosine: 0.1, titleSimilarity: 0.8, skillCoverage: 0.5, seniorityGap: null,
+    specificity: null, lexicalCosineIdf: null };
+  const fresh = { ...candidate, publishedAt: daysAgo(0) };
+  assert.ok(matchOrderingScore(candidate, new Date(), calibration)
+    < matchOrderingScore(fresh, new Date(), calibration), 'the stale band penalty has to actually apply');
+});
+
+test('specificity separates a match on a common word from a match on a rare one', () => {
+  // The defect it exists for: a token-set ratio scores both of these 1.0, and on production that pile was 49%
+  // of every match ever made and converted worse than the band beneath it.
+  const profile: CareerProfile = { version: 1, tracks: [
+    { name: 'Design', titleVariants: ['designer', 'communication designer'], coreSkills: [],
+      evidence: ['Designer'] }] };
+  const corpus = [
+    ...Array.from({ length: 200 }, () => ['designer']),
+    ...Array.from({ length: 2 }, () => ['communication', 'designer']),
+  ];
+  const idf = { title: createIdfLookup(buildIdfVocabulary(corpus)), body: uniformIdfLookup };
+
+  const common = prefilterVacancy('Designer', vacancy('Designer', 'Design work'), 20, profile, 30,
+    undefined, idf);
+  const rare = prefilterVacancy('Communication designer',
+    vacancy('Communication designer', 'Design work'), 20, profile, 30, undefined, idf);
+
+  assert.equal(common.titleSimilarity, 1, 'the ratio saturates for both — that is the problem being fixed');
+  assert.equal(rare.titleSimilarity, 1);
+  assert.ok(rare.specificity! > common.specificity!,
+    `rare words must score higher: rare=${rare.specificity} common=${common.specificity}`);
+});
+
+test('rarity evidence is null, not zero, until a vocabulary exists', () => {
+  // Null and zero are different claims, and conflating them was measured to invert the fitted coefficient.
+  const profile: CareerProfile = { version: 1, tracks: [
+    { name: 'Design', titleVariants: ['designer'], coreSkills: [], evidence: ['Designer'] }] };
+  const unmeasured = prefilterVacancy('Designer', vacancy('Designer', 'Design work'), 20, profile);
+  assert.equal(unmeasured.specificity, null);
+  assert.equal(unmeasured.lexicalCosineIdf, null);
+  // Each answers for its own vocabulary: a title vocabulary alone leaves only the body feature unmeasured.
+  const titleOnly = prefilterVacancy('Designer', vacancy('Designer', 'Design work'), 20, profile, 30, undefined,
+    { title: createIdfLookup(buildIdfVocabulary([['designer'], ['designer', 'lead']])), body: uniformIdfLookup });
+  assert.notEqual(titleOnly.specificity, null);
+  assert.equal(titleOnly.lexicalCosineIdf, null);
+
+  const idf = { title: createIdfLookup(buildIdfVocabulary([['designer'], ['designer', 'lead']])),
+    body: createIdfLookup(buildIdfVocabulary([['design', 'work'], ['design', 'systems']])) };
+  const measured = prefilterVacancy('Designer', vacancy('Designer', 'Design work'), 20, profile, 30,
+    undefined, idf);
+  assert.notEqual(measured.specificity, null);
+  assert.notEqual(measured.lexicalCosineIdf, null);
+});
+
+test('rarity evidence does not move the score it is not yet weighed by', () => {
+  // Same guard the seniority gap ships behind: new evidence is frozen for the calibration to learn from, and
+  // must not silently change what gets admitted before a fit has validated it.
+  const profile: CareerProfile = { version: 1, tracks: [
+    { name: 'Design', titleVariants: ['designer'], coreSkills: ['design'], evidence: ['Designer'] }] };
+  const idf = { title: createIdfLookup(buildIdfVocabulary([['designer'], ['designer', 'lead']])),
+    body: createIdfLookup(buildIdfVocabulary([['design', 'work'], ['design', 'systems']])) };
+  const without = prefilterVacancy('Designer', vacancy('Designer', 'Design work'), 20, profile);
+  const with_ = prefilterVacancy('Designer', vacancy('Designer', 'Design work'), 20, profile, 30,
+    undefined, idf);
+  assert.equal(without.combinedScore, with_.combinedScore);
+  assert.equal(without.filtered, with_.filtered);
 });

@@ -69,7 +69,12 @@ try {
     url: `https://hh.ru/vacancy/${Date.now()}`, publishedAt: '', sourceQuery: 'integration', contentHash: `content-${suffix}` });
   vacancyId = saved.id;
   assert.equal(await d.createMatches([{ userId, vacancyId, lexicalScore: 91 }], new Date()), 1);
-  assert.deepEqual(await d.claimForScoring(userId, 1), [vacancyId]);
+  const pending = await d.pendingMatchesForScoring(userId, 10);
+  assert.deepEqual(pending.map((match) => match.vacancyId), [vacancyId]);
+  assert.equal(pending[0]?.source, 'hh');
+  assert.deepEqual(await d.claimMatches(userId, [vacancyId]), [vacancyId]);
+  // The state predicate is the whole concurrency guard: a row already taken is no longer 'matched'.
+  assert.deepEqual(await d.claimMatches(userId, [vacancyId]), []);
   await d.saveScore(userId, vacancyId, 91, 'Backend', 'Strong integration match', ['TypeScript'], ['None'], false);
   assert.equal((await d.getScoredVacancy(userId, vacancyId))?.score, 91);
 

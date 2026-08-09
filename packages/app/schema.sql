@@ -123,9 +123,15 @@ create table public.matches (
   user_id text not null,
   vacancy_id bigint not null,
   state text not null default 'matched',
+  -- The raw combined evidence score, and only ever that. It used to hold whichever quantity ordered the queue
+  -- when the row was written -- the calibrated probability while a calibration was active, the raw score
+  -- otherwise -- so rows from different eras were not comparable and the queue sorted them against each other
+  -- anyway. Ordering now happens at claim time from the frozen evidence below, so this column has one meaning.
+  -- Rows written before 0.1.7 may still hold a probability; nothing reads it for ordering.
   lexical_score integer,
   -- The prefilter evidence exactly as it stood at match time. Paired with llm_score these rows are the
   -- calibration's training data; they are never recomputed, because the CV may have changed since.
+  -- These are also what the scoring queue is ranked by, recomputed against the current calibration each claim.
   lexical_regex_score integer,
   lexical_cosine double precision,
   -- The two signals lexical_regex_score collapses together, kept apart so a refit can weigh them separately.
@@ -135,6 +141,11 @@ create table public.matches (
   -- (vacancy grade - cv grade) / 5, in [-1, 1]. Null when either side names no grade, which is not the same as
   -- the grades matching. Recorded for a future refit; nothing weighs it yet.
   lexical_seniority_gap double precision,
+  -- The rarity-aware evidence, both 0..1: how unusual the title words that matched were, and the cosine over
+  -- rarity-weighted advert text. Null means no vocabulary existed when the row was written -- which is not the
+  -- same as zero, and the calibration refuses to weigh either column until nearly every row carries it.
+  lexical_specificity double precision,
+  lexical_cosine_idf double precision,
   llm_score integer,
   -- Which model produced llm_score, as the route string the AI layer was asked for. The calibration's corpus
   -- spans whatever routes were live, and models differ in strictness; without this the fit cannot tell a strict
@@ -160,6 +171,32 @@ create table public.matches (
   constraint matches_pkey primary key (user_id, vacancy_id),
   constraint matches_user_id_fkey foreign key (user_id) references users(user_id) on delete cascade,
   constraint matches_vacancy_id_fkey foreign key (vacancy_id) references vacancies(id) on delete cascade
+);
+
+-- How unusual each word is across the adverts this deployment has seen (engine buildIdfVocabulary). 'title'
+-- holds canonical role tokens from advert titles, 'body' holds plain words from the whole advert. Rebuilt from
+-- vacancies on the daily calibrate cadence, so rows are derived data -- truncating this table only flattens the
+-- rarity evidence until the next rebuild.
+--
+-- Tokens seen in a single advert are deliberately absent: they score exactly what an unseen token scores, so
+-- storing them would change no result. idf_corpora.unknown_idf carries that value.
+create table public.idf_vocabulary (
+  scope text not null,
+  token text not null,
+  idf double precision not null,
+  constraint idf_vocabulary_pkey primary key (scope, token),
+  constraint idf_vocabulary_scope_check check (scope = any (array['title','body']))
+);
+
+create table public.idf_corpora (
+  scope text not null,
+  documents integer not null,
+  tokens integer not null,
+  -- What a token absent from idf_vocabulary is worth: by construction, the value a token seen once carries.
+  unknown_idf double precision not null,
+  updated_at timestamptz not null,
+  constraint idf_corpora_pkey primary key (scope),
+  constraint idf_corpora_scope_check check (scope = any (array['title','body']))
 );
 
 -- Role-token equivalences mined from career-profile title variants (engine mineRoleEquivalences). Consulted at

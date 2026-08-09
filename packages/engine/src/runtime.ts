@@ -102,6 +102,9 @@ export interface MatchEvidence {
   titleSimilarity?: number; skillCoverage?: number;
   /** Grade distance in [-1, 1], or null when neither title named a grade. Recorded, not yet weighed. */
   seniorityGap?: number | null;
+  /** The rarity pair, 0..1, or null when no vocabulary was built when this was measured. Null is not zero. */
+  specificity?: number | null;
+  lexicalCosineIdf?: number | null;
 }
 export interface MatchCandidateInput extends MatchEvidence { userId: string; vacancyId: number }
 

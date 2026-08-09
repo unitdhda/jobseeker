@@ -30,10 +30,10 @@ import type { RecencyBand } from './prefilter.ts';
 
 const coefficient = v.pipe(v.number(), v.finite());
 
-export const calibrationVersion = 3;
+export const calibrationVersion = 4;
 
 export const prefilterCalibrationSchema = v.strictObject({
-  version: v.union([v.literal(1), v.literal(2), v.literal(3)]),
+  version: v.union([v.literal(1), v.literal(2), v.literal(3), v.literal(4)]),
   bias: coefficient,
   regexScore: coefficient,
   regexScoreSquared: v.optional(coefficient, 0),
@@ -44,6 +44,11 @@ export const prefilterCalibrationSchema = v.strictObject({
   skillCoverage: v.optional(coefficient, 0),
   /** Signed, unlike the rest: the advert may ask above or below the CV's grade, and those are not the same. */
   seniorityGap: v.optional(coefficient, 0),
+  /**
+   * Version 4's rarity pair. Absent, or zero, means the fit declined to weigh them — see `sufficientlyCovered`.
+   */
+  specificity: v.optional(coefficient, 0),
+  lexicalCosineIdf: v.optional(coefficient, 0),
   sources: v.record(v.string(), coefficient),
   ageBands: v.record(v.string(), coefficient),
   /** Fitting-only intercepts, absent before version 3. Recorded for audit; never read when serving. */
@@ -75,6 +80,15 @@ export interface CalibrationFeatures {
   skillCoverage?: number;
   /** -1..1, or null/undefined when neither title named a grade. Absent contributes nothing, like the rest. */
   seniorityGap?: number | null;
+  /**
+   * The rarity pair, 0..1, or null on a row measured before a vocabulary existed.
+   *
+   * Null is not zero here. A fit only gives these a coefficient when nearly every row carries one
+   * (`sufficientlyCovered`), so a null reaching the serving path is a residue the backfill missed; it scores 0
+   * and the eligibility rule bounds how many rows that can be.
+   */
+  specificity?: number | null;
+  lexicalCosineIdf?: number | null;
   source: string;
   ageBand: RecencyBand;
 }
@@ -100,6 +114,8 @@ function logit(calibration: PrefilterCalibration, features: CalibrationFeatures)
     + calibration.titleSimilarity * clamp01(features.titleSimilarity ?? 0)
     + calibration.skillCoverage * clamp01(features.skillCoverage ?? 0)
     + calibration.seniorityGap * clampSigned(features.seniorityGap)
+    + calibration.specificity * clamp01(features.specificity ?? 0)
+    + calibration.lexicalCosineIdf * clamp01((features.lexicalCosineIdf ?? 0) * 3)
     + (calibration.sources[features.source] ?? 0)
     + (calibration.ageBands[features.ageBand] ?? 0);
 }
@@ -183,8 +199,52 @@ export function evaluateScores(scores: readonly number[],
 const recencyBandNames = ['week', 'fortnight', 'month', 'stale'] as const; // 'today' is the reference class.
 const minimumSourceExamples = 30;
 
+/**
+ * How much of the corpus must carry an optional feature before a fit will weigh it.
+ *
+ * Deliberately near-total, because the alternative is worse than not fitting it. When `titleSimilarity` shipped
+ * it reached 2% of rows for weeks while the refit imputed 0 for the rest; simulated on the production corpus,
+ * that drives the coefficient from +3.01 to -0.24 — the fit does not merely fail to learn the signal, it learns
+ * it backwards, because a constant 0 among varying labels is noise the descent will happily fit. Rows missing an
+ * eligible feature are dropped from the fit instead of imputed, which the high bar keeps cheap.
+ */
+const minimumFeatureCoverage = 0.95;
+
+/** Which optional features this corpus can support, decided from the rows being fitted. */
+export interface FeatureColumns { specificity: boolean; lexicalCosineIdf: boolean }
+
+const optionalFeatureReaders = {
+  specificity: (example: CalibrationFeatures) => example.specificity,
+  lexicalCosineIdf: (example: CalibrationFeatures) => example.lexicalCosineIdf,
+} as const;
+
+function sufficientlyCovered(examples: readonly TrainingExample[],
+  read: (example: CalibrationFeatures) => number | null | undefined): boolean {
+  if (!examples.length) return false;
+  const present = examples.reduce((count, example) => count + (read(example) == null ? 0 : 1), 0);
+  return present >= minimumSourceExamples && present / examples.length >= minimumFeatureCoverage;
+}
+
+export function featureColumns(examples: readonly TrainingExample[]): FeatureColumns {
+  return {
+    specificity: sufficientlyCovered(examples, optionalFeatureReaders.specificity),
+    lexicalCosineIdf: sufficientlyCovered(examples, optionalFeatureReaders.lexicalCosineIdf),
+  };
+}
+
+/** Rows a fit can actually use: every feature it decided to weigh has to be present. */
+function usableExamples(examples: readonly TrainingExample[],
+  features: FeatureColumns): readonly TrainingExample[] {
+  if (!features.specificity && !features.lexicalCosineIdf) return examples;
+  return examples.filter((example) =>
+    (!features.specificity || example.specificity != null)
+    && (!features.lexicalCosineIdf || example.lexicalCosineIdf != null));
+}
+
 /** The dummy-coded columns a fit uses beyond the evidence: served (sources) and fitting-only (judges, users). */
-interface DummyColumns { sources: readonly string[]; judges: readonly string[]; users: readonly string[] }
+interface DummyColumns {
+  sources: readonly string[]; judges: readonly string[]; users: readonly string[]; features: FeatureColumns;
+}
 
 function featureVector(example: TrainingExample, columns: DummyColumns): number[] {
   const regex01 = clamp01(example.regexScore / 100);
@@ -192,6 +252,8 @@ function featureVector(example: TrainingExample, columns: DummyColumns): number[
   return [1, regex01, regex01 * regex01, cosine01, cosine01 * cosine01,
     clamp01(example.titleSimilarity ?? 0), clamp01(example.skillCoverage ?? 0),
     clampSigned(example.seniorityGap),
+    ...(columns.features.specificity ? [clamp01(example.specificity ?? 0)] : []),
+    ...(columns.features.lexicalCosineIdf ? [clamp01((example.lexicalCosineIdf ?? 0) * 3)] : []),
     ...columns.sources.map((source) => (source === example.source ? 1 : 0)),
     ...recencyBandNames.map((band) => (band === example.ageBand ? 1 : 0)),
     ...columns.judges.map((judge) => (judge === example.judge ? 1 : 0)),
@@ -206,10 +268,13 @@ const yieldToEventLoop = (): Promise<void> => new Promise((resolve) => setImmedi
 /** Bias, the four evidence terms, the two split signals, and the signed seniority gap. */
 const denseFeatureCount = 8;
 
+const optionalFeatureCount = (features: FeatureColumns): number =>
+  (features.specificity ? 1 : 0) + (features.lexicalCosineIdf ? 1 : 0);
+
 async function descend(examples: readonly TrainingExample[],
   columns: DummyColumns): Promise<number[]> {
-  const width = denseFeatureCount + columns.sources.length + recencyBandNames.length
-    + columns.judges.length + columns.users.length;
+  const width = denseFeatureCount + optionalFeatureCount(columns.features) + columns.sources.length
+    + recencyBandNames.length + columns.judges.length + columns.users.length;
   const weights = new Array<number>(width).fill(0);
   const learningRate = 0.5; const l2 = 1e-3; const iterations = 4000;
   const vectors = examples.map((example) => featureVector(example, columns));
@@ -234,7 +299,11 @@ async function descend(examples: readonly TrainingExample[],
 
 function toCalibration(weights: readonly number[], columns: DummyColumns): PrefilterCalibration {
   const round = (value: number): number => Number(value.toFixed(4));
-  const bandsAt = denseFeatureCount + columns.sources.length;
+  const optionalAt = denseFeatureCount;
+  const specificityAt = columns.features.specificity ? optionalAt : -1;
+  const cosineIdfAt = columns.features.lexicalCosineIdf ? optionalAt + (columns.features.specificity ? 1 : 0) : -1;
+  const sourcesAt = optionalAt + optionalFeatureCount(columns.features);
+  const bandsAt = sourcesAt + columns.sources.length;
   const judgesAt = bandsAt + recencyBandNames.length;
   const usersAt = judgesAt + columns.judges.length;
   return { version: calibrationVersion, bias: round(weights[0]!), regexScore: round(weights[1]!),
@@ -242,8 +311,10 @@ function toCalibration(weights: readonly number[], columns: DummyColumns): Prefi
     lexicalCosineSquared: round(weights[4]!),
     titleSimilarity: round(weights[5]!), skillCoverage: round(weights[6]!),
     seniorityGap: round(weights[7]!),
+    specificity: specificityAt < 0 ? 0 : round(weights[specificityAt]!),
+    lexicalCosineIdf: cosineIdfAt < 0 ? 0 : round(weights[cosineIdfAt]!),
     sources: Object.fromEntries(columns.sources.map((source, index) =>
-      [source, round(weights[denseFeatureCount + index]!)])),
+      [source, round(weights[sourcesAt + index]!)])),
     ageBands: Object.fromEntries(recencyBandNames.map((band, index) =>
       [band, round(weights[bandsAt + index]!)])),
     judges: Object.fromEntries(columns.judges.map((judge, index) => [judge, round(weights[judgesAt + index]!)])),
@@ -267,6 +338,7 @@ function dummyColumns(examples: readonly TrainingExample[]): DummyColumns {
     sources: eligible(examples, (example) => example.source),
     judges: eligible(examples, (example) => example.judge),
     users: eligible(examples, (example) => example.user),
+    features: featureColumns(examples),
   };
 }
 
@@ -306,7 +378,7 @@ export async function fitPrefilterCalibration(examples: readonly TrainingExample
   if (judgeable) {
     const training = trainingIndices.map((index) => examples[index]!);
     const columns = dummyColumns(training);
-    const validated = toCalibration(await descend(training, columns), columns);
+    const validated = toCalibration(await descend(usableExamples(training, columns.features), columns), columns);
     // Scored through the serving path, so the judge and user intercepts contribute nothing here either.
     holdoutScores = holdout.map((example) => calibratedMatchProbability(validated, example));
     candidate = evaluateOrdering(holdout.map((example, index) => ({
@@ -315,7 +387,7 @@ export async function fitPrefilterCalibration(examples: readonly TrainingExample
 
   const columns = dummyColumns(examples);
   return {
-    calibration: toCalibration(await descend(examples, columns), columns),
+    calibration: toCalibration(await descend(usableExamples(examples, columns.features), columns), columns),
     candidate,
     holdoutIndices,
     holdoutScores,

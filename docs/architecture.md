@@ -186,11 +186,33 @@ score and the lexical cosine, frozen at match time — and every LLM score that 
 evidence. Those pairs are free, accumulate on their own, and describe this deployment's actual occupations rather
 than a generic assumption.
 
+Two of those signals are weighted by how unusual a word is across the adverts this deployment has actually seen
+(`idf_vocabulary`, rebuilt daily alongside role equivalences). It matters because matching on "designer" — a word
+half the board uses — is far weaker evidence than matching on "communication designer", and a token-overlap ratio
+cannot tell them apart: it saturates at 1.0 for half of all matches, and that half converted *worse* than the band
+beneath it. Rarity is a separate number rather than a reweighting of the ratio, because weighting a ratio leaves a
+full match at 1.0 however common its words are — that was measured, and it changed nothing. The same weighting
+applied to the body cosine removes what was largely a document-length meter: the old cosine rose with advert
+length while advert quality fell, and the rarity-weighted one is flat across length bands.
+
+Both are recorded as null, never zero, when no vocabulary existed to measure them, and a fit refuses to weigh a
+column the corpus does not almost entirely carry. That rule is not caution for its own sake: when a feature
+reached 2% of rows and the refit imputed zero for the rest, its fitted coefficient inverted from +3.01 to -0.24.
+A constant among varying labels is noise, and a descent will fit noise happily.
+
 Once a day the judgment lane fits a logistic model over them and scores it by cross-validation, with each fold
 judged by a model that never trained on it. The candidate replaces the running one **only if it orders at least as
 well**, on both ranking quality and precision at the top of the queue. Otherwise it is recorded and discarded. Either
 way the attempt lands in `calibrations`, so the history of what was tried and what won is inspectable rather than
 implied.
+
+The ordering is computed when the queue is drained, not when a match is created. Only the evidence is frozen; the
+number derived from it is a function of a model that changes, so freezing that too caused two faults. Rows written
+under different models held different quantities in one column and were sorted against each other regardless — on
+production, rows averaging 47.9 on a 1..89 range next to rows averaging 31.4 on a 5..74 range. And an accepted
+refit only ever reached matches created after it, never the backlog it was fitted to improve. Scoring at claim
+time fixes both: one claim compares one quantity, and every accepted refit reorders everything still waiting.
+Measured on the production corpus, that alone was worth 20% of the LLM spend at equal yield.
 
 By default the calibration decides only the *order*: admission is still the raw evidence gate
 (`PREFILTER_MIN_SCORE`). `PREFILTER_MIN_PROBABILITY` additionally refuses matches whose calibrated probability is

@@ -19,7 +19,7 @@ import {
 import { deliverDueNotifications, normalizeListings } from './vacancies/jobs.ts';
 import { closeSources, getSearchPlatform, type SearchPlan } from './vacancies/registry.ts';
 import {
-  calibratedMatchProbability, compareOnHoldout, fitPrefilterCalibration, vacancyRecency,
+  calibratedMatchProbability, combinedEvidenceScore, compareOnHoldout, fitPrefilterCalibration, vacancyRecency,
   type TrainingExample,
 } from '@jobseeker/engine';
 import { scorePendingVacancies } from './workflows.ts';
@@ -27,6 +27,7 @@ import { llmUsageSince, llmUsageSnapshot } from './ai.ts';
 import { errorMessage } from './observability.ts';
 import { extensionShutdownHooks, extensionStartupHooks } from './vacancies/providers.ts';
 import { loadRoleEquivalenceResolver, tryRefreshRoleEquivalences } from './role-equivalence.ts';
+import { loadIdfLookups, tryRefreshIdfVocabularies } from './idf.ts';
 import {
   activeCalibration, activeCalibrationFittedAt, loadActiveCalibration, matchEvidence,
   reportCalibrationHealth, setActiveCalibration,
@@ -97,6 +98,9 @@ async function refitCalibration(now: Date): Promise<void> {
   // The vocabulary rides the same daily cadence: mining is cheap and its input is the same profile set.
   if (!lastAttempt || now.getTime() - Date.parse(lastAttempt) >= calibrationRefitIntervalMs) {
     await tryRefreshRoleEquivalences();
+    // Rarity is rebuilt right after the vocabulary it depends on: title tokens are canonicalised through the
+    // role resolver, so a stale resolver would bake stale tokens into the counts.
+    await tryRefreshIdfVocabularies();
   }
   if (lastAttempt && now.getTime() - Date.parse(lastAttempt) < calibrationRefitIntervalMs) return;
   if (await calibrationLabelsSince(activeCalibrationFittedAt()) < calibrationMinNewLabels) return;
@@ -108,6 +112,9 @@ async function refitCalibration(now: Date): Promise<void> {
     // the honest reading for a row whose features were never recorded.
     titleSimilarity: row.titleSimilarity ?? 0, skillCoverage: row.skillCoverage ?? 0,
     seniorityGap: row.seniorityGap,
+    // Passed through as null, never as 0: the fit decides for itself whether the corpus covers these well
+    // enough to weigh, and imputing a value here would take that decision away from it.
+    specificity: row.specificity, lexicalCosineIdf: row.lexicalCosineIdf,
     ageBand: vacancyRecency({ publishedAt: row.publishedAt }, Date.parse(row.scoreUpdatedAt), 3_650).band,
     scoredAt: Date.parse(row.scoreUpdatedAt),
     // Fitting-only: both absorb strictness that is not the match's fault. Undefined on rows predating the column.
@@ -123,9 +130,14 @@ async function refitCalibration(now: Date): Promise<void> {
   const labels = fit.holdoutIndices.map((index) => examples[index]!.label);
   // The incumbent is judged on the candidate's holdout, not on the whole corpus: comparing a model on rows it
   // was fitted on against one that never saw them is how the old gate flattered every refit.
+  // With no calibration to beat, the bar is whatever orders claims today: the raw evidence score, recomputed
+  // from the same frozen columns claimForScoring recomputes it from. Reading the stored lexical_score here
+  // instead would compare the candidate against a column holding two different quantities.
   const incumbentScores = fit.holdoutIndices.map((index) => (active
     ? calibratedMatchProbability(active, examples[index]!)
-    : rows[index]!.storedLexicalScore));
+    : combinedEvidenceScore(rows[index]!.regexScore, rows[index]!.lexicalCosine,
+      vacancyRecency({ publishedAt: rows[index]!.publishedAt },
+        Date.parse(rows[index]!.scoreUpdatedAt), 3_650).weight)));
   const verdict = compareOnHoldout(fit.holdoutScores, incumbentScores, labels);
   const accepted = fit.judgeable && verdict.accepted;
   const reason = fit.judgeable ? verdict.reason
@@ -232,6 +244,10 @@ export function startEngineLoop(): void {
     reportCalibrationHealth();
     await loadRoleEquivalenceResolver().catch((error) =>
       console.error(`Loading role equivalences failed; matching starts with the core vocabulary: ${errorMessage(error)}`));
+    // Loaded, not rebuilt: process start should be cheap, and a vocabulary that has never been built simply
+    // leaves the rarity evidence unmeasured until the first calibrate stage runs.
+    await loadIdfLookups().catch((error) =>
+      console.error(`Loading word rarity failed; the rarity evidence stays unmeasured: ${errorMessage(error)}`));
     for (const hook of extensionStartupHooks) {
       try { await hook(); } catch (error) { console.error(`Extension startup hook failed: ${errorMessage(error)}`); }
     }

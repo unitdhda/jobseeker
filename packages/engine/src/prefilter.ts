@@ -85,6 +85,7 @@ export function parseStoredCareerProfile(value: unknown, expectedCvHash: string)
 import type { VacancyContent } from './contracts.ts';
 import { canonicalRoleToken } from './canon.ts';
 import { identityRoleResolver, type RoleTokenResolver } from './equivalence.ts';
+import { uniformIdfLookups, type IdfLookup, type IdfLookups } from './idf.ts';
 
 const stop = new Set([
   'and','the','with','for','from','that','this','into','или','для','как','что','при','это','его','она','они',
@@ -170,11 +171,35 @@ function fallbackCareerProfile(cvText: string): CareerProfile {
   }] };
 }
 
+/**
+ * How unusual the words that matched were, in [0, 1].
+ *
+ * The companion to `titleSimilarity`, and the reason it is a separate number rather than a weighting of it:
+ * weighting a *ratio* by rarity leaves a full match at 1.0 however common its words are, which was measured and
+ * changed nothing (the same 1,200-row pile, the same 40% conversion). What separates "Designer" meeting
+ * "Designer" from "Communication Designer" meeting "Communication Designer" is the absolute rarity of what
+ * matched, so that is what this reports.
+ *
+ * Normalized by `unknownIdf`, the value a token seen once carries, so the scale does not move when the corpus
+ * grows.
+ */
+function matchedSpecificity(variant: string, vacancyName: string, resolve: RoleTokenResolver,
+  idf: IdfLookup): number {
+  const track = [...new Set(roleTokens(variant, resolve))];
+  const advert = [...new Set(roleTokens(vacancyName, resolve))];
+  const matched = advert.filter((token) => track.some((candidate) => comparableToken(token, candidate)));
+  if (!matched.length || !idf.unknownIdf) return 0;
+  const mean = matched.reduce((sum, token) => sum + idf.of(token), 0) / matched.length;
+  return Math.max(0, Math.min(1, mean / idf.unknownIdf));
+}
+
 function trackEvidence(track: CareerTrack, vacancy: VacancyContent,
-  resolve: RoleTokenResolver): { role: number; skills: number; similarity: number; matchedSkills: string[];
-    skillCoverage: number } {
+  resolve: RoleTokenResolver, idf: IdfLookup): { role: number; skills: number; similarity: number;
+    matchedSkills: string[]; skillCoverage: number; specificity: number } {
   const titleVariants = track.titleVariants.flatMap((variant) => variant.split(/\s+\/\s+/).map((title) => title.trim()).filter(Boolean));
   const similarity = Math.max(0, ...titleVariants.map((variant) => titleSimilarity(variant, vacancy.name, resolve)));
+  const specificity = Math.max(0, ...titleVariants.map((variant) =>
+    matchedSpecificity(variant, vacancy.name, resolve, idf)));
   const role = Math.round(similarity ** 2 * 75);
   const vacancyTokens = roleTokens(`${vacancy.name}\n${vacancy.description}\n${vacancy.keySkills.join('\n')}`, resolve);
   const matchedSkills = track.coreSkills.filter((skill) => phrasePresent(skill, vacancyTokens, resolve));
@@ -183,7 +208,7 @@ function trackEvidence(track: CareerTrack, vacancy: VacancyContent,
   const skillCoverage = track.coreSkills.length
     ? Math.min(1, matchedSkills.length / Math.min(5, track.coreSkills.length)) : 0;
   const skills = Math.round(skillCoverage * 25);
-  return { role, skills, similarity, matchedSkills, skillCoverage };
+  return { role, skills, similarity, matchedSkills, skillCoverage, specificity };
 }
 
 function lexicalEmbedding(input: string): Map<string, number> {
@@ -198,6 +223,26 @@ function lexicalEmbedding(input: string): Map<string, number> {
   }
   for (const [feature, count] of counts) counts.set(feature, Math.log1p(count));
   return counts;
+}
+
+/**
+ * Plain words weighted by how unusual they are — no bigrams, no character trigrams.
+ *
+ * `lexicalEmbedding` above is largely a length meter. Measured across the production corpus its cosine rises
+ * monotonically with advert length (0.078 under a thousand characters to 0.127 over six thousand) while the
+ * share of adverts worth delivering *falls* over the same range (35% to 13%), so it pushes verbose adverts up
+ * the queue. Rarity weighting removes almost all of it: rank correlation with advert length drops from 0.178 to
+ * 0.017, and correlation with the LLM's verdict rises from 0.292 to 0.402.
+ *
+ * The character trigrams go because they measured spelling, not meaning, and could never cross ru/en — which
+ * the role-token vocabulary already handles properly.
+ */
+function rarityEmbedding(input: string, idf: IdfLookup): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const token of normalizedTokens(input)) counts.set(token, (counts.get(token) ?? 0) + 1);
+  const weighted = new Map<string, number>();
+  for (const [token, count] of counts) weighted.set(token, Math.log1p(count) * idf.of(token));
+  return weighted;
 }
 
 function cosine(left: Map<string, number>, right: Map<string, number>): number {
@@ -264,6 +309,16 @@ export interface PrefilterResult {
    * admission on a hunch.
    */
   seniorityGap: number | null;
+  /**
+   * The rarity-aware pair, both 0..1, and **null when no vocabulary was available** rather than 0.
+   *
+   * Null and zero are different claims: zero says the words that matched were as common as words get, null says
+   * nobody looked. Conflating them is not hypothetical — imputing 0 for an absent feature was measured to drive
+   * its fitted coefficient from +3.01 to -0.24, inverting the signal, so the distinction is carried all the way
+   * into the calibration.
+   */
+  specificity: number | null;
+  lexicalCosineIdf: number | null;
   filtered: boolean;
   /** True when the advert's age alone rejected it; no evidence score can admit an expired advert. */
   expired: boolean;
@@ -274,10 +329,24 @@ export function vacancySemanticText(vacancy: VacancyContent): string {
   return `${vacancy.name}\n${vacancy.employer}\n${vacancy.description}\n${vacancy.keySkills.join(' ')}`;
 }
 
+/**
+ * The raw evidence score, derived from frozen evidence alone.
+ *
+ * Extracted so the scoring queue can recompute it from a stored `matches` row without the CV that produced it.
+ * `prefilterVacancy` below is the only other caller, which is the point: the ordering fallback and the score
+ * written at match time cannot drift apart, because there is one definition of the arithmetic.
+ */
+export function combinedEvidenceScore(regexScore: number, lexicalCosine: number, recencyWeight: number): number {
+  const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
+  const combined = Math.round(regexScore * 0.75 + lexicalScore * 0.25);
+  return Math.max(0, recencyWeight < 1 ? Math.round(combined * recencyWeight) : combined);
+}
+
 export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimumScore: number,
-  careerProfile?: CareerProfile, maxAgeDays = 30, resolve: RoleTokenResolver = identityRoleResolver): PrefilterResult {
+  careerProfile?: CareerProfile, maxAgeDays = 30, resolve: RoleTokenResolver = identityRoleResolver,
+  idf: IdfLookups = uniformIdfLookups): PrefilterResult {
   const profile = careerProfile ?? fallbackCareerProfile(cvText);
-  const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy, resolve) }))
+  const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy, resolve, idf.title) }))
     .sort((left, right) => right.role + right.skills - left.role - left.skills);
   const best = ranked[0]!;
   const regexScore = Math.min(100, best.role + best.skills);
@@ -294,14 +363,17 @@ export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimu
   }
 
   const cleanCv = relevanceCvText(cvText);
-  const lexicalCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(`${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`));
+  const weightedVacancyText = `${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`;
+  const lexicalCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(weightedVacancyText));
+  // Each rarity feature answers for its own vocabulary. They are rebuilt together in practice, but they are
+  // separate signals in separate columns, and one being unavailable is no reason to discard the other.
+  const specificity = idf.title.documents > 0 ? best.specificity : null;
+  const lexicalCosineIdf = idf.body.documents > 0
+    ? cosine(rarityEmbedding(cleanCv, idf.body), rarityEmbedding(weightedVacancyText, idf.body)) : null;
   const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
   const recency = vacancyRecency(vacancy, Date.now(), maxAgeDays);
-  let combinedScore = Math.round(regexScore * 0.75 + lexicalScore * 0.25);
-  if (recency.weight < 1) {
-    combinedScore = Math.round(combinedScore * recency.weight);
-    reasons.push(`age discount: ${recency.label}`);
-  }
+  let combinedScore = combinedEvidenceScore(regexScore, lexicalCosine, recency.weight);
+  if (recency.weight < 1) reasons.push(`age discount: ${recency.label}`);
   if (lexicalCosine > 0) reasons.push(`lexical cosine: ${lexicalCosine.toFixed(3)}`);
   if (regexScore < 15 && combinedScore >= minimumScore) {
     combinedScore = Math.max(0, minimumScore - 1);
@@ -314,5 +386,6 @@ export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimu
   else if (filtered) reasons.push(`combined score below ${minimumScore}`);
   return { regexScore, lexicalCosine, lexicalScore, combinedScore,
     titleSimilarity: best.similarity, skillCoverage: best.skillCoverage, seniorityGap,
+    specificity, lexicalCosineIdf,
     filtered, expired: recency.expired, reasons };
 }

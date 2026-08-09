@@ -6,15 +6,17 @@
  */
 import { config } from './config.ts';
 import {
-  calibratedMatchProbability, parsePrefilterCalibration, parseStoredCareerProfile, prefilterVacancy,
-  vacancyRecency, careerProfilePlatformId,
+  calibratedMatchProbability, combinedEvidenceScore, parsePrefilterCalibration, parseStoredCareerProfile,
+  prefilterVacancy, vacancyRecency, careerProfilePlatformId,
   type CareerProfile, type MatchEvidence, type PrefilterCalibration, type StoredCareerProfile,
 } from '@jobseeker/engine';
 import {
-  activeStoredCalibration, createMatches, getCvSource, getSearchProfile, scoredMatchCount, vacanciesForBackfill,
-  type Vacancy,
+  activeStoredCalibration, claimMatches, createMatches, getCvSource, getSearchProfile,
+  pendingMatchesForScoring, scoredMatchCount, vacanciesForBackfill,
+  type PendingMatch, type Vacancy,
 } from './postgres.ts';
 import { roleTokenResolver } from './role-equivalence.ts';
+import { idfLookups } from './idf.ts';
 import { errorMessage } from './observability.ts';
 
 // Parsed once at composition: a malformed calibration fails the process at startup, never one match at a time.
@@ -157,34 +159,103 @@ export function admitEvidence(input: AdmissionInput): boolean {
 }
 
 /**
- * One lens's verdict: the stored score orders claimForScoring's spending, so it is the calibrated probability
- * when one is active and the raw combined score otherwise; the raw evidence rides along as the future training
- * row.
+ * One lens's verdict on one vacancy.
+ *
+ * `score` is always the raw combined evidence score, never the calibrated probability. The column it lands in
+ * used to hold whichever of the two was the ordering quantity at the moment the row was written, which made it
+ * meaningless to compare two rows: measured on production, rows written before a calibration was adopted
+ * averaged 47.9 on a 1..89 range and rows written after averaged 31.4 on a 5..74 range, and the queue sorted
+ * them against each other. Ordering now happens at claim time (`claimForScoring`), so this number has one
+ * meaning for good and serves as evidence and as the uncalibrated fallback.
  */
-export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date): MatchEvidence | null {
+export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date,
+  active = calibration): MatchEvidence | null {
   const result = prefilterVacancy(
     lens.cvText, vacancy, config.prefilterMinScore, lens.profile, config.prefilterMaxAgeDays,
-    roleTokenResolver(),
+    roleTokenResolver(), idfLookups(),
   );
-  const active = calibration;
-  const stored = active ? Math.round(100 * calibratedMatchProbability(active, {
-    regexScore: result.regexScore, lexicalCosine: result.lexicalCosine,
-    titleSimilarity: result.titleSimilarity, skillCoverage: result.skillCoverage,
-    source: vacancy.source,
-    ageBand: vacancyRecency(vacancy, now.getTime(), config.prefilterMaxAgeDays).band,
-  })) : Math.max(0, Math.round(result.combinedScore));
-  const evidence: MatchEvidence = { score: stored, regexScore: result.regexScore,
+  const evidence: MatchEvidence = { score: Math.max(0, Math.round(result.combinedScore)),
+    regexScore: result.regexScore,
     lexicalCosine: result.lexicalCosine, titleSimilarity: result.titleSimilarity,
-    skillCoverage: result.skillCoverage, seniorityGap: result.seniorityGap };
-  // The calibrated gate only means anything while a calibration is active; without one `stored` is the raw
-  // combined score, which is not a probability and must not be compared against one. A deployment that made the
+    skillCoverage: result.skillCoverage, seniorityGap: result.seniorityGap,
+    specificity: result.specificity, lexicalCosineIdf: result.lexicalCosineIdf };
+  // The calibrated gate only means anything while a calibration is active. A deployment that made the
   // probability its main gate has usually lowered PREFILTER_MIN_SCORE to match, so losing the calibration means
   // falling back to a floor that was never meant to hold the line on its own. Say so, once, loudly.
   if (config.prefilterMinProbability > 0 && active == null) warnUncalibratedGate();
   const belowProbability = active != null && config.prefilterMinProbability > 0
-    && stored < config.prefilterMinProbability;
+    && Math.round(100 * calibratedMatchProbability(active, {
+      regexScore: result.regexScore, lexicalCosine: result.lexicalCosine,
+      titleSimilarity: result.titleSimilarity, skillCoverage: result.skillCoverage,
+      seniorityGap: result.seniorityGap, specificity: result.specificity,
+      lexicalCosineIdf: result.lexicalCosineIdf, source: vacancy.source,
+      ageBand: vacancyRecency(vacancy, now.getTime(), config.prefilterMaxAgeDays).band,
+    })) < config.prefilterMinProbability;
   return admitEvidence({ filtered: result.filtered, expired: result.expired, belowProbability,
     explorationRate: explorationRateFor(lens.labels) }) ? evidence : null;
+}
+
+/**
+ * Where a waiting match sits in the queue, decided now rather than when it was created.
+ *
+ * Two things were wrong with deciding it once and freezing it. The stored number meant different things in
+ * different eras and was sorted as if it did not (see `matchEvidence`), and a calibration accepted today never
+ * reached the backlog it was fitted to improve — the rows already waiting kept the opinion of whichever model
+ * was live when they were matched. Scoring here fixes both: every accepted refit reorders the whole queue on
+ * its next claim, and one claim only ever compares one quantity.
+ *
+ * The age band is computed against `now` for the same reason. A refit labels each row with the band the advert
+ * was in when the verdict landed, so scoring it against the band it is in when we choose to read it is what the
+ * coefficient was actually fitted on; freezing the band at match time quietly asked it a different question.
+ *
+ * Returns 0..100 in both branches. They remain different quantities and must never be mixed, which is exactly
+ * why the branch is taken once per claim rather than once per row.
+ */
+export function matchOrderingScore(candidate: PendingMatch, now: Date,
+  active = calibration): number {
+  const recency = vacancyRecency({ publishedAt: candidate.publishedAt }, now.getTime(),
+    config.prefilterMaxAgeDays);
+  if (!active) {
+    return combinedEvidenceScore(candidate.regexScore ?? 0, candidate.lexicalCosine ?? 0, recency.weight);
+  }
+  return 100 * calibratedMatchProbability(active, {
+    regexScore: candidate.regexScore ?? 0, lexicalCosine: candidate.lexicalCosine ?? 0,
+    titleSimilarity: candidate.titleSimilarity ?? 0, skillCoverage: candidate.skillCoverage ?? 0,
+    seniorityGap: candidate.seniorityGap, specificity: candidate.specificity,
+    lexicalCosineIdf: candidate.lexicalCosineIdf, source: candidate.source, ageBand: recency.band,
+  });
+}
+
+/**
+ * Bounds the fetch that feeds the ranking. Far above any real backlog — the largest a single user has held in
+ * production is a few hundred — because anything this cuts off is invisible to the ordering rather than merely
+ * delayed, so it is a correctness limit, not a performance one.
+ */
+export const claimCandidateCap = 5_000;
+
+let rankingCapWarned = false;
+
+/** Ranks everything this user has waiting and takes the best `limit` of it, best first. */
+export async function claimForScoring(userId: string, limit: number, now = new Date()): Promise<number[]> {
+  if (limit <= 0) return [];
+  const candidates = await pendingMatchesForScoring(userId, claimCandidateCap);
+  // No user id: this lands in logs that get read and copied, and a Telegram id must never be one of them. The
+  // count is enough to know the condition is live; one query names the queue. Once, because the judgment lane
+  // would otherwise repeat it every couple of minutes for as long as it holds.
+  if (candidates.length >= claimCandidateCap && !rankingCapWarned) {
+    rankingCapWarned = true;
+    console.error(`A user has at least ${claimCandidateCap} matches waiting, which is the ranking cap: their `
+      + 'queue is being ordered on a truncated view and its tail is unreachable.');
+  }
+  const ranked = candidates
+    .map((candidate) => ({ candidate, score: matchOrderingScore(candidate, now) }))
+    .sort((left, right) => right.score - left.score
+      || Date.parse(right.candidate.matchedAt) - Date.parse(left.candidate.matchedAt)
+      || left.candidate.vacancyId - right.candidate.vacancyId)
+    .slice(0, limit);
+  const claimed = new Set(await claimMatches(userId, ranked.map((entry) => entry.candidate.vacancyId)));
+  // Back into rank order: a claim that loses a race returns fewer ids, and in an order the update chose.
+  return ranked.map((entry) => entry.candidate.vacancyId).filter((vacancyId) => claimed.has(vacancyId));
 }
 
 const backfillScanLimit = 3_000;
@@ -206,7 +277,8 @@ export async function backfillUserMatches(userId: string, now = new Date()): Pro
     if (evidence) candidates.push({ userId, vacancyId: vacancy.id, lexicalScore: evidence.score,
       regexScore: evidence.regexScore, lexicalCosine: evidence.lexicalCosine,
       titleSimilarity: evidence.titleSimilarity, skillCoverage: evidence.skillCoverage,
-      seniorityGap: evidence.seniorityGap });
+      seniorityGap: evidence.seniorityGap, specificity: evidence.specificity,
+      lexicalCosineIdf: evidence.lexicalCosineIdf });
   }
   return candidates.length ? createMatches(candidates, now) : 0;
 }

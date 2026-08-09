@@ -84,6 +84,9 @@ export interface MatchCandidate {
   regexScore?: number; lexicalCosine?: number; titleSimilarity?: number; skillCoverage?: number;
   /** Null is meaningful here: neither side named a grade, which is not the same as the grades agreeing. */
   seniorityGap?: number | null;
+  /** Null means no rarity vocabulary existed when this was measured, which is not the same as zero rarity. */
+  specificity?: number | null;
+  lexicalCosineIdf?: number | null;
 }
 
 /** Ingest: new matches appear as 'matched'; an existing row is never touched — delivery memory is append-only here. */
@@ -92,11 +95,11 @@ export async function createMatches(candidates: readonly MatchCandidate[], now: 
   for (const candidate of candidates) {
     const rows = await q(`insert into matches (user_id, vacancy_id, state, lexical_score, lexical_regex_score,
         lexical_cosine, lexical_title_similarity, lexical_skill_coverage, lexical_seniority_gap,
-        matched_at, updated_at)
-      values ($1, $2, 'matched', $3, $4, $5, $6, $7, $8, $9, $9) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
+        lexical_specificity, lexical_cosine_idf, matched_at, updated_at)
+      values ($1, $2, 'matched', $3, $4, $5, $6, $7, $8, $9, $10, $11, $11) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
       [candidate.userId, candidate.vacancyId, candidate.lexicalScore, candidate.regexScore ?? null,
         candidate.lexicalCosine ?? null, candidate.titleSimilarity ?? null, candidate.skillCoverage ?? null,
-        candidate.seniorityGap ?? null,
+        candidate.seniorityGap ?? null, candidate.specificity ?? null, candidate.lexicalCosineIdf ?? null,
         now.toISOString()]);
     created += rows.length;
   }
@@ -114,16 +117,73 @@ export async function transitionMatch(userId: string, vacancyId: number, from: M
   return rows.length > 0;
 }
 
-export async function claimForScoring(userId: string, limit: number): Promise<number[]> {
-  // A row whose updated_at outruns matched_at came back from a failed scoring batch (or a content reset); it
-  // sits out a cooldown before the next claim, so a batch that fails persistently cannot monopolize the head of
-  // the best-first queue — everything below it gets scored while it waits.
+/**
+ * One match waiting on the budget, carrying the evidence frozen at match time.
+ *
+ * The store hands these back unranked on purpose. Ordering needs the active calibration, which is application
+ * state, and duplicating the scoring arithmetic in SQL is how the two copies drift — the fit script had already
+ * drifted from the engine by a whole feature before anyone noticed.
+ */
+export interface PendingMatch {
+  vacancyId: number;
+  matchedAt: string;
+  source: string;
+  publishedAt: string;
+  /** Null on rows written before the column existed; the caller reads that as no contribution. */
+  regexScore: number | null;
+  lexicalCosine: number | null;
+  titleSimilarity: number | null;
+  skillCoverage: number | null;
+  seniorityGap: number | null;
+  specificity: number | null;
+  lexicalCosineIdf: number | null;
+}
+
+/**
+ * Everything this user has waiting, for the caller to rank.
+ *
+ * A row whose updated_at outruns matched_at came back from a failed scoring batch (or a content reset); it sits
+ * out a cooldown before it is offered again, so a batch that fails persistently cannot monopolize the head of
+ * the best-first queue — everything below it gets scored while it waits.
+ *
+ * `cap` bounds the fetch, not the claim. It is deliberately far above any real backlog: whatever it cuts off is
+ * invisible to the ranking, so a cap that bites is a silent ordering error rather than a slow query.
+ */
+export async function pendingMatchesForScoring(userId: string, cap: number): Promise<PendingMatch[]> {
+  const rows = await q(`select m.vacancy_id, m.matched_at, m.lexical_regex_score, m.lexical_cosine,
+      m.lexical_title_similarity, m.lexical_skill_coverage, m.lexical_seniority_gap, m.lexical_specificity,
+      m.lexical_cosine_idf, v.source, v.published_at
+    from matches m join vacancies v on v.id = m.vacancy_id
+    where m.user_id = $1 and m.state = 'matched'
+      and (m.updated_at <= m.matched_at or m.updated_at < now() - interval '6 hours')
+    order by m.matched_at desc limit $2`, [userId, cap]);
+  return rows.map((row) => ({
+    vacancyId: Number(row.vacancy_id),
+    matchedAt: new Date(row.matched_at as string).toISOString(),
+    source: String(row.source),
+    publishedAt: new Date(row.published_at as string).toISOString(),
+    regexScore: row.lexical_regex_score == null ? null : Number(row.lexical_regex_score),
+    lexicalCosine: row.lexical_cosine == null ? null : Number(row.lexical_cosine),
+    titleSimilarity: row.lexical_title_similarity == null ? null : Number(row.lexical_title_similarity),
+    skillCoverage: row.lexical_skill_coverage == null ? null : Number(row.lexical_skill_coverage),
+    seniorityGap: row.lexical_seniority_gap == null ? null : Number(row.lexical_seniority_gap),
+    specificity: row.lexical_specificity == null ? null : Number(row.lexical_specificity),
+    lexicalCosineIdf: row.lexical_cosine_idf == null ? null : Number(row.lexical_cosine_idf),
+  }));
+}
+
+/**
+ * Takes the named matches for scoring, and reports which were actually taken.
+ *
+ * `state = 'matched'` in the predicate is the whole concurrency story: a row another claim already moved is not
+ * matched any more, so it cannot be taken twice. A caller that asked for ten and got eight raced someone and
+ * lost two, which is correct and needs no lock.
+ */
+export async function claimMatches(userId: string, vacancyIds: readonly number[]): Promise<number[]> {
+  if (!vacancyIds.length) return [];
   const rows = await q(`update matches set state = 'queued', updated_at = now()
-    where (user_id, vacancy_id) in (
-      select user_id, vacancy_id from matches where user_id = $1 and state = 'matched'
-        and (updated_at <= matched_at or updated_at < now() - interval '6 hours')
-      order by lexical_score desc nulls last, matched_at desc limit $2 for update skip locked)
-    returning vacancy_id`, [userId, limit]);
+    where user_id = $1 and vacancy_id = any($2::bigint[]) and state = 'matched'
+    returning vacancy_id`, [userId, [...vacancyIds]]);
   return rows.map((row) => Number(row.vacancy_id));
 }
 
@@ -164,12 +224,15 @@ export async function spentToday(userId: string, day: string): Promise<number> {
 
 /** A scored match whose evidence was frozen at match time — one calibration training row. */
 export interface CalibrationExampleRow {
-  regexScore: number; lexicalCosine: number; source: string; llmScore: number; storedLexicalScore: number;
+  regexScore: number; lexicalCosine: number; source: string; llmScore: number;
   publishedAt: string; scoreUpdatedAt: string;
   /** Null on rows matched before these columns existed; the fit reads that as no contribution. */
   titleSimilarity: number | null; skillCoverage: number | null;
   /** Null both on older rows and whenever neither title named a grade. */
   seniorityGap: number | null;
+  /** Null on rows measured before a rarity vocabulary existed. Never imputed — see the calibration's coverage rule. */
+  specificity: number | null;
+  lexicalCosineIdf: number | null;
   /** The model that produced llmScore, or null on rows scored before the column existed. */
   scoreModel: string | null;
   /** Whose verdict this is. Pooling users hides that "good" is judged per person. */
@@ -177,18 +240,23 @@ export interface CalibrationExampleRow {
 }
 
 export async function calibrationExamples(limit = 20_000): Promise<CalibrationExampleRow[]> {
-  const rows = await q(`select m.lexical_regex_score, m.lexical_cosine, m.lexical_score, m.llm_score,
-      m.lexical_title_similarity, m.lexical_skill_coverage, m.lexical_seniority_gap, m.score_model, m.user_id,
+  // lexical_score is deliberately absent: it holds whichever quantity was the ordering score when the row was
+  // written, so it cannot be compared across rows. The incumbent bar is recomputed from the frozen evidence.
+  const rows = await q(`select m.lexical_regex_score, m.lexical_cosine, m.llm_score,
+      m.lexical_title_similarity, m.lexical_skill_coverage, m.lexical_seniority_gap, m.lexical_specificity,
+      m.lexical_cosine_idf, m.score_model, m.user_id,
       m.score_updated_at, v.source, v.published_at
     from matches m join vacancies v on v.id = m.vacancy_id
     where m.llm_score is not null and m.lexical_regex_score is not null and m.lexical_cosine is not null
       and m.score_updated_at is not null
     order by m.score_updated_at desc limit $1`, [limit]);
   return rows.map((row) => ({ regexScore: Number(row.lexical_regex_score), lexicalCosine: Number(row.lexical_cosine),
-    source: String(row.source), llmScore: Number(row.llm_score), storedLexicalScore: Number(row.lexical_score ?? 0),
+    source: String(row.source), llmScore: Number(row.llm_score),
     titleSimilarity: row.lexical_title_similarity == null ? null : Number(row.lexical_title_similarity),
     skillCoverage: row.lexical_skill_coverage == null ? null : Number(row.lexical_skill_coverage),
     seniorityGap: row.lexical_seniority_gap == null ? null : Number(row.lexical_seniority_gap),
+    specificity: row.lexical_specificity == null ? null : Number(row.lexical_specificity),
+    lexicalCosineIdf: row.lexical_cosine_idf == null ? null : Number(row.lexical_cosine_idf),
     scoreModel: row.score_model == null ? null : String(row.score_model),
     userId: String(row.user_id),
     publishedAt: new Date(row.published_at as string).toISOString(),
@@ -240,6 +308,61 @@ export async function loadRoleEquivalences(minimumSupport = 1): Promise<RoleEqui
     order by token_a, token_b`, [minimumSupport]);
   return rows.map((row) => ({ tokenA: String(row.token_a), tokenB: String(row.token_b),
     support: Number(row.support) }));
+}
+
+export type IdfScope = 'title' | 'body';
+export interface StoredIdfVocabulary {
+  entries: { token: string; idf: number }[];
+  documents: number;
+  unknownIdf: number;
+}
+
+/**
+ * Swaps in a freshly built vocabulary.
+ *
+ * One transaction, and the rows go in through `unnest` rather than a statement each: the body scope is tens of
+ * thousands of tokens, and a per-row insert loop turns a rebuild into minutes of round trips on a hosted
+ * database. Chunked so a single statement never carries an unbounded parameter array.
+ */
+export async function replaceIdfVocabulary(scope: IdfScope, vocabulary: StoredIdfVocabulary): Promise<void> {
+  const chunk = 5_000;
+  await withPostgresTransaction(async (client) => {
+    await client.query('delete from idf_vocabulary where scope = $1', [scope]);
+    for (let offset = 0; offset < vocabulary.entries.length; offset += chunk) {
+      const slice = vocabulary.entries.slice(offset, offset + chunk);
+      await client.query(`insert into idf_vocabulary (scope, token, idf)
+        select $1, * from unnest($2::text[], $3::float8[])`,
+      [scope, slice.map((entry) => entry.token), slice.map((entry) => entry.idf)]);
+    }
+    await client.query(`insert into idf_corpora (scope, documents, tokens, unknown_idf, updated_at)
+      values ($1, $2, $3, $4, now())
+      on conflict (scope) do update set documents = excluded.documents, tokens = excluded.tokens,
+        unknown_idf = excluded.unknown_idf, updated_at = excluded.updated_at`,
+    [scope, vocabulary.documents, vocabulary.entries.length, vocabulary.unknownIdf]);
+  });
+}
+
+/** Null when this scope has never been built — which the caller must not confuse with an empty corpus. */
+export async function loadIdfVocabulary(scope: IdfScope): Promise<StoredIdfVocabulary | null> {
+  const corpus = await q(`select documents, unknown_idf from idf_corpora where scope = $1`, [scope]);
+  if (!corpus.length) return null;
+  const rows = await q(`select token, idf from idf_vocabulary where scope = $1`, [scope]);
+  return {
+    entries: rows.map((row) => ({ token: String(row.token), idf: Number(row.idf) })),
+    documents: Number(corpus[0]!.documents),
+    unknownIdf: Number(corpus[0]!.unknown_idf),
+  };
+}
+
+/** Advert text for a vocabulary rebuild, in batches, so a rebuild never holds the whole corpus in memory. */
+export async function vacancyTextBatch(afterId: number, limit: number):
+Promise<{ id: number; name: string; description: string; keySkills: string[] }[]> {
+  const rows = await q(`select id, name, description, key_skills_json from vacancies
+    where id > $1 order by id limit $2`, [afterId, limit]);
+  return rows.map((row) => ({
+    id: Number(row.id), name: String(row.name ?? ''), description: String(row.description ?? ''),
+    keySkills: Array.isArray(row.key_skills_json) ? (row.key_skills_json as unknown[]).map(String) : [],
+  }));
 }
 
 function rowToCalibration(row: Record<string, unknown>): StoredCalibrationRow {

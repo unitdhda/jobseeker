@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  calibratedMatchProbability, compareOnHoldout, evaluateCalibration, evaluateScores, fitPrefilterCalibration,
-  parsePrefilterCalibration, type TrainingExample,
+  calibratedMatchProbability, calibrationVersion, compareOnHoldout, evaluateCalibration, evaluateScores,
+  fitPrefilterCalibration, parsePrefilterCalibration, type TrainingExample,
 } from '../src/calibration.ts';
 
 const calibration = parsePrefilterCalibration(JSON.stringify({
@@ -121,7 +121,7 @@ test('a fresh fit emits the current version and can learn from the split evidenc
       label: strong ? random() < 0.85 : random() < 0.15 });
   }
   const fit = await fitPrefilterCalibration(examples);
-  assert.equal(fit.calibration.version, 3);
+  assert.equal(fit.calibration.version, calibrationVersion);
   assert.ok(fit.calibration.titleSimilarity > 0 || fit.calibration.skillCoverage > 0,
     'the split evidence must earn positive weight when it is the only signal');
   assert.ok(fit.candidate.auc > 0.75, `expected a discriminative fit, auc=${fit.candidate.auc}`);
@@ -144,7 +144,7 @@ test('a corpus too small to validate is never adopted', async () => {
   assert.equal(fit.judgeable, false, 'a 10-row holdout cannot justify a refit');
   assert.ok(Number.isNaN(fit.candidate.auc));
   // The document is still produced, so a caller may bootstrap from it deliberately; it just is not self-adopting.
-  assert.equal(fit.calibration.version, 3);
+  assert.equal(fit.calibration.version, calibrationVersion);
 });
 
 test('judge and user intercepts are fitted but never served', async () => {
@@ -235,4 +235,43 @@ test('a fit can learn the seniority gap when it is the only signal', async () =>
   assert.ok(fit.calibration.seniorityGap < 0,
     `an advert asking above the CV must earn a negative weight, got ${fit.calibration.seniorityGap}`);
   assert.ok(fit.candidate.auc > 0.75, `expected a discriminative fit, auc=${fit.candidate.auc}`);
+});
+
+test('a feature only earns a coefficient once the corpus almost entirely carries it', async () => {
+  // The measured failure this prevents: titleSimilarity sat at 2% coverage for weeks while the refit imputed 0
+  // for the rest. Simulated on the production corpus that drove its coefficient from +3.01 to -0.24 — fitted
+  // backwards, because a constant among varying labels is noise a descent will happily absorb.
+  const build = (coverage: number): TrainingExample[] => {
+    let seed = 5;
+    const random = () => { seed = (seed * 48271) % 2147483647; return seed / 2147483647; };
+    return Array.from({ length: 400 }, (_, index) => {
+      const strong = index % 2 === 0;
+      return { regexScore: 50, lexicalCosine: 0.15, source: 'hh', ageBand: 'week' as const, scoredAt: index,
+        specificity: random() < coverage ? (strong ? 0.9 : 0.05) : null,
+        label: strong ? random() < 0.85 : random() < 0.15 };
+    });
+  };
+  const sparse = await fitPrefilterCalibration(build(0.1));
+  assert.equal(sparse.calibration.specificity, 0,
+    'a feature a tenth of the corpus carries must not be weighed at all');
+
+  const covered = await fitPrefilterCalibration(build(1));
+  assert.ok(covered.calibration.specificity > 0,
+    `a fully covered feature carrying the signal must earn weight, got ${covered.calibration.specificity}`);
+});
+
+test('the rarity pair is served when present and contributes nothing when absent', () => {
+  const base = { regexScore: 50, lexicalCosine: 0.1, source: 'hh', ageBand: 'week' as const };
+  const model = parsePrefilterCalibration(JSON.stringify({ version: 4, bias: -1, regexScore: 1,
+    lexicalCosine: 1, specificity: 4, lexicalCosineIdf: 4, sources: {}, ageBands: {} }));
+  const absent = calibratedMatchProbability(model, base);
+  assert.equal(absent, calibratedMatchProbability(model, { ...base, specificity: null, lexicalCosineIdf: null }),
+    'null must contribute exactly what an omitted feature contributes');
+  assert.ok(calibratedMatchProbability(model, { ...base, specificity: 1 }) > absent);
+  assert.ok(calibratedMatchProbability(model, { ...base, lexicalCosineIdf: 0.2 }) > absent);
+  // A version 3 document has no rarity coefficients and keeps serving unchanged.
+  const older = parsePrefilterCalibration(JSON.stringify({ version: 3, bias: -1, regexScore: 1,
+    lexicalCosine: 1, sources: {}, ageBands: {} }));
+  assert.equal(calibratedMatchProbability(older, { ...base, specificity: 1 }),
+    calibratedMatchProbability(older, base));
 });

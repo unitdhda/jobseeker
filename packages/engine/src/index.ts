@@ -24,14 +24,19 @@ export {
   type JudgmentReport, type LaneClock, type LoopPorts, type NormalizeReport, type ScoringPolicy, type ScoringPorts,
 } from './loop.ts';
 export {
-  careerProfileLimits, careerProfilePlatformId, careerProfileSchema, careerTrackSchema, normalizeCareerProfileJson,
+  careerProfileLimits, careerProfilePlatformId, careerProfileSchema, careerTrackSchema, combinedEvidenceScore,
+  normalizeCareerProfileJson,
   parseStoredCareerProfile, prefilterVacancy, vacancyRecency, vacancySemanticText,
   type CareerProfile, type CareerTrack, type PrefilterResult, type RecencyBand, type StoredCareerProfile,
   type VacancyRecency,
 } from './prefilter.ts';
 export {
-  calibratedMatchProbability, compareOnHoldout, evaluateCalibration, evaluateScores, fitPrefilterCalibration,
-  parsePrefilterCalibration, prefilterCalibrationSchema,
+  buildIdfVocabulary, createIdfLookup, uniformIdfLookup, uniformIdfLookups,
+  type IdfEntry, type IdfLookup, type IdfLookups, type IdfVocabulary,
+} from './idf.ts';
+export {
+  calibratedMatchProbability, compareOnHoldout, evaluateCalibration, evaluateScores, featureColumns,
+  fitPrefilterCalibration, parsePrefilterCalibration, prefilterCalibrationSchema,
   type CalibrationEvaluation, type CalibrationExample, type CalibrationFeatures, type CalibrationFit,
-  type HoldoutComparison, type PrefilterCalibration, type TrainingExample,
+  type FeatureColumns, type HoldoutComparison, type PrefilterCalibration, type TrainingExample,
 } from './calibration.ts';
