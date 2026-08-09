@@ -12,6 +12,9 @@ import type { AuthEvent, AuthInteraction, AuthPrompt, Credential } from '@earend
 const usage = `jobseeker — CV-driven vacancy monitoring over Telegram
 
 Usage:
+  jobseeker [--env-file <path>] <command>
+
+Commands:
   jobseeker start                Run the service: Telegram bot, engine loop, health endpoints
   jobseeker db init              Apply schema.sql to an empty PostgreSQL database
   jobseeker credentials create   Log in to a model provider: OAuth, or an API key
@@ -21,7 +24,7 @@ Usage:
   jobseeker help                 Show this message
 
 Exactly one running process per bot token may use TELEGRAM_MODE=polling, and the engine loop guards itself with a
-PostgreSQL advisory lock. Configuration is environment-only; see the package README.`;
+PostgreSQL advisory lock. Pass --env-file=.env to load a file; existing process environment values take precedence.`;
 
 function here(): string { return dirname(fileURLToPath(import.meta.url)); }
 
@@ -86,7 +89,7 @@ async function doctor(): Promise<void> {
     }
   }
 
-  const fontsDir = process.env.TYPST_FONT_PATHS ?? join(here(), '..', 'fonts');
+  const fontsDir = join(here(), '..', 'fonts');
   const fonts = existsSync(fontsDir);
   checks.push({ name: 'fonts', ok: fonts, detail: fonts ? resolve(fontsDir) : `${fontsDir} does not exist (PDF documents will fail)` });
 

@@ -72,7 +72,7 @@ const ready = (): Promise<void> => {
     await q(`insert into users(user_id,chat_id,display_name,status,is_owner,approved_at,updated_at)
       values ($1,$2,'Owner','approved',1,$3,$3) on conflict(user_id) do update set chat_id=excluded.chat_id,
       status='approved',is_owner=1,approved_at=coalesce(users.approved_at,excluded.approved_at),updated_at=excluded.updated_at`,
-      [storeSettings().telegramUserId, storeSettings().telegramChatId ?? storeSettings().telegramUserId, timestamp]);
+      [storeSettings().telegramUserId, storeSettings().telegramUserId, timestamp]);
   })();
   initializations.set(owner, created);
   return created;
@@ -297,7 +297,8 @@ export async function saveCvSource(userId: string, originalFilename: string, cvS
         extracted.mediaType, extracted.parserName, extracted.parserVersion, now()]);
     // A new CV invalidates undelivered judgements; what the user already saw stays seen.
     await client.query(`update matches set state='matched',llm_score=null,score_updated_at=null,
-      alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null,updated_at=$2
+      prescore_score=null,prescore_model=null,prescore_prompt_version=null,prescore_updated_at=null,
+      prescore_exploration=false,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null,updated_at=$2
       where user_id=$1 and state in ('queued','scored')`, [userId, now()]);
   });
 }
@@ -376,7 +377,8 @@ export async function upsertVacancy(input: VacancyInput): Promise<{ id: number; 
       content_hash=$17,updated_at=$18,lifecycle_status='normalized',normalized_vacancy_id=$19 where id=$19`,[...values,normalizedId]);
     // Changed content invalidates undelivered scores; delivered matches keep their memory — the wall holds.
     if (changed) await client.query(`update matches set state='matched',llm_score=null,score_updated_at=null,
-      alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null,updated_at=$2
+      prescore_score=null,prescore_model=null,prescore_prompt_version=null,prescore_updated_at=null,
+      prescore_exploration=false,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null,updated_at=$2
       where vacancy_id=$1 and state in ('queued','scored')`,[normalizedId,timestamp]);
     return { id: normalizedId, needsScore: changed, duplicate: false };
   });

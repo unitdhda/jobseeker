@@ -69,7 +69,7 @@ export interface CalibrationHealth {
   fittedAt: string | null;
   ageDays: number | null;
   stale: boolean;
-  ordering: 'calibrated probability' | 'raw evidence score';
+  ordering: 'semantic prescore' | 'calibrated probability' | 'raw evidence score';
   message: string | null;
 }
 
@@ -77,6 +77,11 @@ export function calibrationHealth(now = new Date()): CalibrationHealth {
   const fittedAt = calibrationFittedAt;
   const ageDays = fittedAt ? (now.getTime() - Date.parse(fittedAt)) / 86_400_000 : null;
   const stale = ageDays != null && ageDays > calibrationStaleAfterDays;
+  if (config.prescoringModel) {
+    return { active: calibration != null, fittedAt, ageDays, stale, ordering: 'semantic prescore',
+      message: stale ? `The shadow calibration was fitted ${Math.floor(ageDays!)} days ago and nothing has replaced it. `
+        + 'Semantic prescoring still owns production ordering, but its deterministic challenger is stale.' : null };
+  }
   if (!calibration) {
     return { active: false, fittedAt, ageDays, stale: false, ordering: 'raw evidence score',
       message: 'No calibration is active, so the scoring queue is ordered by the raw evidence score. That '
@@ -182,8 +187,10 @@ export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date,
   // The calibrated gate only means anything while a calibration is active. A deployment that made the
   // probability its main gate has usually lowered PREFILTER_MIN_SCORE to match, so losing the calibration means
   // falling back to a floor that was never meant to hold the line on its own. Say so, once, loudly.
-  if (config.prefilterMinProbability > 0 && active == null) warnUncalibratedGate();
-  const belowProbability = active != null && config.prefilterMinProbability > 0
+  if (!config.prescoringModel && config.prefilterMinProbability > 0 && active == null) warnUncalibratedGate();
+  // A configured semantic prescorer owns admission. The deterministic fit keeps learning in shadow, but feeding
+  // its verdict into this gate would make the supposed challenger part of the production decision it measures.
+  const belowProbability = !config.prescoringModel && active != null && config.prefilterMinProbability > 0
     && Math.round(100 * calibratedMatchProbability(active, {
       regexScore: result.regexScore, lexicalCosine: result.lexicalCosine,
       titleSimilarity: result.titleSimilarity, skillCoverage: result.skillCoverage,
@@ -213,6 +220,7 @@ export function matchEvidence(lens: UserLens, vacancy: Vacancy, now: Date,
  */
 export function matchOrderingScore(candidate: PendingMatch, now: Date,
   active = calibration): number {
+  if (config.prescoringModel && candidate.prescoreScore != null) return candidate.prescoreScore;
   const recency = vacancyRecency({ publishedAt: candidate.publishedAt }, now.getTime(),
     config.prefilterMaxAgeDays);
   if (!active) {
@@ -235,14 +243,27 @@ export const claimCandidateCap = 5_000;
 
 let rankingCapWarned = false;
 
+/** The mini gate's one production decision; exploration is frozen when its score lands. */
+export function admitPrescore(score: number | null | undefined, exploration: boolean | undefined,
+  minimum = config.prescoreMinScore): boolean {
+  return score != null && (score >= minimum || exploration === true);
+}
+
 /** Ranks everything this user has waiting and takes the best `limit` of it, best first. */
 export async function claimForScoring(userId: string, limit: number, now = new Date()): Promise<number[]> {
   if (limit <= 0) return [];
-  const candidates = await pendingMatchesForScoring(userId, claimCandidateCap);
+  const waiting = await pendingMatchesForScoring(userId, claimCandidateCap, config.prescoringModel,
+    config.prescorePromptVersion, config.prescoreMinScore);
+  // Mini-rejected rows stay out unless their exploration decision was frozen when the prescore landed. The
+  // deterministic calibration never sees the mini score; these explored full-judge labels are what keep its
+  // shadow corpus from becoming a selected-only view of the mini model.
+  const candidates = config.prescoringModel
+    ? waiting.filter((candidate) => admitPrescore(candidate.prescoreScore, candidate.prescoreExploration))
+    : waiting;
   // No user id: this lands in logs that get read and copied, and a Telegram id must never be one of them. The
   // count is enough to know the condition is live; one query names the queue. Once, because the judgment lane
   // would otherwise repeat it every couple of minutes for as long as it holds.
-  if (candidates.length >= claimCandidateCap && !rankingCapWarned) {
+  if (waiting.length >= claimCandidateCap && !rankingCapWarned) {
     rankingCapWarned = true;
     console.error(`A user has at least ${claimCandidateCap} matches waiting, which is the ranking cap: their `
       + 'queue is being ordered on a truncated view and its tail is unreachable.');

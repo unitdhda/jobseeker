@@ -32,8 +32,8 @@ Jobseeker is not another job-board interface. It is a continuously running searc
 
 1. **Understands the CV** — extracts reusable structured content and generates role-specific search demand.
 2. **Monitors job boards** — runs shared, adaptive searches and stores each listing once.
-3. **Filters before spending** — rejects weak lexical matches before invoking an LLM, and re-learns that filter from
-   its own past scoring so the budget keeps going to the vacancies most likely to be worth it.
+3. **Filters before spending** — freezes cheap lexical evidence and, when configured, uses a small semantic model
+   before the full judge. An independent deterministic challenger keeps learning silently from later full scores.
 4. **Scores fit** — evaluates skills, seniority, responsibilities, location, work format, and explicit blockers.
 5. **Delivers decisions** — sends high-scoring alerts immediately and collects review-worthy roles into digests.
 6. **Helps apply** — prepares a tailored CV or cover letter only when requested.
@@ -92,8 +92,8 @@ language instead, so an application is never written in the wrong one.
 | Capability | What it solves |
 |---|---|
 | **Continuous discovery** | CV-derived searches run on adaptive schedules. |
-| **Fit before AI spend** | Cheap lexical matching keeps obviously weak vacancies out of the expensive scoring queue. |
-| **A filter that improves** | The ordering that spends your model budget is re-fitted daily from the service's own past verdicts, and replaced only when it measurably ranks better. |
+| **Fit before AI spend** | Cheap lexical matching bounds the candidate set; an optional mini model semantically prescores it before the full judge. |
+| **An independent challenger** | Frozen deterministic features and later full-judge verdicts train a daily shadow model without using the mini model's outputs. |
 | **Shared discovery** | A listing found for one user can be evaluated for others without fetching it again. |
 | **No duplicate delivery** | PostgreSQL state transitions prevent an alerted, digested, skipped, or applied match from resurfacing. |
 | **Application artifacts** | Tailored CVs and letters are generated independently and can be resent instantly. |
@@ -141,10 +141,10 @@ npm install @unitdhda/jobseeker
 export DATABASE_URL=postgres://… TELEGRAM_BOT_TOKEN=… TELEGRAM_USER_ID=…
 export AI_MODEL=provider/model AI_SCORING_MODEL=provider/model
 
-npx jobseeker db init            # apply the packaged schema to an empty database
-npx jobseeker credentials create # sign in to a model provider: OAuth, or an API key
-npx jobseeker doctor             # config, database, fonts, extensions
-npx jobseeker start              # Telegram receiver + engine loop + health endpoints
+npx jobseeker --env-file=.env db init  # apply the packaged schema to an empty database
+npx jobseeker --env-file=.env credentials create # sign in with OAuth or an API key
+npx jobseeker --env-file=.env doctor   # environment, database, fonts, extensions
+npx jobseeker --env-file=.env start    # Telegram receiver + engine loop + health endpoints
 ```
 
 You will need Node.js 23.6+ or Bun 1.3+, PostgreSQL 15+, a Telegram bot token and owner account, and credentials for

@@ -23,17 +23,19 @@ export TELEGRAM_USER_ID=…
 export AI_MODEL=provider/model            # profile + application generation
 export AI_SCORING_MODEL=provider/model    # high-volume vacancy scoring
 
+# Or put those values in .env and add --env-file=.env to every command.
+
 # 2. Initialize an empty database.
-npx jobseeker db init
+npx jobseeker --env-file=.env db init
 
 # 3. Sign in to the model provider (OAuth or API key), or import an existing auth.json.
-npx jobseeker credentials create
+npx jobseeker --env-file=.env credentials create
 
 # 4. Add vacancy sources: the service registers none by itself.
 mkdir extensions   # see the extensions section below
 
-npx jobseeker doctor
-npx jobseeker start
+npx jobseeker --env-file=.env doctor
+npx jobseeker --env-file=.env start
 ```
 
 | Command | Does |
@@ -72,8 +74,7 @@ dependencies in the extensions directory's own `package.json`.
 - **One engine loop.** The loop guards itself with a PostgreSQL advisory lock: a second `RUN_JOBS=true` process
   logs that the lock is held and idles until the holder releases it.
 - The schema of record is the packaged `schema.sql`; `jobseeker db init` applies it to an empty database only.
-- PDF generation uses the bundled OFL fonts (JetBrains Mono, Spectral); point `TYPST_FONT_PATHS` elsewhere to
-  override.
+- PDF generation always uses the bundled OFL fonts (JetBrains Mono and Spectral).
 
 All limits and optional settings are documented in the repository's `.env.example`.
 

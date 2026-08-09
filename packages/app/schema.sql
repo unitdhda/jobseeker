@@ -146,6 +146,14 @@ create table public.matches (
   -- same as zero, and the calibration refuses to weigh either column until nearly every row carries it.
   lexical_specificity double precision,
   lexical_cosine_idf double precision,
+  -- Cheap semantic judge used for live admission/ranking. It is deliberately not a calibration feature: the
+  -- deterministic model remains an independent shadow challenger trained only from frozen evidence and llm_score.
+  prescore_score integer,
+  prescore_model text,
+  prescore_prompt_version integer,
+  prescore_updated_at timestamptz,
+  -- Frozen when the prescore lands. Rejected rows selected here still buy a full-judge label for shadow training.
+  prescore_exploration boolean not null default false,
   llm_score integer,
   -- Which model produced llm_score, as the route string the AI layer was asked for. The calibration's corpus
   -- spans whatever routes were live, and models differ in strictness; without this the fit cannot tell a strict
@@ -168,6 +176,8 @@ create table public.matches (
   constraint matches_state_check check (state = any (array['matched','queued','scored','alerted','digested','skipped','applying','applied','expired'])),
   constraint matches_application_status_check check (application_status = any (array['generating','ready','failed'])),
   constraint matches_llm_score_check check ((llm_score >= 0) and (llm_score <= 100)),
+  constraint matches_prescore_score_check check ((prescore_score >= 0) and (prescore_score <= 100)),
+  constraint matches_prescore_prompt_version_check check ((prescore_prompt_version is null) or (prescore_prompt_version >= 1)),
   constraint matches_pkey primary key (user_id, vacancy_id),
   constraint matches_user_id_fkey foreign key (user_id) references users(user_id) on delete cascade,
   constraint matches_vacancy_id_fkey foreign key (vacancy_id) references vacancies(id) on delete cascade

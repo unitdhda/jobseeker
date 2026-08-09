@@ -60,7 +60,7 @@ itself. Supply the variables the way your host does it: `export` in a shell, `En
 `env_file:` in Compose, or the runtime's own flag:
 
 ```bash
-node --env-file=.env node_modules/.bin/jobseeker start   # or: bun --env-file=.env node_modules/.bin/jobseeker start
+node_modules/.bin/jobseeker --env-file=.env start
 ```
 
 The minimum is five variables:
@@ -84,11 +84,10 @@ the owner account.
 ```dotenv
 TELEGRAM_BOT_TOKEN=
 TELEGRAM_USER_ID=
-TELEGRAM_CHAT_ID=
 TELEGRAM_MODE=polling
 ```
 
-For a private owner chat, user and chat IDs must match. Keep the token outside version control and set the
+The owner's private-chat id is the same as their user id. Keep the token outside version control and set the
 environment file to owner-readable permissions only.
 
 The bot is private by design. Other people send `/request`; the owner approves them with `/ok ID` or `/ok @username`.
@@ -338,11 +337,7 @@ Tune only after measuring the discovery → normalization → lexical match → 
 
 ### PDF rendering
 
-The packaged fonts are used automatically. Point Typst elsewhere only to override them:
-
-```dotenv
-TYPST_FONT_PATHS=./fonts
-```
+The packaged JetBrains Mono and Spectral fonts are always used automatically.
 
 ## 8. Check, then run
 
@@ -352,7 +347,7 @@ npx jobseeker start
 ```
 
 `doctor` verifies the five required variables, the runtime version, PostgreSQL reachability and initialization,
-the font path, and that the extensions directory exists and is non-empty. It exits non-zero when a check fails, so
+the bundled fonts, and that the extensions directory exists and is non-empty. It exits non-zero when a check fails, so
 it works as a deployment gate.
 
 Expected startup signals:

@@ -4,7 +4,6 @@ import { Client, Pool, type PoolClient, type QueryResultRow, type PoolConfig } f
 /** The knobs repositories read through their owning store instance. */
 export interface StoreSettings {
   telegramUserId?: string;
-  telegramChatId?: string;
   accessRequestCooldownMinutes: number;
   prefilterMaxAgeDays: number;
   searchPlatforms: readonly string[];

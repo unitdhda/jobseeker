@@ -174,6 +174,27 @@ from exhausting the evening budget.
 `accounts` holds budget counters. `usage_events` holds individual operations and LLM token/cost accounting. OAuth and
 subscription prices are catalog estimates unless the provider reports authoritative request cost.
 
+## Optional semantic prescoring
+
+When `AI_PRESCORING_MODEL` is configured, every match that passes the cheap lexical candidate gate receives a
+batched semantic score before the full judge. That mini score owns live admission (`PRESCORE_MIN_SCORE`) and queue
+ordering. The pass stores only its score, model, prompt version, and one frozen exploration decision; the lexical,
+title, skill, seniority, and rarity features were already frozen when the match was created.
+
+A fixed share of mini-rejected rows (`PRESCORE_EXPLORATION_RATE`) still reaches the full judge. The decision is made
+once and persisted rather than re-rolled every judgment cycle. Those labels prevent the deterministic learner from
+seeing only the population selected by the mini model. If the model or prompt version changes, waiting rows are
+prescored again before they can be claimed for full scoring.
+
+The mini output is deliberately absent from `calibrationExamples`: it is neither a deterministic feature nor a
+training target. The daily calibration remains an independent shadow challenger trained only from frozen evidence
+and the later full-judge verdict. While semantic prescoring is enabled, deterministic probability does not gate or
+order production work; accepted fits merely advance the shadow model that would take over if semantic prescoring
+were disabled.
+
+Without `AI_PRESCORING_MODEL`, the deterministic ordering and probability gate behave as described below, preserving
+the cheaper all-deterministic deployment mode.
+
 ## The prefilter calibrates itself
 
 The budget above is spent best-first, so the order matters as much as the ceiling: whatever the prefilter ranks
@@ -213,7 +234,7 @@ refit only ever reached matches created after it, never the backlog it was fitte
 time fixes both: one claim compares one quantity, and every accepted refit reorders everything still waiting.
 Measured on the production corpus, that alone was worth 20% of the LLM spend at equal yield.
 
-By default the calibration decides only the *order*: admission is still the raw evidence gate
+When semantic prescoring is disabled, the calibration decides only the *order* by default: admission is still the raw evidence gate
 (`PREFILTER_MIN_SCORE`). `PREFILTER_MIN_PROBABILITY` additionally refuses matches whose calibrated probability is
 too low, which is the sharper of the two filters because it acts on the signal that was actually measured against
 LLM verdicts. It is off by default, because the cost of a gate is paid in matches the user never sees, and the

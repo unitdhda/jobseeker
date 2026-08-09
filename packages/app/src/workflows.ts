@@ -3,8 +3,9 @@ import { generateJson } from './ai.ts';
 import { config } from './config.ts';
 import {
   applicationAgents, beginApplication, failApplication, getCvHash, getCvSource, getScoredVacancy,
-  getSearchProfile, getVacancy, markApplicationReady, recordUsage, requireApprovedUser, saveScore, saveSearchProfile,
-  transitionMatch, usageInLast24Hours, type ApplicationArtifact, type Vacancy,
+  claimMatches, getSearchProfile, getVacancy, markApplicationReady, pendingMatchesForPrescoring, recordUsage,
+  requireApprovedUser, savePrescore, saveScore, saveSearchProfile, transitionMatch, usageInLast24Hours,
+  type ApplicationArtifact, type Vacancy,
 } from './postgres.ts';
 import { enabledSourceProviderIds, getSearchPlatform, platformSearches } from './vacancies/registry.ts';
 import { compileDemand, type DemandInput } from '@jobseeker/engine';
@@ -32,6 +33,10 @@ const vacancyScoreSchema=v.object({vacancyId:v.pipe(v.number(),v.integer(),v.min
   gaps:v.pipe(v.array(v.pipe(v.string(),v.minLength(2),v.maxLength(500))),v.maxLength(10)),hardRejection:v.boolean()});
 const vacancyScoresSchema=v.pipe(v.array(vacancyScoreSchema),v.minLength(1),v.maxLength(20));
 const scoringResultSchema=v.union([v.object({scores:vacancyScoresSchema}),vacancyScoresSchema]);
+const vacancyPrescoreSchema=v.object({vacancyId:v.pipe(v.number(),v.integer(),v.minValue(1)),
+  score:v.pipe(v.number(),v.integer(),v.minValue(0),v.maxValue(100))});
+const vacancyPrescoresSchema=v.pipe(v.array(vacancyPrescoreSchema),v.minLength(1),v.maxLength(20));
+const prescoringResultSchema=v.union([v.object({scores:vacancyPrescoresSchema}),vacancyPrescoresSchema]);
 const tailoredCvTextSchema=v.pipe(v.string(),v.minLength(500),v.maxLength(30_000));
 // Three short paragraphs land well under this; the cap is what stops a model that ignored the instruction, since
 // the letters were arriving far too long to read.
@@ -198,6 +203,76 @@ export async function missingSearchProfiles(userId:string):Promise<string[]>{
   return missing;
 }
 
+/** Whether a below-mini-threshold row buys an independent full-judge label. Frozen once, never re-rolled. */
+export function explorePrescore(score: number, random: () => number = Math.random): boolean {
+  return score < config.prescoreMinScore && random() < config.prescoreExplorationRate;
+}
+
+function prescoreContext(vacancy: Vacancy) {
+  return { vacancyId: vacancy.id, name: vacancy.name, employer: vacancy.employer, area: vacancy.area,
+    salaryFrom: vacancy.salaryFrom, salaryTo: vacancy.salaryTo, salaryCurrency: vacancy.salaryCurrency,
+    salaryGross: vacancy.salaryGross, experience: vacancy.experience, employment: vacancy.employment,
+    schedule: vacancy.schedule, workFormat: vacancy.workFormat,
+    // A pathological page should not turn a cheap gate into the most expensive request in the pipeline.
+    description: vacancy.description.slice(0, 16_000), keySkills: vacancy.keySkills };
+}
+
+/**
+ * Runs the optional semantic gate without writing a full verdict. Deterministic evidence was already frozen when
+ * the match was created; only the mini score and a one-time exploration decision land here. The daily calibration
+ * query deliberately does not select either column.
+ */
+async function prescorePendingVacancies(userId: string,
+  progress?: (phase: 'filtering' | 'scoring', current: number, total: number) => void): Promise<number> {
+  const model = config.prescoringModel;
+  if (!model) return 0;
+  await requireApprovedUser(userId);
+  const pending = await pendingMatchesForPrescoring(userId, config.prescoreLimitPerCycle, model,
+    config.prescorePromptVersion);
+  const claimedSet = new Set(await claimMatches(userId, pending));
+  const claimed = pending.filter((vacancyId) => claimedSet.has(vacancyId));
+  if (!claimed.length) return 0;
+  const cv = await getCvSource(userId);
+  if (!cv) throw new Error('The authoritative CV source was not found.');
+  const vacancies: Vacancy[] = [];
+  for (const vacancyId of claimed) {
+    const vacancy = await getVacancy(vacancyId);
+    if (vacancy) vacancies.push(vacancy);
+    else await transitionMatch(userId, vacancyId, 'queued', 'matched').catch(() => false);
+  }
+  let completed = 0;
+  progress?.('filtering', completed, vacancies.length);
+  for (let offset = 0; offset < vacancies.length; offset += config.prescoreBatchSize) {
+    const batch = vacancies.slice(offset, offset + config.prescoreBatchSize);
+    try {
+      const result = await generateJson({ userId, agent: 'prescore-vacancies', model,
+        thinking: config.prescoringThinkingLevel, schema: prescoringResultSchema,
+        system:`You are a cheap first-pass predictor for a more expensive CV-to-vacancy judge. Predict the full
+judge's 0-100 compatibility score for every vacancy. Judge semantic role compatibility, not keyword overlap.
+Weights: must-have skills 40, seniority/years 20, responsibilities 15, domain 10, location/work format 10,
+compensation 5; missing salary is neutral. Penalize both underqualification and substantial overqualification.
+Explicit hard blockers cap the prediction at 49. Return exactly one result per vacancyId as either
+{"scores":[{"vacancyId":1,"score":0}]} or the same scores array directly, with no reasons or prose.`,
+        prompt:`AUTHORITATIVE CV:\n${cv.cvText}\n\nVACANCIES:\n${JSON.stringify(batch.map(prescoreContext))}` });
+      const scores = Array.isArray(result) ? result : result.scores;
+      const expected = new Set(batch.map((vacancy) => vacancy.id));
+      if (scores.length !== expected.size || new Set(scores.map((score) => score.vacancyId)).size !== expected.size
+        || scores.some((score) => !expected.has(score.vacancyId))) {
+        throw new Error('AI did not return exactly one prescore for each vacancy.');
+      }
+      for (const score of scores) await savePrescore(userId, score.vacancyId, score.score, model,
+        config.prescorePromptVersion, explorePrescore(score.score));
+      completed += batch.length;
+      progress?.('filtering', completed, vacancies.length);
+    } catch (error) {
+      for (const vacancy of batch) await transitionMatch(userId, vacancy.id, 'queued', 'matched').catch(() => false);
+      throw error;
+    }
+  }
+  trace('prescoring.completed', { count: completed, model });
+  return completed;
+}
+
 let scoringSubscriptionUnavailableUntil = 0;
 
 function subscriptionLimitText(error: unknown): string {
@@ -327,6 +402,9 @@ export async function scorePendingVacancies(
   progress?: (phase: 'filtering' | 'scoring', current: number, total: number) => void,
   scoreLimit = config.userScoreLimitPerCycle,
 ): Promise<ScorePendingResult> {
+  // The optional mini pass owns live ordering/admission. Its output is never a deterministic calibration feature;
+  // exploration buys full-judge labels for that independent shadow fit.
+  await prescorePendingVacancies(userId, progress);
   // Matching already judged relevance at ingest; scoring drains the best claims. A claim that fails to score is
   // released back to 'matched' so the next drain can retry it — unless saveScore landed first, then the release
   // finds no 'queued' row and does nothing.

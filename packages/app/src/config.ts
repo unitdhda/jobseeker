@@ -96,6 +96,12 @@ export const config = {
   scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
   scoringFallbackModel: modelEnv('AI_SCORING_FALLBACK_MODEL'),
   scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
+  // Optional cheap semantic pass before the full judge. While configured it owns scoring admission and ordering;
+  // the deterministic calibration keeps fitting in shadow from frozen evidence plus full-judge labels.
+  prescoringModel: modelEnv('AI_PRESCORING_MODEL'),
+  prescoringThinkingLevel: thinkingLevelEnv('AI_PRESCORING_THINKING_LEVEL', 'minimal'),
+  // Bump whenever the semantic scoring contract changes; stale backlog rows are then prescored again.
+  prescorePromptVersion: 1,
   searchPlatforms: platformEnv(),
   additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 1, 1, 20),
   searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),
@@ -146,6 +152,11 @@ export const config = {
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
+  prescoreMinScore: integerEnv('PRESCORE_MIN_SCORE', 50, 0, 100),
+  prescoreBatchSize: integerEnv('PRESCORE_BATCH_SIZE', 20, 1, 20),
+  prescoreLimitPerCycle: integerEnv('PRESCORE_LIMIT_PER_CYCLE', 60, 1, 10_000),
+  // A frozen sample of mini-rejected rows still reaches the full judge, providing unbiased labels to the shadow fit.
+  prescoreExplorationRate: fractionEnv('PRESCORE_EXPLORATION_RATE', 0.1, 1),
   // The scoring drain stops claiming for a user once the day's LLM spend from `accounts` reaches this ceiling.
   userDailyLlmBudgetUsd: integerEnv('USER_DAILY_LLM_BUDGET_CENTS', 200, 0, 100_000) / 100,
   unitCadenceFloorMinutes: integerEnv('UNIT_CADENCE_FLOOR_MINUTES', 30, 5, 1_440),
@@ -166,8 +177,7 @@ export const config = {
   digestMinScore,
   timezone: process.env.TIMEZONE ?? 'Europe/Moscow',
   defaultLocale: localeEnv('BOT_LOCALE', 'ru'),
-  telegramChatId: process.env.TELEGRAM_CHAT_ID,
-  telegramUserId: process.env.TELEGRAM_USER_ID ?? process.env.TELEGRAM_CHAT_ID,
+  telegramUserId: process.env.TELEGRAM_USER_ID,
   runJobs: booleanEnv('RUN_JOBS', true),
   telegramMode: telegramModeEnv(),
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,

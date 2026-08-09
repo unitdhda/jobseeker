@@ -137,6 +137,10 @@ export interface PendingMatch {
   seniorityGap: number | null;
   specificity: number | null;
   lexicalCosineIdf: number | null;
+  /** Cheap semantic prescore. Null means the optional prescoring model has not judged this row yet. */
+  prescoreScore?: number | null;
+  /** A below-threshold row frozen into the exploration sample for independent shadow labels. */
+  prescoreExploration?: boolean;
 }
 
 /**
@@ -149,14 +153,20 @@ export interface PendingMatch {
  * `cap` bounds the fetch, not the claim. It is deliberately far above any real backlog: whatever it cuts off is
  * invisible to the ranking, so a cap that bites is a silent ordering error rather than a slow query.
  */
-export async function pendingMatchesForScoring(userId: string, cap: number): Promise<PendingMatch[]> {
+export async function pendingMatchesForScoring(userId: string, cap: number,
+  requiredPrescoreModel: string | null = null, requiredPromptVersion = 1,
+  minimumPrescore = 0): Promise<PendingMatch[]> {
   const rows = await q(`select m.vacancy_id, m.matched_at, m.lexical_regex_score, m.lexical_cosine,
       m.lexical_title_similarity, m.lexical_skill_coverage, m.lexical_seniority_gap, m.lexical_specificity,
-      m.lexical_cosine_idf, v.source, v.published_at
+      m.lexical_cosine_idf, m.prescore_score, m.prescore_exploration, v.source, v.published_at
     from matches m join vacancies v on v.id = m.vacancy_id
     where m.user_id = $1 and m.state = 'matched'
+      and ($3::text is null or (m.prescore_score is not null and m.prescore_model = $3
+        and m.prescore_prompt_version = $4
+        and (m.prescore_score >= $5 or m.prescore_exploration = true)))
       and (m.updated_at <= m.matched_at or m.updated_at < now() - interval '6 hours')
-    order by m.matched_at desc limit $2`, [userId, cap]);
+    order by m.matched_at desc limit $2`,
+    [userId, cap, requiredPrescoreModel, requiredPromptVersion, minimumPrescore]);
   return rows.map((row) => ({
     vacancyId: Number(row.vacancy_id),
     matchedAt: new Date(row.matched_at as string).toISOString(),
@@ -169,7 +179,32 @@ export async function pendingMatchesForScoring(userId: string, cap: number): Pro
     seniorityGap: row.lexical_seniority_gap == null ? null : Number(row.lexical_seniority_gap),
     specificity: row.lexical_specificity == null ? null : Number(row.lexical_specificity),
     lexicalCosineIdf: row.lexical_cosine_idf == null ? null : Number(row.lexical_cosine_idf),
+    prescoreScore: row.prescore_score == null ? null : Number(row.prescore_score),
+    prescoreExploration: Boolean(row.prescore_exploration),
   }));
+}
+
+/** Rows that need the optional cheap semantic pass before full-scoring admission. */
+export async function pendingMatchesForPrescoring(userId: string, cap: number, model: string,
+  promptVersion: number): Promise<number[]> {
+  const rows = await q(`select vacancy_id from matches where user_id = $1 and state = 'matched'
+      and llm_score is null
+      and (prescore_score is null or prescore_model is distinct from $3
+        or prescore_prompt_version is distinct from $4)
+      and (updated_at <= matched_at or updated_at < now() - interval '6 hours')
+    order by matched_at desc limit $2`, [userId, cap, model, promptVersion]);
+  return rows.map((row) => Number(row.vacancy_id));
+}
+
+/** Lands a cheap semantic verdict and releases its temporary claim back to the full-scoring queue. */
+export async function savePrescore(userId: string, vacancyId: number, score: number, model: string,
+  promptVersion: number, exploration: boolean, now = new Date()): Promise<boolean> {
+  const rows = await q(`update matches set state = 'matched', updated_at = matched_at,
+      prescore_score = $3, prescore_model = $4,
+      prescore_prompt_version = $5, prescore_updated_at = $6, prescore_exploration = $7
+    where user_id = $1 and vacancy_id = $2 and state = 'queued' and llm_score is null
+    returning vacancy_id`, [userId, vacancyId, score, model, promptVersion, now.toISOString(), exploration]);
+  return rows.length > 0;
 }
 
 /**

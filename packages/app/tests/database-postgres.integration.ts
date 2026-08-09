@@ -20,6 +20,7 @@ try {
     from information_schema.columns where table_schema='public' and table_name='matches'`);
   assert.equal(matchColumns.find((column) => column.column_name === 'llm_score')?.data_type, 'integer');
   assert.equal(matchColumns.find((column) => column.column_name === 'application_artifacts')?.data_type, 'jsonb');
+  assert.equal(matchColumns.find((column) => column.column_name === 'prescore_score')?.data_type, 'integer');
 
   const touched = await d.touchTelegramUser({ userId, chatId, displayName: 'Integration Test' });
   assert.equal(touched.status, 'unregistered');
@@ -85,6 +86,11 @@ try {
   const pending = await d.pendingMatchesForScoring(userId, 10);
   assert.deepEqual(pending.map((match) => match.vacancyId), [vacancyId]);
   assert.equal(pending[0]?.source, 'hh');
+  assert.deepEqual(await d.pendingMatchesForPrescoring(userId, 10, 'openai-codex/gpt-5.4-mini', 1), [vacancyId]);
+  assert.deepEqual(await d.claimMatches(userId, [vacancyId]), [vacancyId]);
+  assert.equal(await d.savePrescore(userId, vacancyId, 73, 'openai-codex/gpt-5.4-mini', 1, false), true);
+  assert.deepEqual((await d.pendingMatchesForScoring(userId, 10, 'openai-codex/gpt-5.4-mini', 1))
+    .map((match) => match.prescoreScore), [73]);
   assert.deepEqual(await d.claimMatches(userId, [vacancyId]), [vacancyId]);
   // The state predicate is the whole concurrency guard: a row already taken is no longer 'matched'.
   assert.deepEqual(await d.claimMatches(userId, [vacancyId]), []);

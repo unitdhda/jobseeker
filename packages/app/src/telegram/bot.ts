@@ -230,9 +230,6 @@ function configureTelegramBot(): Bot<BotContext> | null {
   const instance = getBot();
   if (isBotConfigured()) return instance;
   const ownerId = ownerUserId();
-  if (config.telegramChatId && config.telegramChatId !== ownerId) {
-    throw new Error('TELEGRAM_CHAT_ID must be the owner private-chat ID and match TELEGRAM_USER_ID.');
-  }
   instance.use(async (ctx, next) => {
     const currentIdentity = identity(ctx);
     if (!currentIdentity) return;
