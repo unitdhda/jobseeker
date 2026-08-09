@@ -45,10 +45,8 @@ export const rabotaPlatform = textPlatform('rabota', 'Работа.ру', [
 
 import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import {
-  asObject, htmlText, jobPostings, plainText, russianDate, structuredVacancy, VacancySearchCollector,
-  type JsonObject, type SearchPlan,
-} from '@jobseeker/sources';
+import { type JsonObject, type SearchPlan } from '@jobseeker/sources';
+import { asObject, htmlText, jobPostings, plainText, russianDate, structuredVacancy, VacancySearchCollector } from './toolkit.ts';
 
 type TextSearch = TextSearchProfile['searches'][number];
 
@@ -177,3 +175,6 @@ export async function normalizeAdditionalCandidate(candidate: VacancyCandidate,
   }
   throw new Error(`Unsupported vacancy source: ${candidate.source}`);
 }
+
+/** A shared helper, not a provider: the loader imports every module here, so this default export is a deliberate no-op. */
+export default function register(): void {}

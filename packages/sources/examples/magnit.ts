@@ -1,7 +1,8 @@
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, hashedVacancy, htmlText, plainText } from '@jobseeker/sources';
-import { createApiSource, type ApiListing, type ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
+
+import { type ApiListing, type ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
+import { asObject, createApiSource, examplePages, hashedVacancy, htmlText, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 
 const id = 'magnit';
 const employer = 'Магнит Tech';
@@ -113,4 +114,10 @@ const magnitDefinition: ApiSourceDefinition<typeof companySearchProfileSchema> =
 /** Application-owned Magnit Tech definition over the reusable paginated JSON API driver. */
 export function magnitSource(options: MagnitSourceOptions = {}) {
   return createApiSource(magnitDefinition, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(magnitSource({ maxPages: examplePages(api) }));
 }

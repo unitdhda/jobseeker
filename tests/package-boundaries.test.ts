@@ -2,6 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { JobseekerExtensionApi } from '../packages/app/src/extensions.ts';
+import type { SourceExtensionApi } from '../packages/sources/examples/toolkit.ts';
+
+// The examples declare the slice of the extension api they need rather than importing it, because a domain
+// package must not reach into the application. Erased at runtime; this is a compile-time check that the real api
+// still satisfies that slice, so the two cannot drift apart silently.
+const _apiSatisfiesExamples: JobseekerExtensionApi extends SourceExtensionApi ? true : never = true;
+void _apiSatisfiesExamples;
 
 async function typescriptFiles(root: string): Promise<string[]> {
   const files: string[] = [];
@@ -106,6 +114,14 @@ test('source runtime has no ambient state or provider-specific settings', async 
   const runtime = await readFile('packages/sources/src/context.ts', 'utf8');
   assert.doesNotMatch(runtime, /AsyncLocalStorage|hhAreaId|hhBrowser|atsBoards|trudvsemRegion|additionalMaxPages/);
   assert.match(runtime, /interface SourceContext/);
+});
+
+test('the application carries generic drivers, never the example provider catalogue', async () => {
+  // Examples are files a deployment copies into its extensions directory. Importing one here would bundle a
+  // catalogue of employers into the published package, which is what the extension system exists to avoid.
+  assert.deepEqual(await matches('packages/app/src', /@jobseeker\/sources\/examples/), []);
+  const api = await readFile('packages/app/src/extensions.ts', 'utf8');
+  assert.doesNotMatch(api, /\bexamples\b\s*[,:]/);
 });
 
 test('application runtime does not issue raw PostgreSQL queries', async () => {

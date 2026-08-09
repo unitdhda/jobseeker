@@ -5,10 +5,21 @@ directory (override with `JOBSEEKER_EXTENSIONS`) for ESM modules — single file
 `index.*` — and calls each module's default-exported `register(api)`.
 
 Everything an extension plugs into arrives through the `api` argument: source and AI provider registration,
-startup/shutdown hooks, environment access, the `@jobseeker/sources` toolkit with its generic drivers and example
-providers, bounded-concurrency helpers, and the optional encrypted blob store. Extensions therefore need no
-imports from the application itself at runtime; type-only imports (erased on load) are fine and
-`extension-api.ts` re-exports the api types for them.
+startup/shutdown hooks, environment access, the `@jobseeker/sources` toolkit with its generic drivers,
+bounded-concurrency helpers, and the optional encrypted blob store. Extensions therefore need no imports from the
+application itself at runtime; type-only imports (erased on load) are fine and `extension-api.ts` re-exports the
+api types for them.
+
+The application registers nothing and imports no provider catalogue. Reference providers for about 19 public
+sources live in `packages/sources/examples` as files to copy:
+
+```bash
+cp -r packages/sources/examples extensions/examples
+```
+
+The copied folder has an `index.ts`, so the loader treats it as one extension and registers every example. For a
+subset, copy individual providers next to `toolkit.ts`, `profile.ts`, and `text.ts` and omit `index.ts` — each
+provider registers itself. Doing both in one directory registers everything twice and fails on duplicate ids.
 
 Runtime dependencies of extensions (a browser driver, a vendor SDK) are installed here, next to the code that
 needs them: `bun install` (or `npm install`) in this directory. This directory is not a root workspace, so it
@@ -25,7 +36,6 @@ the two declarations on the same version.
 Tracked in this repository:
 
 - `package.json` + `bun.lock` — the extension dependency tree, pinned.
-- `examples.ts` — registers every example provider from `@jobseeker/sources`; edit or delete to change the set.
 - `hh/` — hh.ru through a persistent Playwright browser: the reference for a source that owns heavy dependencies,
   a lifecycle, and cross-host state.
 

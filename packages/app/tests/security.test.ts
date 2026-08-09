@@ -1,20 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readResponseBytes } from '../src/http.ts';
-import { createSourceUrlPolicy } from '@jobseeker/sources';
-import { hireHiSource } from '@jobseeker/sources/examples/hirehi';
-import { mtsSource } from '@jobseeker/sources/examples/mts';
 import { errorMessage } from '../src/observability.ts';
 
-test('source URLs are restricted to HTTPS source allowlists', () => {
-  const policy = createSourceUrlPolicy([mtsSource(), hireHiSource()]);
-  assert.equal(policy.safeVacancyUrl('mts', 'https://job.mts.ru/vacancy/123'), 'https://job.mts.ru/vacancy/123');
-  assert.equal(policy.safeVacancyUrl('hirehi', 'https://hirehi.ru/frontend/job-123'), 'https://hirehi.ru/frontend/job-123');
-  assert.throws(() => policy.sourceUrl('mts', 'http://job.mts.ru/vacancy/123'), /Unsafe/);
-  assert.throws(() => policy.sourceUrl('mts', 'https://example.com/vacancy/123'), /Unexpected/);
-  assert.throws(() => policy.sourceUrl('mts', 'https://user:password@job.mts.ru/vacancy/123'), /Unsafe/);
-  assert.throws(() => policy.sourceUrl('hirehi', 'https://example.com/frontend/job-123'), /Unexpected/);
-});
+// The URL-policy allowlist test moved to packages/sources: it exercises example providers, which the application
+// no longer carries.
 
 test('response reader enforces declared and streamed byte limits', async () => {
   await assert.rejects(() => readResponseBytes(new Response('12345', { headers: { 'content-length': '5' } }), 4), /exceeds/);

@@ -1,3 +1,4 @@
+import './toolkit-fixture.ts';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { russianDate } from '@jobseeker/sources';

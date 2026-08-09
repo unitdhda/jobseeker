@@ -1,3 +1,4 @@
+import './toolkit-fixture.ts';
 import { strict as assert } from 'node:assert';
 import { test } from 'node:test';
 import { postingMatchesQuery, configuredBoards, atsProviders, atsSource } from '../examples/ats.ts';

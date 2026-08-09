@@ -272,21 +272,25 @@ is wired in without touching the application.
 providers. At startup the service scans `./extensions` (override with `JOBSEEKER_EXTENSIONS`) for ESM modules —
 single files, or subdirectories with an `index.*` — and calls each module's default-exported `register(api)`.
 
-The bundled `@jobseeker/sources` toolkit reaches extensions through that `api`, including ready-made example
-providers for about 19 public sources. The smallest useful extension enables all of them:
+The bundled `@jobseeker/sources` toolkit reaches extensions through that `api` — the generic drivers, not a
+catalogue of employers. Ready-made providers for about 19 public sources ship in the repository as files to copy,
+not as something the application imports:
 
-```ts
-// extensions/sources.ts
-export default function register(api) {
-  for (const provider of api.sources.examples.exampleSources({ maxPages: 1 })) {
-    api.registerSourceProvider(provider);
-  }
-}
+```bash
+cp -r packages/sources/examples extensions/examples
 ```
 
+That directory has an `index.ts`, so the loader treats it as one extension and registers every example. To run a
+subset instead, copy individual providers next to `toolkit.ts`, `profile.ts`, and `text.ts` and leave `index.ts`
+behind — each provider registers itself. Do not do both in one directory: the examples would register twice and
+fail on duplicate provider ids.
+
+The examples import `valibot`, so the extensions directory needs it installed (see below).
+
 Node loads `.ts` extensions directly through type stripping, so keep to erasable syntax — no enums, namespaces, or
-parameter properties. Extensions own their runtime dependencies: if one drives a browser or an SDK, give the
-extensions directory its own `package.json` and run `npm install` there, next to the code that needs it.
+parameter properties. Extensions own their runtime dependencies: give the extensions directory its own
+`package.json` and run `npm install` there, next to the code that needs it. The examples need `valibot`; a browser
+or vendor SDK belongs there too.
 
 Narrow what actually runs discovery with a comma-separated list of registered source ids; unset means all of them:
 
@@ -401,9 +405,9 @@ bun run build
 bun --env-file=.env packages/app/dist/server.mjs   # or: node --env-file=.env packages/app/dist/server.mjs
 ```
 
-Everything above about configuration, the database, extensions, and ownership applies unchanged; the checkout's
-`extensions/` directory already carries the tracked examples, and `packages/app/schema.sql` is the same file the
-package ships.
+Everything above about configuration, the database, extensions, and ownership applies unchanged; the checkout
+carries the example providers under `packages/sources/examples` ready to copy into `extensions/`, and
+`packages/app/schema.sql` is the same file the package ships.
 
 For a long-running deployment from a checkout the repository provides a multi-stage `Dockerfile` with a
 browser-capable runtime target, a Compose topology under `docker/`, a seccomp profile for Chromium, and the

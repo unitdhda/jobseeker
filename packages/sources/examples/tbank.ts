@@ -5,12 +5,10 @@
  * instead of scraping the styled markup.
  */
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import {
-  asObject, createSourceProvider, hashedVacancy, htmlText, plainText, sourceUserAgent, VacancySearchCollector,
-  type JsonObject,
-} from '@jobseeker/sources';
-import { postingMatchesQuery } from '@jobseeker/sources/drivers/jsonld-board';
+import { type JsonObject } from '@jobseeker/sources';
+
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
+import { asObject, createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, plainText, postingMatchesQuery, sourceUserAgent, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
 
 const id = 'tbank';
 const employer = 'Т-Банк';
@@ -207,4 +205,10 @@ export function tbankSource(options: TbankSourceOptions = {}) {
       return results;
     },
   });
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(tbankSource({ maxPages: examplePages(api) }));
 }

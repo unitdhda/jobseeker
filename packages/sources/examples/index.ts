@@ -1,8 +1,16 @@
 /**
- * Reference source providers, kept as working examples rather than a wired-in catalogue: nothing here registers
- * itself. An extension picks the factories it wants and registers them in its collection; a deployment without an
- * extension has no sources at all. Every example is fetch-based — browser-backed sources belong in extensions with
- * their own dependencies.
+ * Reference source providers, kept as working examples rather than a wired-in catalogue. The application imports
+ * nothing from this directory; a deployment copies what it wants into its extensions directory.
+ *
+ * Two ways to use these, and they must not be mixed in one directory:
+ *
+ * - copy the whole folder as a subdirectory (`extensions/examples/`). The loader then loads only this file, and
+ *   the register below puts every example in play;
+ * - copy individual providers next to `toolkit.ts`, `profile.ts`, and `text.ts`, leaving this file behind. Each
+ *   provider registers itself, so a flat copy of all of them plus this file would register everything twice and
+ *   fail on duplicate provider ids.
+ *
+ * Every example is fetch-based — browser-backed sources belong in an extension with its own dependencies.
  */
 import { atsSource } from './ats.ts';
 import { avitoSource } from './avito.ts';
@@ -23,6 +31,9 @@ import { trudvsemSource } from './trudvsem.ts';
 import { vkSource } from './vk.ts';
 import { yadroSource } from './yadro.ts';
 import { yandexSource } from './yandex.ts';
+import {
+  exampleAtsBoards, examplePages, initToolkit, type SourceExtensionApi,
+} from './toolkit.ts';
 
 export {
   atsSource, avitoSource, geekjobSource, habrSource, hireHiSource, kasperskySource, konturSource, magnitSource,
@@ -36,6 +47,16 @@ export interface ExampleSourceOptions {
   atsBoards?: readonly string[];
   /** Работа России federal region code. */
   trudvsemRegion?: string;
+}
+
+/** Registers every example at once; the entry point when this folder is copied whole. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  for (const provider of exampleSources({
+    maxPages: examplePages(api),
+    atsBoards: exampleAtsBoards(api),
+    trudvsemRegion: api.env.TRUDVSEM_REGION?.trim() || undefined,
+  })) api.registerSourceProvider(provider);
 }
 
 /** Every example provider, constructed fresh. Callers register the subset they want. */

@@ -117,6 +117,9 @@ drivers for the surfaces sites actually expose, and ready-made example providers
 | `createJsonLdBoardSource` | Enumerated boards with schema.org `JobPosting` | Avito Careers, Geekjob, Kontur Careers |
 | `createSourceProvider` | Anything else, including browser-backed sources | Habr Career, Rabota.ru, HireHi, Работа России, and hh.ru as the reference `hh` extension (persistent Playwright) |
 
+The example providers ship as files to copy (`cp -r packages/sources/examples extensions/examples`), not as
+something the application imports — the published package carries the drivers, never a catalogue of employers.
+
 A provider declares every host it may touch, fetches only through the injected HTTP client, and is registered
 independently of whether it participates in discovery: `SEARCH_PLATFORMS` decides that separately, so a source can stay
 registered for normalization and URL validation while contributing no new searches. An extension owns its own runtime

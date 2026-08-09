@@ -2,10 +2,8 @@ import { createHash } from 'node:crypto';
 import * as v from 'valibot';
 import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import {
-  asObject, createSourceProvider, htmlText, jobPostings, plainText, VacancySearchCollector,
-  type JsonObject, type SearchPlan, type SearchPlatform,
-} from '@jobseeker/sources';
+import { type JsonObject, type SearchPlan, type SearchPlatform } from '@jobseeker/sources';
+import { asObject, createSourceProvider, examplePages, htmlText, initToolkit, jobPostings, plainText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
 
 export const hireHiSpecializations=[
   '1c','analytics','android','backend','business-analyst','ci-cd','cloud','cpp','data-analyst','data-engineer',
@@ -138,7 +136,6 @@ export async function normalizeHireHiCandidate(candidate:VacancyCandidate,
   return{...base,contentHash:createHash('sha256').update(JSON.stringify(base)).digest('hex')};
 }
 
-
 /** Application-owned HireHi provider using public source runtime ports. */
 export function hireHiSource(options: { maxPages?: number } = {}) {
   return createSourceProvider({
@@ -157,4 +154,10 @@ export function hireHiSource(options: { maxPages?: number } = {}) {
       return results;
     },
   });
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(hireHiSource({ maxPages: examplePages(api) }));
 }

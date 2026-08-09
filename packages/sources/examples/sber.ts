@@ -1,7 +1,8 @@
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, hashedVacancy, plainText } from '@jobseeker/sources';
-import { createApiSource, type ApiListing, type ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
+
+import { type ApiListing, type ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
+import { asObject, createApiSource, examplePages, hashedVacancy, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 
 const id = 'sber';
 const employer = 'Сбер';
@@ -109,4 +110,10 @@ const sberDefinition: ApiSourceDefinition<typeof companySearchProfileSchema> = {
 /** Application-owned Sber definition over the reusable paginated JSON API driver. */
 export function sberSource(options: SberSourceOptions = {}) {
   return createApiSource(sberDefinition, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(sberSource({ maxPages: examplePages(api) }));
 }

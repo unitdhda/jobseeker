@@ -5,10 +5,8 @@
 import * as v from 'valibot';
 import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import {
-  asObject, createSourceProvider, hashedVacancy, htmlText, plainText, VacancySearchCollector,
-  type JsonObject, type SearchPlan, type SearchPlatform,
-} from '@jobseeker/sources';
+import { type JsonObject, type SearchPlan, type SearchPlatform } from '@jobseeker/sources';
+import { asObject, createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, plainText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
 
 /** Federal region code; defaults to Москва, matching the default HH area. */
 export function trudvsemRegion(raw?: string): string {
@@ -139,7 +137,6 @@ export async function normalizeTrudvsemCandidate(candidate: VacancyCandidate,
   return trudvsemVacancyInput(vacancy, candidate.searchName, context.http.safeVacancyUrl);
 }
 
-
 /** Application-owned Работа России provider backed by the federal open register. */
 export function trudvsemSource(options: { maxPages?: number; region?: string } = {}) {
   return createSourceProvider({
@@ -158,4 +155,10 @@ export function trudvsemSource(options: { maxPages?: number; region?: string } =
       return results;
     },
   });
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(trudvsemSource({ maxPages: examplePages(api), region: api.env.TRUDVSEM_REGION?.trim() || undefined }));
 }

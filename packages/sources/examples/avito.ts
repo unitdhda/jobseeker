@@ -1,7 +1,6 @@
-import { htmlText } from '@jobseeker/sources';
-import {
-  createJsonLdBoardSource, type BoardEntry, type JsonLdBoard,
-} from '@jobseeker/sources/drivers/jsonld-board';
+
+import { type BoardEntry, type JsonLdBoard } from '@jobseeker/sources/drivers/jsonld-board';
+import { createJsonLdBoardSource, examplePages, htmlText, initToolkit, type SourceExtensionApi } from './toolkit.ts';
 
 function absolute(base: string, href: string): string {
   return new URL(href, base).toString().split('?')[0]!;
@@ -30,4 +29,10 @@ export const avitoBoard: JsonLdBoard = {
 
 export function avitoSource(options: { maxPages?: number } = {}) {
   return createJsonLdBoardSource(avitoBoard, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(avitoSource({ maxPages: examplePages(api) }));
 }

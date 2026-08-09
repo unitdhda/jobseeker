@@ -30,3 +30,6 @@ export function companySearchTemplate(id: string, employer: string): PlatformVal
     ],
   };
 }
+
+/** A shared helper, not a provider: the loader imports every module here, so this default export is a deliberate no-op. */
+export default function register(): void {}

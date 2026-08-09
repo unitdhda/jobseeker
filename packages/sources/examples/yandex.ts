@@ -1,7 +1,6 @@
-import { asObject, plainText } from '@jobseeker/sources';
-import {
-  companyVacancyInput, createCompanySiteSource, type CompanyListing, type CompanyListingPage, type CompanySite,
-} from '@jobseeker/sources/drivers/company-site';
+
+import { type CompanyListing, type CompanyListingPage, type CompanySite } from '@jobseeker/sources/drivers/company-site';
+import { asObject, companyVacancyInput, createCompanySiteSource, examplePages, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 
 function objectNames(value: unknown): string[] {
   return (Array.isArray(value) ? value : []).map((entry) => plainText(asObject(entry)?.name)).filter(Boolean);
@@ -64,4 +63,10 @@ export const yandexCompanySite: CompanySite = {
 /** Fresh Yandex provider; register it in any createSources() collection. */
 export function yandexSource(options: { maxPages?: number } = {}) {
   return createCompanySiteSource(yandexCompanySite, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(yandexSource({ maxPages: examplePages(api) }));
 }

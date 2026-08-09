@@ -1,8 +1,7 @@
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, hashedVacancy, htmlText, plainText } from '@jobseeker/sources';
-import {
-  createCompanySiteSource, type CompanyListing, type CompanyListingPage, type CompanySite,
-} from '@jobseeker/sources/drivers/company-site';
+
+import { type CompanyListing, type CompanyListingPage, type CompanySite } from '@jobseeker/sources/drivers/company-site';
+import { asObject, createCompanySiteSource, examplePages, hashedVacancy, htmlText, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 
 const employer = 'VK';
 const pageSize = 20;
@@ -111,4 +110,10 @@ export const vkCompanySite: CompanySite = {
 /** Fresh VK provider; register it in any createSources() collection. */
 export function vkSource(options: { maxPages?: number } = {}) {
   return createCompanySiteSource(vkCompanySite, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(vkSource({ maxPages: examplePages(api) }));
 }

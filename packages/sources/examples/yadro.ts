@@ -1,7 +1,8 @@
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, hashedVacancy, htmlText, plainText } from '@jobseeker/sources';
-import { createApiSource, type ApiListing, type ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
+
+import { type ApiListing, type ApiSourceDefinition } from '@jobseeker/sources/drivers/api';
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
+import { asObject, createApiSource, examplePages, hashedVacancy, htmlText, initToolkit, plainText, type SourceExtensionApi } from './toolkit.ts';
 
 const id = 'yadro';
 const employer = 'YADRO';
@@ -111,4 +112,10 @@ const yadroDefinition: ApiSourceDefinition<typeof companySearchProfileSchema> = 
 /** Application-owned YADRO definition over the reusable paginated JSON API driver. */
 export function yadroSource(options: YadroSourceOptions = {}) {
   return createApiSource(yadroDefinition, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(yadroSource({ maxPages: examplePages(api) }));
 }

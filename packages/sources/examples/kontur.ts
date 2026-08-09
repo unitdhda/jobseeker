@@ -1,7 +1,6 @@
-import { htmlText } from '@jobseeker/sources';
-import {
-  createJsonLdBoardSource, type BoardEntry, type JsonLdBoard,
-} from '@jobseeker/sources/drivers/jsonld-board';
+
+import { type BoardEntry, type JsonLdBoard } from '@jobseeker/sources/drivers/jsonld-board';
+import { createJsonLdBoardSource, examplePages, htmlText, initToolkit, type SourceExtensionApi } from './toolkit.ts';
 
 export const konturBoard: JsonLdBoard = {
   id: 'kontur',
@@ -24,4 +23,10 @@ export const konturBoard: JsonLdBoard = {
 /** Fresh Kontur provider over the reusable schema.org board driver. */
 export function konturSource(options: { maxPages?: number } = {}) {
   return createJsonLdBoardSource(konturBoard, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(konturSource({ maxPages: examplePages(api) }));
 }

@@ -1,3 +1,4 @@
+import './toolkit-fixture.ts';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { exampleSources } from '../examples/index.ts';

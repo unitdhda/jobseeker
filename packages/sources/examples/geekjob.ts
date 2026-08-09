@@ -1,7 +1,6 @@
-import { htmlText, russianDate } from '@jobseeker/sources';
-import {
-  createJsonLdBoardSource, type BoardEntry, type JsonLdBoard,
-} from '@jobseeker/sources/drivers/jsonld-board';
+
+import { type BoardEntry, type JsonLdBoard } from '@jobseeker/sources/drivers/jsonld-board';
+import { createJsonLdBoardSource, examplePages, htmlText, initToolkit, russianDate, type SourceExtensionApi } from './toolkit.ts';
 
 function absolute(base: string, href: string): string {
   return new URL(href, base).toString().split('?')[0]!;
@@ -39,4 +38,10 @@ export const geekjobBoard: JsonLdBoard = {
 
 export function geekjobSource(options: { maxPages?: number } = {}) {
   return createJsonLdBoardSource(geekjobBoard, options);
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(geekjobSource({ maxPages: examplePages(api) }));
 }

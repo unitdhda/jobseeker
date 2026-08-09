@@ -4,11 +4,10 @@
  * page's plain anchors and normalization reads the vacancy page's h1/main text.
  */
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import {
-  createSourceProvider, hashedVacancy, htmlText, VacancySearchCollector, type JsonObject,
-} from '@jobseeker/sources';
-import { mainVacancyText } from '@jobseeker/sources/drivers/company-site';
+import { type JsonObject } from '@jobseeker/sources';
+
 import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
+import { createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, mainVacancyText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
 
 const id = 'kaspersky';
 const employer = 'Лаборатория Касперского';
@@ -119,4 +118,10 @@ export function kasperskySource(options: KasperskySourceOptions = {}) {
       return results;
     },
   });
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(kasperskySource({ maxPages: examplePages(api) }));
 }

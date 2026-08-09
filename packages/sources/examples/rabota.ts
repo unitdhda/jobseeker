@@ -1,6 +1,7 @@
 import type { VacancyInput } from '@jobseeker/engine/contracts';
-import { createSourceProvider } from '@jobseeker/sources';
+
 import { normalizeAdditionalCandidate, rabotaPlatform, scrapeRabota } from './text.ts';
+import { createSourceProvider, examplePages, initToolkit, type SourceExtensionApi } from './toolkit.ts';
 
 export function rabotaSource(options: { maxPages?: number } = {}) {
   return createSourceProvider({
@@ -19,4 +20,10 @@ export function rabotaSource(options: { maxPages?: number } = {}) {
       return results;
     },
   });
+}
+
+/** Registers this example; the loader calls it once the file sits in an extensions directory. */
+export default function register(api: SourceExtensionApi): void {
+  initToolkit(api);
+  api.registerSourceProvider(rabotaSource({ maxPages: examplePages(api) }));
 }

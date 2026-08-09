@@ -1,9 +1,11 @@
 /**
- * Deployment extensions: the application ships no vacancy sources and no extra AI providers of its own. A
- * deployment drops ESM modules into JOBSEEKER_EXTENSIONS (default ./extensions), each default-exporting a
- * register function; everything an extension may plug into arrives through the api argument, so extension files
- * depend only on their own packages (a browser driver, a vendor SDK) and run against the built application, where
- * workspace internals are bundled and not importable.
+ * Deployment extensions: the application ships no vacancy sources and no extra AI providers of its own — not even
+ * inertly, so the bundle carries generic drivers rather than a catalogue of employers. A deployment drops ESM
+ * modules into JOBSEEKER_EXTENSIONS (default ./extensions), each default-exporting a register function;
+ * everything an extension may plug into arrives through the api argument, so extension files depend only on their
+ * own packages (a browser driver, a vendor SDK) and run against the built application, where workspace internals
+ * are bundled and not importable. The reference providers in packages/sources/examples are copied into a
+ * deployment's extensions directory, never imported from here.
  */
 import { readdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -15,7 +17,6 @@ import * as apiDriver from '@jobseeker/sources/drivers/api';
 import * as atsDriver from '@jobseeker/sources/drivers/ats';
 import * as companySiteDriver from '@jobseeker/sources/drivers/company-site';
 import * as jsonLdBoardDriver from '@jobseeker/sources/drivers/jsonld-board';
-import * as examples from '@jobseeker/sources/examples/index';
 import { AdaptiveTaskPool, mapConcurrent } from '@jobseeker/engine/concurrency';
 import {
   deleteEncryptedRuntimeState, getEncryptedRuntimeState, putEncryptedRuntimeState, runtimeStateConfigured,
@@ -32,7 +33,7 @@ export interface JobseekerExtensionApi {
   onShutdown(hook: () => Promise<void> | void): void;
   readonly env: Readonly<Record<string, string | undefined>>;
   log(message: string): void;
-  /** The @jobseeker/sources public surface, its generic drivers, and the example provider factories. */
+  /** The @jobseeker/sources public surface and its generic drivers. */
   readonly sources: typeof sourcesToolkit & {
     drivers: {
       api: typeof apiDriver;
@@ -40,7 +41,6 @@ export interface JobseekerExtensionApi {
       companySite: typeof companySiteDriver;
       jsonLdBoard: typeof jsonLdBoardDriver;
     };
-    examples: typeof examples;
   };
   readonly concurrency: { AdaptiveTaskPool: typeof AdaptiveTaskPool; mapConcurrent: typeof mapConcurrent };
   /** Optional encrypted blob store for state that must survive the host (browser profiles, credentials). */
@@ -99,7 +99,6 @@ function apiFor(name: string, loaded: LoadedExtensions): JobseekerExtensionApi {
     sources: Object.freeze({
       ...sourcesToolkit,
       drivers: { api: apiDriver, ats: atsDriver, companySite: companySiteDriver, jsonLdBoard: jsonLdBoardDriver },
-      examples,
     }),
     concurrency: { AdaptiveTaskPool, mapConcurrent },
     state: {
