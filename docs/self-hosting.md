@@ -55,9 +55,8 @@ it is where your `extensions/` and environment file will live.
 
 ## 2. Configure the environment
 
-Configuration is environment variables only — there is no config file, and the application does not read `.env` by
-itself. Supply the variables the way your host does it: `export` in a shell, `EnvironmentFile=` in a systemd unit,
-`env_file:` in Compose, or the runtime's own flag:
+Configuration is environment variables only. The launcher reads an env file when `--env-file` is passed; existing
+process environment values win. You can also use `export`, systemd `EnvironmentFile=`, or Compose `env_file:`:
 
 ```bash
 node_modules/.bin/jobseeker --env-file=.env start
@@ -197,8 +196,20 @@ AI_SCORING_MODEL=provider/scoring-model
 AI_SCORING_THINKING_LEVEL=medium
 ```
 
-`AI_MODEL` generates career/search profiles, tailored CV content, and cover letters. `AI_SCORING_MODEL` serves the
-higher-volume scoring path and is usually the cheaper model.
+`AI_MODEL` generates career/search profiles, tailored CV content, and cover letters. `AI_SCORING_MODEL` makes the
+full vacancy-fit decision.
+
+An optional cheaper model can reject obvious mismatches before full scoring:
+
+```dotenv
+AI_PRESCORING_MODEL=openai-codex/gpt-5.4-mini
+AI_PRESCORING_THINKING_LEVEL=minimal
+PRESCORE_MIN_SCORE=50
+PRESCORE_EXPLORATION_RATE=0.1
+```
+
+The prescorer handles only vacancies that passed the free lexical candidate gate. Scores below 50 stop before the
+full judge, apart from the frozen 10% audit sample. Leave `AI_PRESCORING_MODEL` unset to disable this pass.
 
 ### Signing in to a provider
 

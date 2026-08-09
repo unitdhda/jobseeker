@@ -147,6 +147,8 @@ npx jobseeker --env-file=.env doctor   # environment, database, fonts, extension
 npx jobseeker --env-file=.env start    # Telegram receiver + engine loop + health endpoints
 ```
 
+`--env-file` works with every command. Existing process environment values take precedence over the file.
+
 You will need Node.js 23.6+ or Bun 1.3+, PostgreSQL 15+, a Telegram bot token and owner account, and credentials for
 at least one Pi AI provider. Fonts for generated PDFs ship inside the package. Vacancy sources do not: add at least
 one extension before discovery does anything.
@@ -217,7 +219,8 @@ process per bot token may receive updates.
 Inference goes through [Pi AI](https://github.com/earendil-works/pi-ai). Model selection is configuration:
 
 - `AI_MODEL` handles search-profile and application generation;
-- `AI_SCORING_MODEL` handles high-volume vacancy scoring;
+- `AI_SCORING_MODEL` handles full vacancy scoring;
+- `AI_PRESCORING_MODEL` optionally names a cheaper semantic gate such as `openai-codex/gpt-5.4-mini`;
 - `AI_SCORING_FALLBACK_MODEL` is an optional fallback;
 - `AI_AUTH_FILE` points to a provider-keyed credential store.
 
