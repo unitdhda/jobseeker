@@ -91,8 +91,10 @@ async function generateAndSendApplication(userId: string, vacancyId: number, cha
   } catch (error) {
     await loader?.stop().catch((stopError)=>console.warn(`Could not stop application indicator: ${errorMessage(stopError)}`));
     console.error(`Application generation failed: ${errorMessage(error)}`);
-    const keyboard = new InlineKeyboard().text(text.application.retryButton, `${artifact}:${vacancyId}`)
-      .url(text.common.openAt(sourceLabel(vacancy?.source ?? '', locale)), vacancy?.url ?? 'https://hh.ru');
+    const keyboard = new InlineKeyboard().text(text.application.retryButton, `${artifact}:${vacancyId}`);
+    // Without the vacancy row there is no link to offer and no source to name, so the retry button stands alone
+    // rather than pointing at a guessed provider.
+    if (vacancy?.url) keyboard.url(text.common.openAt(sourceLabel(vacancy.source, locale)), vacancy.url);
     const retryId=vacancy?.applyId??String(vacancyId);
     await getBot().api.sendMessage(chat, applicationFailureMessage(error,retryId,artifact,locale),
       { reply_markup: keyboard }).catch((notificationError)=>
@@ -131,7 +133,7 @@ export async function searchProfileResult(userId: string, locale: Locale): Promi
   );
   const platforms: SearchProfilePlatformView[] = [];
   for (const platformId of enabledSourceProviderIds) {
-    platforms.push({ label: platformLabel(platformId, locale),
+    platforms.push({ label: platformLabel(platformId),
       terms: profileSearchTerms(await getSearchProfile(userId, platformId)) });
   }
   const text = searchProfileMessage({ filename: cv.originalFilename,

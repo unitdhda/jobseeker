@@ -25,11 +25,6 @@ export const ru = {
   },
 
   /** Brand names stay as their owners write them; only the descriptive entries are translated. */
-  sources: {
-    hh: 'HH', habr: 'Habr Career', rabota: 'Работа.ру', hirehi: 'HireHi', geekjob: 'GeekJob', avito: 'Avito',
-    trudvsem: 'Работа России', ats: 'ATS-борды компаний', yandex: 'Яндекс', ozon: 'Ozon', rwb: 'RWB / Wildberries',
-  } as Record<string, string>,
-
   userStatus: {
     unregistered: 'не зарегистрирован', pending: 'на рассмотрении', approved: 'одобрен',
     rejected: 'отклонён', revoked: 'отозван',

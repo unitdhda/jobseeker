@@ -20,11 +20,6 @@ export const en: Messages = {
     unknownSource: 'source',
   },
 
-  sources: {
-    hh: 'HH', habr: 'Habr Career', rabota: 'Rabota.ru', hirehi: 'HireHi', geekjob: 'GeekJob', avito: 'Avito',
-    trudvsem: 'Rabota Rossii', ats: 'Company ATS boards', yandex: 'Yandex', ozon: 'Ozon', rwb: 'RWB / Wildberries',
-  },
-
   userStatus: {
     unregistered: 'not registered', pending: 'awaiting a decision', approved: 'approved',
     rejected: 'rejected', revoked: 'revoked',

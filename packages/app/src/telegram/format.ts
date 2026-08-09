@@ -14,15 +14,14 @@ import { messages, type Locale } from '../i18n/index.ts';
 export function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
 }
+// A source names itself: the label is whatever the registered provider calls itself, so the application carries no
+// list of sources it might one day meet. Only the fallback for an id no longer registered is translated.
 export function sourceLabel(source: string, locale: Locale): string {
-  const labels = messages(locale).sources;
-  if (labels[source]) return labels[source];
   try { return getSearchPlatform(source).name; } catch { return messages(locale).common.unknownSource; }
 }
-// Search profiles are shown per platform, so an unlabelled platform falls back to its registry name instead of
-// the placeholder used for alert buttons.
-export function platformLabel(platformId: string, locale: Locale): string {
-  return messages(locale).sources[platformId] ?? getSearchPlatform(platformId).name;
+// Search profiles are shown per platform, and a platform is always registered when its profile is on screen.
+export function platformLabel(platformId: string): string {
+  return getSearchPlatform(platformId).name;
 }
 export function userStatusText(status: TelegramUser['status'], locale: Locale): string {
   return messages(locale).userStatus[status];
