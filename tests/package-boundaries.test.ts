@@ -40,6 +40,24 @@ test('the monorepo has the four domain workspaces plus the application package',
   }
 });
 
+test('the extension tree is pinned, and its typecheck-only twin at the root cannot drift', async () => {
+  // extensions/ is deliberately not a workspace: a deployment adds its own modules there. That costs it the root
+  // lockfile, so it carries one of its own and the image installs with --frozen-lockfile.
+  // bun.lock is JSONC: trailing commas only, no comments.
+  const lock = JSON.parse((await readFile('extensions/bun.lock', 'utf8')).replace(/,(\s*[}\]])/g, '$1')) as
+    { workspaces: Record<string, { dependencies?: Record<string, string> }> };
+  const manifest = JSON.parse(await readFile('extensions/package.json', 'utf8')) as
+    { dependencies: Record<string, string> };
+  assert.deepEqual(lock.workspaces['']?.dependencies, manifest.dependencies,
+    'extensions/bun.lock is stale: run `bun install` in extensions/ and commit the result');
+  const dockerfile = await readFile('Dockerfile', 'utf8');
+  assert.match(dockerfile, /cd extensions && bun install --frozen-lockfile/);
+  // Nothing installs extensions/ in a fresh checkout, so `hh/` resolves Playwright from the root instead. The two
+  // declarations describe one browser and must name one version.
+  const root = JSON.parse(await readFile('package.json', 'utf8')) as { devDependencies: Record<string, string> };
+  assert.equal(root.devDependencies.playwright, manifest.dependencies.playwright);
+});
+
 test('domain packages never read application environment or import the application package', async () => {
   for (const name of domainPackages) {
     assert.deepEqual(await matches(`packages/${name}`, /\b(?:process|Bun)\.env\b|import\.meta\.env/), []);

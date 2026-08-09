@@ -18,7 +18,7 @@ COPY --from=production-deps /app/node_modules ./node_modules
 COPY package.json ./
 # Extensions carry their own runtime dependencies (playwright for hh); the app itself ships none of them.
 COPY extensions ./extensions
-RUN cd extensions && bun install && \
+RUN cd extensions && bun install --frozen-lockfile && \
     bun node_modules/playwright/cli.js install --with-deps --only-shell chromium && chmod -R a+rX /ms-playwright
 COPY --from=build /app/packages/app/dist ./dist
 COPY fonts ./fonts

@@ -24,6 +24,7 @@ tools/
 /extensions/*
 !/extensions/README.md
 !/extensions/package.json
+!/extensions/bun.lock
 !/extensions/extension-api.ts
 !/extensions/examples.ts
 !/extensions/hh/
