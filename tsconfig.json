@@ -19,7 +19,6 @@
     "packages/*/tests/**/*.ts",
     "packages/sources/examples/**/*.ts",
     "packages/app/vite.config.ts",
-    "extensions/**/*.ts",
     "*.ts"
   ]
 }

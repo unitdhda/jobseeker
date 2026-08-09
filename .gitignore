@@ -20,12 +20,9 @@ probe/
 tools/
 /tools/
 
-# Deployment-local extensions; the reference hh extension and the api bridge are tracked, nothing else is.
+# Deployment-local extensions. Nothing here is the repository's: a deployment supplies its own modules and the
+# manifest that installs their dependencies. Only the README explaining that is tracked.
 /extensions/*
 !/extensions/README.md
-!/extensions/package.json
-!/extensions/bun.lock
-!/extensions/extension-api.ts
-!/extensions/hh/
 !/packages/app/fonts/
 .DS_Store

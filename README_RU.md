@@ -109,7 +109,7 @@ Jobseeker — не очередной интерфейс для просмотр
 | `createAtsSource` | Борды Greenhouse, Lever, Ashby, SmartRecruiters | Настраиваемые борды компаний `provider:slug` |
 | `createCompanySiteSource` | Собственный JSON-поиск компании и HTML-страницы вакансий | Вакансии Яндекса, Вакансии VK |
 | `createJsonLdBoardSource` | Перечисляемые борды с разметкой schema.org `JobPosting` | Avito Careers, Geekjob, Вакансии Контура |
-| `createSourceProvider` | Всё остальное, включая браузерные источники | Habr Career, Rabota.ru, HireHi, Работа России и hh.ru — эталонное расширение `hh` (постоянный Playwright) |
+| `createSourceProvider` | Всё остальное, включая браузерные источники | Habr Career, Rabota.ru, HireHi, Работа России; браузерный источник вроде hh.ru — собственное расширение развёртывания |
 
 Провайдер объявляет все хосты, к которым может обращаться, ходит в сеть только через переданный HTTP-клиент и
 регистрируется независимо от участия в поиске: это отдельно решает `SEARCH_PLATFORMS`. Источник может оставаться

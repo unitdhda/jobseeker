@@ -52,16 +52,14 @@ npx jobseeker start
 At startup the service loads ESM modules from `./extensions` (override with `JOBSEEKER_EXTENSIONS`). Each module
 default-exports `register(api)`; through `api` an extension registers vacancy-source providers and additional AI
 providers, hooks startup/shutdown, and reaches the bundled source toolkit — generic drivers for JSON APIs,
-first-party career sites, JSON-LD boards, and ATS boards, plus ready-made example providers for ~19 public
-sources. A minimal extension enabling every example:
+first-party career sites, JSON-LD boards, and ATS boards. The application carries the drivers, never a catalogue
+of employers.
 
-```ts
-// extensions/sources.ts
-export default function register(api) {
-  for (const provider of api.sources.examples.exampleSources({ maxPages: 1 })) {
-    api.registerSourceProvider(provider);
-  }
-}
+Ready-made providers for ~19 public sources live in the repository under `packages/sources/examples` as files to
+copy into the extensions directory, where each registers itself:
+
+```bash
+cp -r packages/sources/examples extensions/examples
 ```
 
 `SEARCH_PLATFORMS` (comma-separated ids) narrows which registered sources actually discover; unset means all of

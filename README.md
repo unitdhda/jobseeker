@@ -115,7 +115,7 @@ drivers for the surfaces sites actually expose, and ready-made example providers
 | `createAtsSource` | Greenhouse, Lever, Ashby, SmartRecruiters boards | Configured `provider:slug` company boards |
 | `createCompanySiteSource` | First-party JSON search with HTML vacancy pages | Yandex Careers, VK Careers |
 | `createJsonLdBoardSource` | Enumerated boards with schema.org `JobPosting` | Avito Careers, Geekjob, Kontur Careers |
-| `createSourceProvider` | Anything else, including browser-backed sources | Habr Career, Rabota.ru, HireHi, Работа России, and hh.ru as the reference `hh` extension (persistent Playwright) |
+| `createSourceProvider` | Anything else, including browser-backed sources | Habr Career, Rabota.ru, HireHi, Работа России; a browser-backed source such as hh.ru is a deployment's own extension |
 
 The example providers ship as files to copy (`cp -r packages/sources/examples extensions/examples`), not as
 something the application imports — the published package carries the drivers, never a catalogue of employers.

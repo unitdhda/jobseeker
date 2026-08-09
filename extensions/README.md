@@ -1,42 +1,47 @@
 # Extensions
 
-The application registers no vacancy sources and no extra AI providers by itself. At startup it scans this
-directory (override with `JOBSEEKER_EXTENSIONS`) for ESM modules — single files or subdirectories with an
-`index.*` — and calls each module's default-exported `register(api)`.
+This directory belongs to the deployment, not to the repository. Nothing in it is tracked except this file: the
+application registers no vacancy sources and no extra AI providers by itself, and it has no opinion about which
+ones you run.
+
+At startup the service scans this directory (override with `JOBSEEKER_EXTENSIONS`) for ESM modules — single files,
+or subdirectories with an `index.*` — and calls each module's default-exported `register(api)`. Every module it
+finds must default-export a function; give shared helpers a no-op one.
 
 Everything an extension plugs into arrives through the `api` argument: source and AI provider registration,
 startup/shutdown hooks, environment access, the `@jobseeker/sources` toolkit with its generic drivers,
 bounded-concurrency helpers, and the optional encrypted blob store. Extensions therefore need no imports from the
-application itself at runtime; type-only imports (erased on load) are fine and `extension-api.ts` re-exports the
-api types for them.
+application, which is just as well — the workspace packages are bundled into the build and none of them is
+published, so they cannot be imported at runtime. Type-only imports are erased on load and stay legal.
 
-The application registers nothing and imports no provider catalogue. Reference providers for about 19 public
-sources live in `packages/sources/examples` as files to copy:
+## Getting sources
+
+The repository ships reference providers for about nineteen public sources under
+[`packages/sources/examples`](../packages/sources/examples). They are files to copy, not a package to import:
 
 ```bash
 cp -r packages/sources/examples extensions/examples
 ```
 
-The copied folder has an `index.ts`, so the loader treats it as one extension and registers every example. For a
-subset, copy individual providers next to `toolkit.ts`, `profile.ts`, and `text.ts` and omit `index.ts` — each
-provider registers itself. Doing both in one directory registers everything twice and fails on duplicate ids.
+That folder has an `index.ts`, so the loader treats it as one extension and registers every example. To run a
+subset instead, copy individual providers next to `toolkit.ts`, `profile.ts`, and `text.ts` and leave `index.ts`
+behind — each provider registers itself. Do not do both in one directory, or the examples register twice and fail
+on duplicate provider ids.
 
-Runtime dependencies of extensions (a browser driver, a vendor SDK) are installed here, next to the code that
-needs them: `bun install` (or `npm install`) in this directory. This directory is not a root workspace, so it
-carries its own `bun.lock` and the image installs it with `--frozen-lockfile` — a floating vendor SDK must not
-change under a rebuild that was only meant to ship new application code. After editing `package.json`, run
-`bun install` here and commit the refreshed lockfile, or the image build will fail loudly rather than resolve
-something new. Node ≥ 23.6 loads `.ts` extensions directly via type stripping, so stick to erasable TypeScript
-syntax — no enums, namespaces, or parameter properties.
+## Dependencies
 
-Because the checkout has no `extensions/node_modules` until you install here, `playwright` is also a root
-devDependency so that `bun run typecheck` can resolve the `hh/` imports. `tests/package-boundaries.test.ts` keeps
-the two declarations on the same version.
+Extensions own their runtime dependencies. Create a `package.json` here and install next to the code that needs
+it — the examples need `valibot`; a browser driver or vendor SDK belongs here too. The image installs this
+directory's manifest if it finds one.
 
-Tracked in this repository:
+Beware a Bun-specific trap when testing locally: `bun` falls back to its global install cache, so a dependency
+missing from `node_modules` can still resolve on your machine and then fail in a clean container. Check with
+`bun --no-install` before shipping.
 
-- `package.json` + `bun.lock` — the extension dependency tree, pinned.
-- `hh/` — hh.ru through a persistent Playwright browser: the reference for a source that owns heavy dependencies,
-  a lifecycle, and cross-host state.
+Node ≥ 23.6 loads `.ts` extensions directly via type stripping, so stick to erasable TypeScript syntax — no enums,
+namespaces, or parameter properties.
 
-Anything else in this directory is deployment-local and ignored by git.
+## Backups
+
+Because none of this is tracked, `git` will not restore it. This directory and your environment file are the two
+deployment assets you must back up yourself, and neither survives `git clean` or `rsync --delete`.

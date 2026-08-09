@@ -85,7 +85,7 @@ configured singleton and never read `process.env`.
 ```text
 engine/concurrency          ──► p-limit      queue bookkeeping; Jobseeker retains adaptive/keyed policy
 sources/http                ──► ipaddr.js    IPv4/IPv6 range classification; Jobseeker retains host/redirect policy
-extensions/hh               ──► Playwright   one persistent serialized HH browser, extension-owned
+a deployment's extensions  ──► their own    a browser driver or vendor SDK, installed in extensions/
 store                       ──► pg           PostgreSQL pools, transactions, and parameterized queries
 cv/extract         ──► mammoth + PDF.js/unpdf
 cv/pdf             ──► Typst

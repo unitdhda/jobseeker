@@ -16,10 +16,14 @@ WORKDIR /app
 ENV NODE_ENV=production PORT=3000 OPENAI_CODEX_AUTH_FILE=/app/auth/auth.json PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY --from=production-deps /app/node_modules ./node_modules
 COPY package.json ./
-# Extensions carry their own runtime dependencies (playwright for hh); the app itself ships none of them.
+# Extensions are supplied by the deployment, not by the repository, and carry their own runtime dependencies.
+# Install whatever manifest the build context actually holds, and provision Chromium only if something needs it.
 COPY extensions ./extensions
-RUN cd extensions && bun install --frozen-lockfile && \
-    bun node_modules/playwright/cli.js install --with-deps --only-shell chromium && chmod -R a+rX /ms-playwright
+RUN cd extensions && \
+    if [ -f package.json ]; then bun install; fi && \
+    if [ -d node_modules/playwright ]; then \
+      bun node_modules/playwright/cli.js install --with-deps --only-shell chromium && chmod -R a+rX /ms-playwright; \
+    fi
 COPY --from=build /app/packages/app/dist ./dist
 COPY fonts ./fonts
 # /app/data must exist and be bun-owned in the image so a mounted named volume inherits that ownership;

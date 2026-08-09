@@ -22,7 +22,7 @@ There are two ways to run it, and they differ only in where the code comes from:
 - PostgreSQL 15+ reachable through `DATABASE_URL` — Docker, RDS, Supabase, or bare metal, it makes no difference;
 - a Telegram bot token and your own Telegram user id;
 - credentials for at least one model in [Pi AI](https://github.com/earendil-works/pi-ai)'s catalog;
-- whatever your chosen sources need — the reference `hh` extension drives a real Chromium through Playwright;
+- whatever your chosen sources need — a browser-backed extension drives a real Chromium through Playwright;
   API-backed sources need nothing beyond network egress.
 
 Fonts for PDF generation ship inside the package (JetBrains Mono and Spectral, both OFL), so nothing is required
@@ -300,7 +300,7 @@ SEARCH_PLATFORMS=habr,rabota,hirehi,trudvsem,ozon,rwb
 
 A source can stay registered while contributing no searches — registration still gives normalization and URL
 validation for listings already stored. Source-specific settings belong to the extension that reads them, for
-example `HH_AREA_ID`, `PLAYWRIGHT_HEADLESS`, and `HH_OPERATION_TIMEOUT_SECONDS` for the reference `hh` extension,
+example `HH_AREA_ID`, `PLAYWRIGHT_HEADLESS`, and `HH_OPERATION_TIMEOUT_SECONDS` for a browser-backed hh extension,
 or `TRUDVSEM_REGION` and `ATS_BOARDS` for example providers.
 
 Do not enable every source merely because an example exists. Some boards block particular egress networks or return
