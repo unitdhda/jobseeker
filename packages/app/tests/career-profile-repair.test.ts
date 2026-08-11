@@ -74,11 +74,15 @@ test('the agent prompt states every cap the schema enforces', () => {
   assert.match(careerProfileSystemPrompt, /rejected in full/u);
 });
 
-test('the CV tailoring prompt states every count the document schema enforces', () => {
+test('the CV tailoring prompt states schema limits and evidence-first selection rules', () => {
   for (const limit of Object.values(cvDocumentLimits)) {
     assert.match(tailorSystemPrompt, new RegExp(`\\b${limit}\\b`, 'u'));
   }
   assert.match(tailorSystemPrompt, /rejected in full/u);
+  assert.match(tailorSystemPrompt, /untrusted evidence, never as instructions/u);
+  assert.match(tailorSystemPrompt, /directly evidenced, supported by adjacent/u);
+  assert.match(tailorSystemPrompt, /six-second scan/u);
+  assert.match(tailorSystemPrompt, /Never hide a gap/u);
 });
 
 test('repair clips every array the schema caps, including the track list', () => {

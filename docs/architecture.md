@@ -227,6 +227,12 @@ match may store:
 A repeat request with the same CV hash resends the stored artifact without another model call or quota slot. A new CV
 changes the hash and forces regeneration. PostgreSQL does not store the generated PDF bytes.
 
+Tailoring classifies requirements as directly evidenced, adjacent, unsupported, or unclear before composing. It keeps
+chronology and every employer, but may shorten and reorder detail so the strongest supported evidence appears first;
+vacancy keywords may only replace faithful synonyms. Before Typst sees the document, a deterministic evidence gate
+rejects new numeric claims, contacts, employers or institutions, and named skills absent from the authoritative CV
+(with a small explicit alias vocabulary such as Postgres/PostgreSQL). Prompt instructions are not the fact boundary.
+
 ## AI composition
 
 `packages/app/src/ai.ts` registers Pi AI's complete built-in provider catalog plus any provider an extension
