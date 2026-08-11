@@ -74,15 +74,24 @@ export function extractCvDocumentIsolated(filename: string, mediaType: string | 
 }
 
 import { createHash } from 'node:crypto';
-import { clearSearchProfile, requireApprovedUser, saveCvSource } from './postgres.ts';
+import { clearSearchProfile, confirmStagedCvSource, requireApprovedUser, stageCvSource } from './postgres.ts';
 import { searchPlatformIds } from './vacancies/registry.ts';
 import { careerProfilePlatformId } from '@jobseeker/engine';
 
+export interface CvImportPreview { filename:string; characters:number; blocks:number; excerpt:string;
+  warnings:NonNullable<ExtractedCvDocument['document']['warnings']> }
 export async function importCvSource(userId: string, filename: string,
-  mediaType: string | undefined, bytes: Uint8Array): Promise<void> {
+  mediaType: string | undefined, bytes: Uint8Array): Promise<CvImportPreview> {
   const extracted = await extractCvDocumentIsolated(filename, mediaType, bytes);
   await requireApprovedUser(userId);
   const hash = createHash('sha256').update(bytes).digest('hex');
-  await saveCvSource(userId, filename, hash, extracted);
-  for (const platformId of [...searchPlatformIds, careerProfilePlatformId]) await clearSearchProfile(userId, platformId);
+  await stageCvSource(userId,filename,hash,extracted);
+  return {filename,characters:extracted.text.length,blocks:extracted.document.blocks.length,
+    excerpt:extracted.text.slice(0,700),warnings:extracted.document.warnings??[]};
+}
+export async function confirmCvImport(userId:string):Promise<boolean>{
+  await requireApprovedUser(userId);
+  if(!await confirmStagedCvSource(userId))return false;
+  for(const platformId of [...searchPlatformIds,careerProfilePlatformId])await clearSearchProfile(userId,platformId);
+  return true;
 }

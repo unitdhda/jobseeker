@@ -26,7 +26,12 @@ test('PDF, Markdown, TXT, and DOCX adapters produce reusable content', async () 
   const results = [txt, md, pdf, docx, isolated];
   assert.deepEqual(results.map((result) => result.sourceFormat), ['txt', 'md', 'pdf', 'docx', 'txt']);
   assert.ok(results.every((result) => result.text.length >= 100 && result.document.blocks.length > 0));
+  assert.ok(results.every((result) => result.document.blocks.some((block) => block.source != null)),
+    'every adapter should preserve source offsets for at least one block');
+  assert.ok(results.every((result) => Array.isArray(result.document.warnings)));
   assert.ok(md.document.blocks.some((block) => block.type === 'heading'));
+  assert.equal(md.document.warnings?.some((warning) => warning.code === 'no-headings'), false);
+  assert.equal(txt.document.warnings?.some((warning) => warning.code === 'no-headings'), true);
   await assert.rejects(() => extractCvDocument('fake.pdf', 'application/pdf', docxBytes), /invalid file content/);
   await assert.rejects(() => extractCvDocument('legacy.doc', 'application/msword', docxBytes), /Unsupported CV filename/);
 });

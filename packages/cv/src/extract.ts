@@ -26,12 +26,15 @@ import mammoth from 'mammoth';
 import { parse } from 'node-html-parser';
 
 export type CvSourceFormat = 'pdf' | 'md' | 'txt' | 'docx';
+export interface CvBlockProvenance { start: number; end: number; page?: number }
 export type CvDocumentBlock =
-  | { type: 'heading'; text: string; level: number }
-  | { type: 'paragraph'; text: string }
-  | { type: 'list-item'; text: string }
-  | { type: 'table'; rows: string[][] };
-export interface CanonicalCvDocument { version: 1; blocks: CvDocumentBlock[] }
+  | { type: 'heading'; text: string; level: number; source?: CvBlockProvenance }
+  | { type: 'paragraph'; text: string; source?: CvBlockProvenance }
+  | { type: 'list-item'; text: string; source?: CvBlockProvenance }
+  | { type: 'table'; rows: string[][]; source?: CvBlockProvenance };
+export type CvExtractionWarningCode = 'no-headings'|'no-dates'|'duplicate-content'|'possible-column-order';
+export interface CvExtractionWarning { code:CvExtractionWarningCode; detail:string }
+export interface CanonicalCvDocument { version: 1; blocks: CvDocumentBlock[]; warnings?:CvExtractionWarning[] }
 export interface ExtractedCvDocument {
   text: string;
   document: CanonicalCvDocument;
@@ -49,6 +52,29 @@ const maximumExtractedCharacters = 500_000;
 const maximumDocxEntries = 2_000;
 const maximumDocxUncompressedBytes = 50 * 1024 * 1024;
 const maximumDocxCompressionRatio = 100;
+
+function blockText(block:CvDocumentBlock):string {
+  return block.type==='table'?block.rows.map((row)=>row.join(' | ')).join('\n'):block.text;
+}
+function annotateDocument(document:CanonicalCvDocument,text:string):CanonicalCvDocument {
+  let cursor=0;
+  const blocks=document.blocks.map((block)=>{
+    const value=blockText(block).replace(/^•\s+/,'').trim();
+    let start=text.indexOf(value,cursor);
+    if(start<0)start=text.indexOf(value);
+    if(start<0)return block;
+    const end=start+value.length;cursor=end;return{...block,source:{start,end}};
+  });
+  const warnings:CvExtractionWarning[]=[];
+  if(!blocks.some((block)=>block.type==='heading'))warnings.push({code:'no-headings',detail:'No section headings were detected.'});
+  if(!/\b(?:19|20)\d{2}\b/.test(text))warnings.push({code:'no-dates',detail:'No four-digit dates were detected.'});
+  const counts=new Map<string,number>();
+  for(const block of blocks){const key=blockText(block).toLowerCase().replace(/\s+/g,' ').trim();if(key.length>=30)counts.set(key,(counts.get(key)??0)+1);}
+  if([...counts.values()].some((count)=>count>1))warnings.push({code:'duplicate-content',detail:'Repeated extracted paragraphs were detected.'});
+  const shortRuns=blocks.filter((block)=>block.type==='paragraph'&&block.text.length<24).length;
+  if(blocks.length>=20&&shortRuns/blocks.length>0.6)warnings.push({code:'possible-column-order',detail:'Many short lines may indicate interleaved columns.'});
+  return {version:1,blocks,warnings};
+}
 
 function normalizeText(value: string): string {
   const normalized = value.normalize('NFC').replaceAll('\u0000', '').replaceAll('\u00a0', ' ')
@@ -187,8 +213,10 @@ function validateDocxArchive(bytes: Uint8Array): void {
 async function extractPdf(bytes: Uint8Array): Promise<Omit<ExtractedCvDocument, 'sourceFormat' | 'mediaType'>> {
   const pdf = await getDocumentProxy(Uint8Array.from(bytes));
   const extracted = await extractText(pdf, { mergePages: true });
-  const text = normalizeText(String(extracted.text));
-  return { text, document: plainBlocks(text), parserName: 'unpdf', parserVersion: '1' };
+  const raw=String(extracted.text);
+  if(raw.replace(/\s/g,'').length<100)throw new Error('CV_OCR_REQUIRED: PDF contains no usable text layer. Export it with OCR and upload it again.');
+  const text = normalizeText(raw);
+  return { text, document: annotateDocument(plainBlocks(text),text), parserName: 'unpdf', parserVersion: '2' };
 }
 async function extractDocx(bytes: Uint8Array): Promise<Omit<ExtractedCvDocument, 'sourceFormat' | 'mediaType'>> {
   validateDocxArchive(bytes);
@@ -196,7 +224,7 @@ async function extractDocx(bytes: Uint8Array): Promise<Omit<ExtractedCvDocument,
   const [raw, html] = await Promise.all([mammoth.extractRawText({ buffer }), mammoth.convertToHtml({ buffer })]);
   const document = htmlDocument(html.value);
   const text = normalizeText(document.blocks.length ? canonicalDocumentText(document) : raw.value);
-  return { text, document: document.blocks.length ? document : plainBlocks(text),
+  return { text, document: annotateDocument(document.blocks.length ? document : plainBlocks(text),text),
     parserName: 'mammoth', parserVersion: '1.12.0' };
 }
 export async function extractCvDocument(filename: string, mediaType: string | undefined,
@@ -208,11 +236,11 @@ export async function extractCvDocument(filename: string, mediaType: string | un
   if (sourceFormat === 'md') {
     const document = markdownDocument(source);
     const text = normalizeText(canonicalDocumentText(document));
-    return { text, document, sourceFormat, mediaType: mediaTypes.md, parserName: 'builtin-markdown', parserVersion: '1' };
+    return { text, document:annotateDocument(document,text), sourceFormat, mediaType: mediaTypes.md, parserName: 'builtin-markdown', parserVersion: '2' };
   }
   const text = normalizeText(source);
-  return { text, document: plainBlocks(text), sourceFormat, mediaType: mediaTypes.txt,
-    parserName: 'builtin-text', parserVersion: '1' };
+  return { text, document: annotateDocument(plainBlocks(text),text), sourceFormat, mediaType: mediaTypes.txt,
+    parserName: 'builtin-text', parserVersion: '2' };
 }
 
 

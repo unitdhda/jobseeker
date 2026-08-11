@@ -54,11 +54,15 @@ try {
   assert.deepEqual(await sessions.getTelegramSession(userId, 'owned-session'), { token: 'current' });
   assert.equal(await sessions.releaseClaimedTelegramSession(userId, 'owned-session', 'current'), true);
 
-  await d.saveCvSource(userId, 'cv.txt', `cv-${suffix}`, {
+  await d.stageCvSource(userId, 'cv.txt', `cv-${suffix}`, {
     text: 'Integration CV with TypeScript PostgreSQL distributed systems experience. '.repeat(5),
-    document: { version: 1, blocks: [{ type: 'paragraph', text: 'Integration CV' }] },
-    sourceFormat: 'txt', mediaType: 'text/plain', parserName: 'integration', parserVersion: '1',
+    document: { version: 1, blocks: [{ type: 'paragraph', text: 'Integration CV', source: { start: 0, end: 14 } }],
+      warnings: [{ code: 'no-headings', detail: 'No headings' }] },
+    sourceFormat: 'txt', mediaType: 'text/plain', parserName: 'integration', parserVersion: '2',
   });
+  assert.equal(await d.getCvHash(userId), null, 'a preview must not replace the authoritative CV');
+  assert.equal(await d.confirmStagedCvSource(userId), true);
+  assert.equal(await d.confirmStagedCvSource(userId), false, 'confirmation consumes the staged import');
   await d.saveSearchProfile(userId, 'hh', { searches: [{ text: 'distributed systems' }] });
   await d.saveDeliverySettings(userId, { startMinutes: 540, endMinutes: 1320, digestMinutes: 570, timezone: '+03:00' });
   assert.equal(await d.getCvHash(userId), `cv-${suffix}`);

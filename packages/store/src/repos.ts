@@ -236,7 +236,7 @@ export async function llmUsageSummary():Promise<LlmUsageSummary>{
 
 export async function deleteUserData(userId: string): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
-    for (const table of ['matches','cv_documents','usage_events','user_state','unit_subscriptions'] as const) {
+    for (const table of ['matches','pending_cv_imports','cv_documents','usage_events','user_state','unit_subscriptions'] as const) {
       await client.query(`delete from ${table} where user_id=$1`, [userId]);
     }
     await client.query(`update search_units u set retired_at=coalesce(u.retired_at,now())
@@ -250,8 +250,9 @@ export async function deleteUserData(userId: string): Promise<void> {
 }
 export async function exportUserData(userId: string): Promise<Record<string, unknown>> {
   await ready(); if (!await getTelegramUser(userId)) throw new Error('User was not found.');
-  const [profile, scores, applications] = await Promise.all([
+  const [profile, pending, scores, applications] = await Promise.all([
     one('select cv_text,document_json,search_profiles from cv_documents where user_id=$1', [userId]),
+    one('select original_filename,extracted_json from pending_cv_imports where user_id=$1 and expires_at>now()', [userId]),
     q('select v.url,m.llm_score score from matches m join vacancies v on v.id=m.vacancy_id where m.user_id=$1 and m.llm_score is not null order by m.llm_score desc,v.url', [userId]),
     q(`select v.url,v.apply_id,m.application_artifacts from matches m join vacancies v on v.id=m.vacancy_id
       where m.user_id=$1 and m.application_artifacts<>'{}'::jsonb order by v.url`, [userId]),
@@ -259,6 +260,8 @@ export async function exportUserData(userId: string): Promise<Record<string, unk
   const profiles = profile ? jsonValue<Record<string, unknown>>(profile.search_profiles) : {};
   const career = profiles[careerProfilePlatformId] as { profile?: unknown } | undefined;
   return { cvSource: profile ? String(profile.cv_text) : null, normalizedDocument: profile ? jsonValue(profile.document_json) : null,
+    pendingCvPreview: pending ? { originalFilename:String(pending.original_filename),
+      extracted:jsonValue(pending.extracted_json) } : null,
     careerProfile: career?.profile ?? null,
     searchProfiles: Object.entries(profiles).filter(([platform]) => platform !== careerProfilePlatformId)
       .sort(([left], [right]) => left.localeCompare(right)).map(([platform, value]) => ({ platform, profile: value })),
@@ -287,6 +290,28 @@ export async function getCvSource(userId: string): Promise<CvSource | null> {
 export async function getCvHash(userId: string): Promise<string | null> {
   await ready(); const row = await one('select cv_sha256 from cv_documents where user_id=$1', [userId]); return row ? String(row.cv_sha256) : null;
 }
+export async function stageCvSource(userId:string,originalFilename:string,cvSha256:string,
+  extracted:ExtractedCvDocument,ttlMs=15*60_000):Promise<void>{
+  await ready();const expiresAt=new Date(Date.now()+ttlMs).toISOString();
+  await q('delete from pending_cv_imports where expires_at<=now()');
+  await q(`insert into pending_cv_imports(user_id,cv_sha256,original_filename,extracted_json,expires_at)
+    values($1,$2,$3,$4::jsonb,$5) on conflict(user_id) do update set cv_sha256=excluded.cv_sha256,
+    original_filename=excluded.original_filename,extracted_json=excluded.extracted_json,
+    expires_at=excluded.expires_at,created_at=now()`,
+    [userId,cvSha256,originalFilename,JSON.stringify(extracted),expiresAt]);
+}
+export async function discardStagedCvSource(userId:string):Promise<void>{
+  await ready();await q('delete from pending_cv_imports where user_id=$1',[userId]);
+}
+export async function confirmStagedCvSource(userId:string):Promise<boolean>{
+  await ready();const row=await one(`select cv_sha256,original_filename,extracted_json from pending_cv_imports
+    where user_id=$1 and expires_at>now()`,[userId]);
+  if(!row)return false;
+  const hash=String(row.cv_sha256);
+  await saveCvSource(userId,String(row.original_filename),hash,jsonValue<ExtractedCvDocument>(row.extracted_json));
+  await q('delete from pending_cv_imports where user_id=$1 and cv_sha256=$2',[userId,hash]);
+  return true;
+}
 export async function saveCvSource(userId: string, originalFilename: string, cvSha256: string, extracted: ExtractedCvDocument): Promise<void> {
   await ready(); await withPostgresTransaction(async (client) => {
     await client.query(`insert into cv_documents(user_id,cv_sha256,cv_text,document_json,source_format,original_filename,media_type,parser_name,parser_version,search_profiles,updated_at)
@@ -296,7 +321,7 @@ export async function saveCvSource(userId: string, originalFilename: string, cvS
       [userId, cvSha256, extracted.text, JSON.stringify(extracted.document), extracted.sourceFormat, originalFilename,
         extracted.mediaType, extracted.parserName, extracted.parserVersion, now()]);
     // A new CV invalidates undelivered judgements; what the user already saw stays seen.
-    await client.query(`update matches set state='matched',llm_score=null,score_updated_at=null,
+    await client.query(`update matches set state='matched',llm_score=null,score_updated_at=null,score_explanation=null,
       prescore_score=null,prescore_model=null,prescore_prompt_version=null,prescore_updated_at=null,
       prescore_exploration=false,alert_primary_track=null,alert_summary=null,alert_reasons=null,alert_gaps=null,updated_at=$2
       where user_id=$1 and state in ('queued','scored')`, [userId, now()]);

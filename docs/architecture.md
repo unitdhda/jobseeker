@@ -214,6 +214,19 @@ Alerts and digests use plain Telegram HTML. A digest is one message with ten vac
 same message in place. Apply IDs have a bold minimum unique prefix for human input, while every longer unambiguous
 prefix and the full ID resolve as well.
 
+## CV extraction and confirmation
+
+PDF, DOCX, Markdown, and text extraction is deterministic and isolated from model inference. Every canonical block
+carries offsets into the normalized source text, and extraction records warnings for missing headings or dates,
+duplicate content, and likely interleaved columns. An image-only PDF fails with a specific OCR instruction rather than
+being mistaken for an empty CV.
+
+A parsed upload is staged for fifteen minutes and shown back to the user with its warnings and a bounded excerpt. The
+current authoritative CV, matches, and profiles remain untouched until the user confirms; rejection simply re-arms the
+upload flow. Confirmation consumes the staged copy, replaces the CV, and only then invalidates waiting judgments and
+search profiles. Expired staged rows are purged on later uploads, `/export_me` includes a live preview, and
+`/delete_me` removes it.
+
 ## Application generation and reuse
 
 CV tailoring and cover-letter generation are separate actions with separate limits. After successful delivery, a

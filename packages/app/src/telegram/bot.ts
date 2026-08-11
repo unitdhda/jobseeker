@@ -3,6 +3,7 @@ import { type InputRichBlockTable, type InputRichMessage } from 'grammy/types';
 import { config } from '../config.ts';
 import {
   deleteUserData,
+  discardStagedCvSource,
   exportUserData,
   getCvSource,
   getDeliverySettings,
@@ -24,7 +25,7 @@ import {
   type TelegramUser,
   addressableDigestPage,
 } from '../postgres.ts';
-import { importCvSource } from '../cv.ts';
+import { confirmCvImport, importCvSource, type CvImportPreview } from '../cv.ts';
 import { type ApplicationArtifact } from '../postgres.ts';
 import { maximumCvBytes } from '../cv.ts';
 import { errorMessage } from '../observability.ts';
@@ -83,6 +84,17 @@ const latestUserPages = new Map<string, string[]>();
 type WindowSetup = { step: 'start' | 'end' | 'digest' | 'timezone'; start?: string };
 const usersPageSize = 8;
 const cvUploadSessionTtlMs = 30 * 60_000;
+function cvPreviewMessage(preview:CvImportPreview,locale:Locale):string {
+  const text=messages(locale).cv;
+  const warning=preview.warnings.length?text.previewWarnings(preview.warnings.map((item)=>item.code).join(', '))
+    :text.previewClean;
+  return `${text.previewTitle}\n${text.previewStats(escapeHtml(preview.filename),preview.characters,preview.blocks)}\n${warning}`
+    +`\n\n<pre>${escapeHtml(preview.excerpt)}</pre>\n\n${text.previewQuestion}`;
+}
+function cvPreviewKeyboard(locale:Locale):InlineKeyboard {
+  const text=messages(locale).cv;
+  return new InlineKeyboard().text(text.confirmButton,'cv:confirm').text(text.rejectButton,'cv:reject');
+}
 const windowSetupTtlMs = 30 * 60_000;
 
 function windowKeyboard(locale:Locale):InlineKeyboard{const text=messages(locale).delivery;return new InlineKeyboard()
@@ -501,22 +513,41 @@ function configureTelegramBot(): Bot<BotContext> | null {
       indicator = await startEditableIndicator(userId, ctx.t.cv.downloading);
       const bytes = await downloadTelegramFile(document.file_id, document.file_size);
       indicator?.setLabel(ctx.t.cv.parsing);
-      await importCvSource(userId, filename, document.mime_type, bytes);
+      const preview=await importCvSource(userId, filename, document.mime_type, bytes);
       await deleteTelegramSession(userId, 'cv-upload');
-      indicator?.setLabel(ctx.t.cv.saved);
-      await lease.setKind('profile-refresh');
-      const handedOver = indicator; indicator = null;
-      await refreshSearchesAfterCvUpload(userId, handedOver, lease, ctx.locale);
-      leaseHandedOver = true;
+      await finishNotice(userId,indicator,cvPreviewMessage(preview,ctx.locale),cvPreviewKeyboard(ctx.locale));
+      indicator=null;
     } catch (error) {
       console.error(`CV import failed for user ${userId}: ${errorMessage(error)}`);
       if (await isApprovedUser(userId)) {
-        await finishNotice(userId, indicator, ctx.t.cv.importFailed, cvRetryKeyboard('cv:retry', ctx.locale));
+        const message=errorMessage(error).includes('CV_OCR_REQUIRED')?ctx.t.cv.ocrRequired:ctx.t.cv.importFailed;
+        await finishNotice(userId, indicator, message, cvRetryKeyboard('cv:retry', ctx.locale));
       } else await indicator?.stop().catch((stopError) => console.warn(`Could not stop CV indicator: ${errorMessage(stopError)}`));
     } finally {
       if (lease && !leaseHandedOver) await lease.release().catch((error) =>
         console.warn(`Could not release CV workflow: ${errorMessage(error)}`));
     }
+  });
+  instance.callbackQuery('cv:confirm',async(ctx)=>{
+    const userId=String(ctx.from.id);const claim=await claimUserWorkflow(userId,'profile-refresh');
+    if(!claim.claimed){await ctx.answerCallbackQuery({text:ctx.t.application.busyToast});return;}
+    let handedOver=false;
+    try{
+      if(!await confirmCvImport(userId)){
+        await ctx.answerCallbackQuery({text:ctx.t.cv.previewExpiredToast});
+        await ctx.editMessageReplyMarkup().catch(()=>undefined);return;
+      }
+      await ctx.answerCallbackQuery({text:ctx.t.cv.confirmedToast});
+      await ctx.editMessageText(ctx.t.cv.saved,{parse_mode:'HTML'}).catch(()=>undefined);
+      handedOver=true;
+      await refreshSearchesAfterCvUpload(userId,await startEditableIndicator(userId,ctx.t.cv.preparingSearches),
+        claim.lease,ctx.locale);
+    }finally{if(!handedOver)await claim.lease.release().catch(()=>undefined);}
+  });
+  instance.callbackQuery('cv:reject',async(ctx)=>{
+    const userId=String(ctx.from.id);await discardStagedCvSource(userId);
+    await ctx.answerCallbackQuery();await ctx.editMessageReplyMarkup().catch(()=>undefined);
+    await setTelegramSession(userId,'cv-upload',{},cvUploadSessionTtlMs);await ctx.reply(ctx.t.cv.retryUpload);
   });
   instance.callbackQuery('cv:retry', async (ctx) => {
     const userId = String(ctx.from.id);

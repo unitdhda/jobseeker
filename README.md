@@ -30,7 +30,7 @@ looks promising, request a tailored CV or cover letter directly from the alert.
 
 Jobseeker is not another job-board interface. It is a continuously running search engine built around each user's CV:
 
-1. **Understands the CV** — extracts reusable structured content and generates role-specific search demand.
+1. **Understands the CV** — extracts reusable structured content, previews extraction warnings for confirmation, and generates role-specific search demand.
 2. **Monitors job boards** — runs shared, adaptive searches and stores each listing once.
 3. **Filters before spending** — uses free lexical evidence to bound traffic, then a small semantic model before
    the full judge.
@@ -235,7 +235,8 @@ PostgreSQL database, Telegram token, and model credentials.
 
 - The **Jobseeker server** does not retain the originally uploaded CV file; Telegram may retain files according to
   Telegram's own platform behavior and policies.
-- Extracted CV text and structure are stored so searches and applications can be regenerated.
+- A newly extracted CV is held as an expiring preview until the user confirms it; extracted CV text and structure are
+  then stored so searches and applications can be regenerated.
 - CV and vacancy text is sent to the configured model provider for profile generation, scoring, and tailoring.
 - Users of one deployment share **search wordings** — never names, contacts, or CV text. Equivalent demand becomes
   one search so it is fetched once, and an existing wording may be suggested, unattributed, while another user's
