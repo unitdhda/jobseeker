@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@unitdhda/jobseeker": "0.1.11"
+    "@unitdhda/jobseeker": "0.1.12"
   }
 }
