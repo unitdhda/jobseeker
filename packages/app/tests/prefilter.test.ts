@@ -3,16 +3,13 @@ import test from 'node:test';
 import {
   buildIdfVocabulary, careerProfileSchema, combinedEvidenceScore, createIdfLookup, prefilterVacancy,
   uniformIdfLookup, vacancyRecency,
-  type CareerProfile, type PrefilterCalibration,
+  type CareerProfile,
 } from '@jobseeker/engine';
 import type { Vacancy } from '@jobseeker/store';
 import * as v from 'valibot';
 import { textSearchProfileSchema } from '@jobseeker/sources/examples/habr';
 import { config } from '../src/config.ts';
-import {
-  admitEvidence, calibrationHealth, calibrationStaleAfterDays, explorationRateFor, matchEvidence,
-  matchOrderingScore, setActiveCalibration,
-} from '../src/matching.ts';
+import { matchEvidence, matchOrderingScore } from '../src/matching.ts';
 
 const daysAgo = (days: number) => new Date(Date.now() - days * 86_400_000).toISOString();
 
@@ -127,7 +124,7 @@ await test('an advert past the age limit is rejected however well it matches', (
   assert.equal(fresh.filtered, false);
   assert.equal(expired.filtered, true, 'over the age limit must be a hard rejection, not a discount');
   assert.ok(expired.reasons.some((reason) => reason.startsWith('rejected: published')));
-  assert.equal(expired.regexScore, fresh.regexScore, 'the evidence score is kept for calibration');
+  assert.equal(expired.regexScore, fresh.regexScore, 'the evidence score is retained for diagnostics');
 });
 
 await test('inside the limit age discounts a match without letting it outrank fit', () => {
@@ -154,30 +151,6 @@ await test('contact details do not create skill evidence', () => {
   assert.equal(result.reasons.some((reason) => reason.startsWith('evidenced skills: Telegram')), false);
 });
 
-test('admission: either gate can reject, exploration still buys a sample, expiry never does', () => {
-  const never = () => 1;   // exploration dice that always lose
-  const always = () => 0;  // …and always win
-  const base = { filtered: false, expired: false, belowProbability: false, explorationRate: 0 };
-
-  // Passing both gates is admitted without consulting the dice at all.
-  assert.equal(admitEvidence({ ...base, random: never }), true);
-
-  // Either gate alone rejects, and with exploration off that is final — rate 0 means the dice never win.
-  assert.equal(admitEvidence({ ...base, filtered: true, explorationRate: 0, random: always }), false);
-  assert.equal(admitEvidence({ ...base, filtered: true, explorationRate: 1, random: always }), true);
-  assert.equal(admitEvidence({ ...base, filtered: true, explorationRate: 0, random: never }), false);
-  assert.equal(admitEvidence({ ...base, belowProbability: true, explorationRate: 0, random: never }), false);
-
-  // The calibrated gate rejects matches the raw gate was happy with — the point of adding it.
-  assert.equal(admitEvidence({ ...base, belowProbability: true, explorationRate: 0.1, random: never }), false);
-  // …but exploration keeps sampling from beyond that new boundary, so the calibration is not left blind there.
-  assert.equal(admitEvidence({ ...base, belowProbability: true, explorationRate: 0.1, random: always }), true);
-
-  // An expired advert is refused whatever the dice say.
-  assert.equal(admitEvidence({ ...base, expired: true, explorationRate: 1, random: always }), false);
-  assert.equal(admitEvidence({ ...base, expired: true, filtered: true, explorationRate: 1, random: always }), false);
-});
-
 test('the prefilter reports title similarity and skill coverage separately from the combined score', () => {
   const strong = prefilterVacancy(designerCv,
     vacancy('Communication Designer', 'Create brand identity and visual campaigns for launches.',
@@ -197,47 +170,6 @@ test('the prefilter reports title similarity and skill coverage separately from 
   assert.ok(strong.skillCoverage > weak.skillCoverage);
   assert.equal(strong.skillCoverage, 1); // both of the track's two core skills appear
   assert.equal(weak.skillCoverage, 0);
-});
-
-test('an uncalibrated ordering reports itself as degraded, not as normal', () => {
-  // Nothing has been loaded in this process, so the queue would be ordered by the raw evidence score. With no
-  // probability gate configured, this report is the only thing that can say so.
-  const missing = calibrationHealth();
-  assert.equal(missing.active, false);
-  assert.equal(missing.ordering, 'raw evidence score');
-  assert.match(missing.message ?? '', /raw evidence score/);
-
-  const calibration = { version: 3 as const, bias: -1, regexScore: 2, regexScoreSquared: 0, lexicalCosine: 1,
-    lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, specificity: 0,
-    lexicalCosineIdf: 0, sources: {}, ageBands: {}, judges: {}, users: {} };
-  const fittedAt = new Date('2026-08-01T00:00:00Z');
-  setActiveCalibration(calibration, fittedAt.toISOString());
-
-  const fresh = calibrationHealth(new Date(fittedAt.getTime() + 86_400_000));
-  assert.equal(fresh.active, true);
-  assert.equal(fresh.stale, false);
-  assert.equal(fresh.message, null, 'a healthy ordering says nothing');
-
-  const stale = calibrationHealth(new Date(fittedAt.getTime() + (calibrationStaleAfterDays + 1) * 86_400_000));
-  assert.equal(stale.active, true);
-  assert.equal(stale.stale, true);
-  assert.match(stale.message ?? '', /nothing has replaced it/);
-});
-
-test('a user with no verdicts of their own explores harder, and stops once they have some', () => {
-  // The defaults: 0.35 until 200 labels, then whatever the steady rate is (0 unless configured).
-  assert.equal(explorationRateFor(0), 0.35);
-  assert.equal(explorationRateFor(199), 0.35);
-  assert.equal(explorationRateFor(200), config.prefilterExplorationRate);
-  assert.equal(explorationRateFor(5_000), config.prefilterExplorationRate);
-  // Exploration is what turns a rejection into a label, so the elevated rate has to actually admit rejects.
-  const rejected = { filtered: true, expired: false, belowProbability: false };
-  const admitted = admitEvidence({ ...rejected, explorationRate: explorationRateFor(0), random: () => 0.2 });
-  assert.equal(admitted, true, 'a fresh user buys a sample of what the gate rejects');
-  assert.equal(admitEvidence({ ...rejected, explorationRate: explorationRateFor(0), random: () => 0.9 }), false);
-  // Expiry still refuses unconditionally: no amount of exploration is worth a filled advert.
-  assert.equal(admitEvidence({ filtered: true, expired: true, belowProbability: false,
-    explorationRate: explorationRateFor(0), random: () => 0 }), false);
 });
 
 test('the seniority gap is recorded signed, and absent when neither title names a grade', () => {
@@ -274,69 +206,22 @@ test('recording the seniority gap does not move the score it is not yet weighed 
   assert.equal(junior.regexScore, graded.regexScore);
 });
 
-test('the stored evidence score is the raw score whether or not a calibration is active', () => {
-  // The regression this locks down: the column used to hold the calibrated probability when one was active and
-  // the raw score otherwise, so two rows written days apart were not the same quantity, and the queue sorted
-  // them against each other anyway. Production had rows averaging 47.9 on 1..89 next to rows averaging 31.4 on
-  // 5..74. Whatever ordering is in force, what gets frozen must not move.
-  const lens = { userId: 'u1', cvText: designerCv, profile: designerProfile, labels: 10_000 };
+test('the stored evidence score remains the raw combined score', () => {
+  const lens = { userId: 'u1', cvText: designerCv, profile: designerProfile };
   const advert = vacancy('Communication Designer', 'Create brand identity and visual campaigns.', ['Brand identity']);
-  const now = new Date();
-
-  const active: PrefilterCalibration = { version: 3, bias: -9, regexScore: 0, regexScoreSquared: 0,
-    lexicalCosine: 0, lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, specificity: 0, lexicalCosineIdf: 0,
-    sources: {}, ageBands: {}, judges: {}, users: {} };
-  const underCalibration = matchEvidence(lens, advert, now, active);
-  const uncalibrated = matchEvidence(lens, advert, now, null);
-
-  assert.ok(underCalibration && uncalibrated);
-  assert.equal(underCalibration.score, uncalibrated.score);
-  assert.equal(underCalibration.score, prefilterVacancy(designerCv, advert, config.prefilterMinScore,
+  const evidence = matchEvidence(lens, advert, new Date());
+  assert.ok(evidence);
+  assert.equal(evidence.score, prefilterVacancy(designerCv, advert, config.prefilterMinScore,
     designerProfile, config.prefilterMaxAgeDays).combinedScore);
 });
 
-test('claim-time ordering follows the calibration in force, and a refit reorders the existing backlog', () => {
-  // Freezing the ordering score at match time meant an accepted refit only ever reached rows matched after it.
-  // The backlog it was fitted to improve kept the opinion of whichever model was live when it was created.
-  const published = new Date().toISOString();
-  const pending = [
-    { vacancyId: 1, matchedAt: published, source: 'hh', publishedAt: published,
-      regexScore: 80, lexicalCosine: 0.02, titleSimilarity: 1, skillCoverage: 0.2, seniorityGap: null, specificity: null,
-      lexicalCosineIdf: null },
-    { vacancyId: 2, matchedAt: published, source: 'hh', publishedAt: published,
-      regexScore: 40, lexicalCosine: 0.16, titleSimilarity: 0.5, skillCoverage: 0.9, seniorityGap: null, specificity: null,
-      lexicalCosineIdf: null },
-  ];
-  const now = new Date();
-  const base = { version: 3 as const, bias: 0, regexScoreSquared: 0, lexicalCosineSquared: 0,
-    titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0, specificity: 0, lexicalCosineIdf: 0,
-    sources: {}, ageBands: {}, judges: {}, users: {} };
-  const rank = (calibration: PrefilterCalibration | null) => [...pending]
-    .sort((left, right) => matchOrderingScore(right, now, calibration) - matchOrderingScore(left, now, calibration))
-    .map((entry) => entry.vacancyId);
-
-  // A model that trusts the regex evidence prefers the first; one that trusts the cosine prefers the second.
-  assert.deepEqual(rank({ ...base, regexScore: 6, lexicalCosine: 0 }), [1, 2]);
-  assert.deepEqual(rank({ ...base, regexScore: 0, lexicalCosine: 6 }), [2, 1]);
-  // The rows never changed — only the model did. That is the whole point of scoring at claim time.
-
-  // With no calibration the order is the raw evidence score, recomputed from the same frozen columns.
-  assert.equal(matchOrderingScore(pending[0]!, now, null),
-    combinedEvidenceScore(80, 0.02, 1));
-});
-
-test('the ordering score reads the advert age now, not when the match was created', () => {
-  // A refit labels each row with the band the advert was in when the verdict landed, so serving has to ask the
-  // same question. A band frozen at match time drifts away from the coefficient that was fitted for it.
-  const calibration: PrefilterCalibration = { version: 3, bias: 0, regexScore: 0, regexScoreSquared: 0,
-    lexicalCosine: 0, lexicalCosineSquared: 0, titleSimilarity: 0, skillCoverage: 0, seniorityGap: 0,
-    specificity: 0, lexicalCosineIdf: 0, sources: {}, ageBands: { stale: -5 }, judges: {}, users: {} };
+test('raw fallback ordering recomputes recency at claim time', () => {
   const candidate = { vacancyId: 1, matchedAt: daysAgo(40), source: 'hh', publishedAt: daysAgo(40),
     regexScore: 60, lexicalCosine: 0.1, titleSimilarity: 0.8, skillCoverage: 0.5, seniorityGap: null,
     specificity: null, lexicalCosineIdf: null };
   const fresh = { ...candidate, publishedAt: daysAgo(0) };
-  assert.ok(matchOrderingScore(candidate, new Date(), calibration)
-    < matchOrderingScore(fresh, new Date(), calibration), 'the stale band penalty has to actually apply');
+  assert.ok(matchOrderingScore(candidate, new Date()) < matchOrderingScore(fresh, new Date()));
+  assert.equal(matchOrderingScore(fresh, new Date()), combinedEvidenceScore(60, 0.1, 1));
 });
 
 test('specificity separates a match on a common word from a match on a rare one', () => {
@@ -384,8 +269,7 @@ test('rarity evidence is null, not zero, until a vocabulary exists', () => {
 });
 
 test('rarity evidence does not move the score it is not yet weighed by', () => {
-  // Same guard the seniority gap ships behind: new evidence is frozen for the calibration to learn from, and
-  // must not silently change what gets admitted before a fit has validated it.
+  // New diagnostic evidence must not silently change admission.
   const profile: CareerProfile = { version: 1, tracks: [
     { name: 'Design', titleVariants: ['designer'], coreSkills: ['design'], evidence: ['Designer'] }] };
   const idf = { title: createIdfLookup(buildIdfVocabulary([['designer'], ['designer', 'lead']])),

@@ -92,13 +92,11 @@ export function nextWakeMs(units: readonly { nextRunAt: number }[], nowMs: numbe
 }
 
 /**
- * One lens's verdict on one vacancy. The raw evidence features ride along so persistence can pair them with the
- * LLM's later judgement — that pairing is the calibration's training data, and recomputing features after the CV
- * has changed would silently corrupt it.
+ * One lens's verdict on one vacancy. Raw evidence rides along for diagnostics.
  */
 export interface MatchEvidence {
   score: number; regexScore: number; lexicalCosine: number;
-  /** The pair `regexScore` folds together, frozen separately so a later refit can weigh them apart. 0..1. */
+  /** The pair `regexScore` folds together, frozen separately for diagnostics. 0..1. */
   titleSimilarity?: number; skillCoverage?: number;
   /** Grade distance in [-1, 1], or null when neither title named a grade. Recorded, not yet weighed. */
   seniorityGap?: number | null;

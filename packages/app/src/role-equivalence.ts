@@ -2,7 +2,7 @@
  * The application's live role-equivalence state: mined from approved users' career profiles, persisted for other
  * processes, held in memory as a resolver the prefilter and demand compiler consult at compare time.
  *
- * Refresh points: engine-loop start and the daily calibrate stage. A failed refresh keeps the previous resolver —
+ * Refresh points: engine-loop start and daily matching-vocabulary maintenance. A failed refresh keeps the previous resolver —
  * matching narrows gracefully rather than erroring.
  */
 import {

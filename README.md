@@ -32,8 +32,8 @@ Jobseeker is not another job-board interface. It is a continuously running searc
 
 1. **Understands the CV** — extracts reusable structured content and generates role-specific search demand.
 2. **Monitors job boards** — runs shared, adaptive searches and stores each listing once.
-3. **Filters before spending** — freezes cheap lexical evidence and, when configured, uses a small semantic model
-   before the full judge. An independent deterministic challenger keeps learning silently from later full scores.
+3. **Filters before spending** — uses free lexical evidence to bound traffic, then a small semantic model before
+   the full judge.
 4. **Scores fit** — evaluates skills, seniority, responsibilities, location, work format, and explicit blockers.
 5. **Delivers decisions** — sends high-scoring alerts immediately and collects review-worthy roles into digests.
 6. **Helps apply** — prepares a tailored CV or cover letter only when requested.
@@ -72,7 +72,7 @@ not block scoring or Telegram delivery.
 
 Each alert carries what a decision needs:
 
-- a calibrated `0–100` fit score;
+- a semantic `0–100` fit score;
 - a short assessment of the match;
 - concrete reasons the role fits;
 - gaps or requirements worth checking;
@@ -92,8 +92,7 @@ language instead, so an application is never written in the wrong one.
 | Capability | What it solves |
 |---|---|
 | **Continuous discovery** | CV-derived searches run on adaptive schedules. |
-| **Fit before AI spend** | Cheap lexical matching bounds the candidate set; an optional mini model semantically prescores it before the full judge. |
-| **An independent challenger** | Frozen deterministic features and later full-judge verdicts train a daily shadow model without using the mini model's outputs. |
+| **Fit before AI spend** | Cheap lexical matching bounds the candidate set; a mini model semantically prescores it before the full judge. |
 | **Shared discovery** | A listing found for one user can be evaluated for others without fetching it again. |
 | **No duplicate delivery** | PostgreSQL state transitions prevent an alerted, digested, skipped, or applied match from resurfacing. |
 | **Application artifacts** | Tailored CVs and letters are generated independently and can be resent instantly. |

@@ -561,7 +561,7 @@ async function ensureMatch(userId:string,vacancyId:number,client?:PoolClient):Pr
 }
 /**
  * Lands a scoring result on a claimed match. Only 'queued' may become 'scored'; a lost claim writes nothing.
- * `model` is the route that produced the score, stored so the calibration can tell judges apart later.
+ * `model` is the route that produced the score, retained for model-quality comparisons.
  */
 export async function saveScore(userId:string,vacancyId:number,score:number,primaryTrack:string,summary:string,reasons:string[],gaps:string[],hardRejection:boolean,model:string|null=null):Promise<void>{
   await ready(); const timestamp=now();

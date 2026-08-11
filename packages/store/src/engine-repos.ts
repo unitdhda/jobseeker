@@ -120,9 +120,7 @@ export async function transitionMatch(userId: string, vacancyId: number, from: M
 /**
  * One match waiting on the budget, carrying the evidence frozen at match time.
  *
- * The store hands these back unranked on purpose. Ordering needs the active calibration, which is application
- * state, and duplicating the scoring arithmetic in SQL is how the two copies drift — the fit script had already
- * drifted from the engine by a whole feature before anyone noticed.
+ * The store hands these back unranked. Application code orders by semantic score, with raw evidence as fallback.
  */
 export interface PendingMatch {
   vacancyId: number;
@@ -257,76 +255,6 @@ export async function spentToday(userId: string, day: string): Promise<number> {
   return Number(rows[0]?.llm_cost_usd ?? 0);
 }
 
-/** A scored match whose evidence was frozen at match time — one calibration training row. */
-export interface CalibrationExampleRow {
-  regexScore: number; lexicalCosine: number; source: string; llmScore: number;
-  publishedAt: string; scoreUpdatedAt: string;
-  /** Null on rows matched before these columns existed; the fit reads that as no contribution. */
-  titleSimilarity: number | null; skillCoverage: number | null;
-  /** Null both on older rows and whenever neither title named a grade. */
-  seniorityGap: number | null;
-  /** Null on rows measured before a rarity vocabulary existed. Never imputed — see the calibration's coverage rule. */
-  specificity: number | null;
-  lexicalCosineIdf: number | null;
-  /** The model that produced llmScore, or null on rows scored before the column existed. */
-  scoreModel: string | null;
-  /** Whose verdict this is. Pooling users hides that "good" is judged per person. */
-  userId: string;
-}
-
-export async function calibrationExamples(limit = 20_000): Promise<CalibrationExampleRow[]> {
-  // lexical_score is deliberately absent: it holds whichever quantity was the ordering score when the row was
-  // written, so it cannot be compared across rows. The incumbent bar is recomputed from the frozen evidence.
-  const rows = await q(`select m.lexical_regex_score, m.lexical_cosine, m.llm_score,
-      m.lexical_title_similarity, m.lexical_skill_coverage, m.lexical_seniority_gap, m.lexical_specificity,
-      m.lexical_cosine_idf, m.score_model, m.user_id,
-      m.score_updated_at, v.source, v.published_at
-    from matches m join vacancies v on v.id = m.vacancy_id
-    where m.llm_score is not null and m.lexical_regex_score is not null and m.lexical_cosine is not null
-      and m.score_updated_at is not null
-    order by m.score_updated_at desc limit $1`, [limit]);
-  return rows.map((row) => ({ regexScore: Number(row.lexical_regex_score), lexicalCosine: Number(row.lexical_cosine),
-    source: String(row.source), llmScore: Number(row.llm_score),
-    titleSimilarity: row.lexical_title_similarity == null ? null : Number(row.lexical_title_similarity),
-    skillCoverage: row.lexical_skill_coverage == null ? null : Number(row.lexical_skill_coverage),
-    seniorityGap: row.lexical_seniority_gap == null ? null : Number(row.lexical_seniority_gap),
-    specificity: row.lexical_specificity == null ? null : Number(row.lexical_specificity),
-    lexicalCosineIdf: row.lexical_cosine_idf == null ? null : Number(row.lexical_cosine_idf),
-    scoreModel: row.score_model == null ? null : String(row.score_model),
-    userId: String(row.user_id),
-    publishedAt: new Date(row.published_at as string).toISOString(),
-    scoreUpdatedAt: new Date(row.score_updated_at as string).toISOString() }));
-}
-
-export interface StoredCalibrationRow { id: number; createdAt: string; coefficients: unknown; accepted: boolean }
-
-/** The newest accepted calibration — the model that orders scoring claims right now. */
-export async function activeStoredCalibration(): Promise<StoredCalibrationRow | null> {
-  const rows = await q(`select id, created_at, coefficients, accepted from calibrations
-    where accepted = 1 order by id desc limit 1`);
-  return rows[0] ? rowToCalibration(rows[0]) : null;
-}
-
-/** When any refit last ran, accepted or not — the cadence gate, so a rejected fit is not retried every tick. */
-export async function latestCalibrationAttemptAt(): Promise<string | null> {
-  const rows = await q(`select max(created_at) at from calibrations`);
-  return rows[0]?.at ? new Date(rows[0].at as string).toISOString() : null;
-}
-
-/** Labels that arrived after the active model was fitted — the evidence a refit would newly learn from. */
-export async function calibrationLabelsSince(timestamp: string | null): Promise<number> {
-  const rows = await q(`select count(*) n from matches where llm_score is not null
-    and lexical_regex_score is not null and ($1::timestamptz is null or score_updated_at > $1::timestamptz)`,
-    [timestamp]);
-  return Number(rows[0]?.n ?? 0);
-}
-
-export async function saveCalibration(coefficients: unknown, metrics: unknown,
-  accepted: boolean): Promise<void> {
-  await q(`insert into calibrations (coefficients, metrics, accepted) values ($1::jsonb, $2::jsonb, $3)`,
-    [JSON.stringify(coefficients), JSON.stringify(metrics), accepted ? 1 : 0]);
-}
-
 /** Mining recomputes from all profiles, so the table is replaced wholesale — derived data has no history. */
 export async function replaceRoleEquivalences(pairs: readonly RoleEquivalencePair[]): Promise<void> {
   await withPostgresTransaction(async (client) => {
@@ -398,11 +326,4 @@ Promise<{ id: number; name: string; description: string; keySkills: string[] }[]
     id: Number(row.id), name: String(row.name ?? ''), description: String(row.description ?? ''),
     keySkills: Array.isArray(row.key_skills_json) ? (row.key_skills_json as unknown[]).map(String) : [],
   }));
-}
-
-function rowToCalibration(row: Record<string, unknown>): StoredCalibrationRow {
-  const coefficients = row.coefficients;
-  return { id: Number(row.id), createdAt: new Date(row.created_at as string).toISOString(),
-    coefficients: typeof coefficients === 'string' ? JSON.parse(coefficients) : coefficients,
-    accepted: Number(row.accepted) === 1 };
 }

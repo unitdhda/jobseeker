@@ -294,8 +294,7 @@ export interface PrefilterResult {
   lexicalScore: number;
   combinedScore: number;
   /**
-   * The two signals `regexScore` collapses into one number, kept separately because the calibration can only
-   * learn from what is frozen at match time. Both are 0..1 and independent of how long the CV's skill list is.
+   * The two signals `regexScore` collapses into one number, retained separately for diagnostics.
    */
   titleSimilarity: number;
   skillCoverage: number;
@@ -304,18 +303,13 @@ export interface PrefilterResult {
    * asks for more seniority than the CV claims, negative means it asks for less. Null when either side names no
    * grade at all, which is the common case and must not be confused with "the grades match".
    *
-   * Recorded only. Nothing weighs it yet: like title similarity and skill coverage before it, it cannot earn a
-   * coefficient until enough matches carry it, and folding an unvalidated guess into the score would change
-   * admission on a hunch.
+   * Recorded for diagnostics. The lexical gate does not weigh it.
    */
   seniorityGap: number | null;
   /**
    * The rarity-aware pair, both 0..1, and **null when no vocabulary was available** rather than 0.
    *
-   * Null and zero are different claims: zero says the words that matched were as common as words get, null says
-   * nobody looked. Conflating them is not hypothetical — imputing 0 for an absent feature was measured to drive
-   * its fitted coefficient from +3.01 to -0.24, inverting the signal, so the distinction is carried all the way
-   * into the calibration.
+   * Null and zero are different claims: zero means maximally common words; null means no vocabulary existed.
    */
   specificity: number | null;
   lexicalCosineIdf: number | null;
@@ -379,8 +373,7 @@ export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimu
     combinedScore = Math.max(0, minimumScore - 1);
     reasons.push('semantic similarity lacked CV-derived role or skill evidence');
   }
-  // An advert this old is treated as filled whatever it matches, so the evidence score is kept for calibration
-  // but no longer decides admission.
+  // An advert this old is treated as filled whatever it matches; evidence remains available for diagnostics.
   const filtered = recency.expired || combinedScore < minimumScore;
   if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${maxAgeDays}-day limit`);
   else if (filtered) reasons.push(`combined score below ${minimumScore}`);

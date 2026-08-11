@@ -219,8 +219,7 @@ function prescoreContext(vacancy: Vacancy) {
 
 /**
  * Runs the optional semantic gate without writing a full verdict. Deterministic evidence was already frozen when
- * the match was created; only the mini score and a one-time exploration decision land here. The daily calibration
- * query deliberately does not select either column.
+ * the match was created; only the mini score and a one-time audit decision land here.
  */
 async function prescorePendingVacancies(userId: string,
   progress?: (phase: 'filtering' | 'scoring', current: number, total: number) => void): Promise<number> {
@@ -247,12 +246,21 @@ async function prescorePendingVacancies(userId: string,
     try {
       const result = await generateJson({ userId, agent: 'prescore-vacancies', model,
         thinking: config.prescoringThinkingLevel, schema: prescoringResultSchema,
-        system:`You are a cheap first-pass predictor for a more expensive CV-to-vacancy judge. Predict the full
-judge's 0-100 compatibility score for every vacancy. Judge semantic role compatibility, not keyword overlap.
-Weights: must-have skills 40, seniority/years 20, responsibilities 15, domain 10, location/work format 10,
-compensation 5; missing salary is neutral. Penalize both underqualification and substantial overqualification.
-Explicit hard blockers cap the prediction at 49. Return exactly one result per vacancyId as either
-{"scores":[{"vacancyId":1,"score":0}]} or the same scores array directly, with no reasons or prose.`,
+        system:`You are a conservative admission gate for a stronger CV-to-vacancy judge. Predict that judge's
+0-100 compatibility score. A score of 50 is a real decision boundary, not "some overlap".
+
+Silently check each vacancy in this order:
+1. It is the same profession and responsibility set, not an adjacent role sharing tools or domain words.
+2. The CV explicitly supports important must-have skills; never infer an unlisted skill.
+3. Seniority and required years fit in both directions; substantial overqualification is a mismatch.
+4. Location, work format, employment and compensation contain no explicit blocker.
+
+Calibration anchors: 0-29 means a different profession, blocker, or mostly unsupported requirements; 30-49 means
+an adjacent/plausible role with an important unsupported requirement; 50-69 means the same role, no blocker, and
+most important requirements evidenced; 70-84 means strong direct fit with only minor gaps; reserve 85-100 for
+explicit evidence across nearly every dimension. When evidence is ambiguous, choose the lower band. Missing salary
+is neutral. Return exactly one result per vacancyId as either {"scores":[{"vacancyId":1,"score":0}]} or the same
+scores array directly, with no reasons or prose.`, 
         prompt:`AUTHORITATIVE CV:\n${cv.cvText}\n\nVACANCIES:\n${JSON.stringify(batch.map(prescoreContext))}` });
       const scores = Array.isArray(result) ? result : result.scores;
       const expected = new Set(batch.map((vacancy) => vacancy.id));
@@ -402,8 +410,7 @@ export async function scorePendingVacancies(
   progress?: (phase: 'filtering' | 'scoring', current: number, total: number) => void,
   scoreLimit = config.userScoreLimitPerCycle,
 ): Promise<ScorePendingResult> {
-  // The optional mini pass owns live ordering/admission. Its output is never a deterministic calibration feature;
-  // exploration buys full-judge labels for that independent shadow fit.
+  // The optional mini pass owns live ordering/admission; exploration buys unbiased quality labels.
   await prescorePendingVacancies(userId, progress);
   // Matching already judged relevance at ingest; scoring drains the best claims. A claim that fails to score is
   // released back to 'matched' so the next drain can retry it — unless saveScore landed first, then the release

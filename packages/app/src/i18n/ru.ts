@@ -147,9 +147,6 @@ export const ru = {
     laneLastRun: (clock: string) => ` (последняя ${clock})`,
     laneFailures: (failures: string) => ` · сбои: ${failures}`,
     schedulerElsewhere: 'планировщик вне этого процесса',
-    calibrationOk: (days: string) => `Порядок: калиброван · обучен ${days} дн. назад`,
-    calibrationStale: (days: string) => `Порядок: калиброван, но УСТАРЕЛ · обучен ${days} дн. назад, замены не было`,
-    calibrationMissing: 'Порядок: НЕ калиброван · откат на сырой балл',
   },
 
   cv: {

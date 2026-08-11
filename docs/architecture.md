@@ -174,96 +174,23 @@ from exhausting the evening budget.
 `accounts` holds budget counters. `usage_events` holds individual operations and LLM token/cost accounting. OAuth and
 subscription prices are catalog estimates unless the provider reports authoritative request cost.
 
-## Optional semantic prescoring
+## Semantic prescoring
 
-When `AI_PRESCORING_MODEL` is configured, every match that passes the cheap lexical candidate gate receives a
-batched semantic score before the full judge. That mini score owns live admission (`PRESCORE_MIN_SCORE`) and queue
-ordering. The pass stores only its score, model, prompt version, and one frozen exploration decision; the lexical,
-title, skill, seniority, and rarity features were already frozen when the match was created.
+Every match that passes the free lexical candidate gate receives a batched semantic score before the full judge.
+That mini score owns admission (`PRESCORE_MIN_SCORE`) and queue ordering. The lexical gate only bounds mini-model
+traffic; it is not a learned model.
+
+The version 2 mini prompt is conservative around the decision boundary. It checks profession and responsibility
+identity before shared tools, requires explicit CV evidence for important skills, checks seniority in both
+directions, and reserves scores above 70 for strong direct fits. Production backtesting selected a threshold of 40
+for this stricter score scale.
 
 A fixed share of mini-rejected rows (`PRESCORE_EXPLORATION_RATE`) still reaches the full judge. The decision is made
-once and persisted rather than re-rolled every judgment cycle. Those labels prevent the deterministic learner from
-seeing only the population selected by the mini model. If the model or prompt version changes, waiting rows are
-prescored again before they can be claimed for full scoring.
+once and persisted. These audit labels provide an unbiased quality estimate when weighted by the inverse sampling
+rate. A model or prompt-version change prescores waiting rows again before full scoring.
 
-The mini output is deliberately absent from `calibrationExamples`: it is neither a deterministic feature nor a
-training target. The daily calibration remains an independent shadow challenger trained only from frozen evidence
-and the later full-judge verdict. While semantic prescoring is enabled, deterministic probability does not gate or
-order production work; accepted fits merely advance the shadow model that would take over if semantic prescoring
-were disabled.
-
-Without `AI_PRESCORING_MODEL`, the deterministic ordering and probability gate behave as described below, preserving
-the cheaper all-deterministic deployment mode.
-
-## The prefilter calibrates itself
-
-The budget above is spent best-first, so the order matters as much as the ceiling: whatever the prefilter ranks
-highest is what the LLM looks at before the day's allowance runs out. Measured against the LLM's own later verdicts,
-the raw lexical score is a weak and non-monotonic predictor of that judgement — bands that *look* stronger do not
-reliably score better. Ordering by it wastes budget in a confident-looking way.
-
-So the service learns the ordering from its own history. Every match records the evidence behind it — the role/skill
-score and the lexical cosine, frozen at match time — and every LLM score that later arrives is the label for that
-evidence. Those pairs are free, accumulate on their own, and describe this deployment's actual occupations rather
-than a generic assumption.
-
-Two of those signals are weighted by how unusual a word is across the adverts this deployment has actually seen
-(`idf_vocabulary`, rebuilt daily alongside role equivalences). It matters because matching on "designer" — a word
-half the board uses — is far weaker evidence than matching on "communication designer", and a token-overlap ratio
-cannot tell them apart: it saturates at 1.0 for half of all matches, and that half converted *worse* than the band
-beneath it. Rarity is a separate number, because a ratio leaves a full match at 1.0 however common its words are.
-The same weighting
-applied to the body cosine removes what was largely a document-length meter: the old cosine rose with advert
-length while advert quality fell, and the rarity-weighted one is flat across length bands.
-
-Both are recorded as null, never zero, when no vocabulary existed to measure them, and a fit refuses to weigh a
-column the corpus does not almost entirely carry. That rule is not caution for its own sake: when a feature
-reached 2% of rows and the refit imputed zero for the rest, its fitted coefficient inverted from +3.01 to -0.24.
-A constant among varying labels is noise, and a descent will fit noise happily.
-
-Once a day the judgment lane fits a logistic model over them and scores it by cross-validation, with each fold
-judged by a model that never trained on it. The candidate replaces the running one **only if it orders at least as
-well**, on both ranking quality and precision at the top of the queue. Otherwise it is recorded and discarded. Either
-way the attempt lands in `calibrations`, so the history of what was tried and what won is inspectable.
-
-The ordering is computed when the queue is drained. Only the evidence is frozen; the
-number derived from it is a function of a model that changes, so freezing that too caused two faults. Rows written
-under different models held different quantities in one column and were sorted against each other regardless — on
-production, rows averaging 47.9 on a 1..89 range next to rows averaging 31.4 on a 5..74 range. And an accepted
-refit only ever reached matches created after it, never the backlog it was fitted to improve. Scoring at claim
-time fixes both: one claim compares one quantity, and every accepted refit reorders everything still waiting.
-Measured on the production corpus, that alone was worth 20% of the LLM spend at equal yield.
-
-When semantic prescoring is disabled, the calibration decides only the *order* by default: admission is still the raw evidence gate
-(`PREFILTER_MIN_SCORE`). `PREFILTER_MIN_PROBABILITY` additionally refuses matches whose calibrated probability is
-too low, which is the sharper of the two filters because it acts on the signal that was actually measured against
-LLM verdicts. It is off by default, because the cost of a gate is paid in matches the user never sees, and the
-right height for it is a property of a given deployment's data.
-
-Once a deployment trusts its calibration, the better arrangement is to make the probability the **main** gate and
-demote the raw score to a low backstop. Gating hard on the raw score means gating on the weaker signal, and the
-two are not interchangeable at equal savings: the same reduction in spend costs several times more delivered
-alerts when taken from the raw score. Measure it on your own data before moving
-either, because both the raw score's weakness and the calibration's strength are deployment-specific.
-
-The backstop matters. A calibration can be absent — a fresh database, a rejected fit history, a failed load — and
-the probability gate simply does not apply when there is none. If `PREFILTER_MIN_SCORE` was lowered on the
-assumption that the probability gate would hold the line, that combination admits nearly everything. Matching
-logs a single loud error when it finds itself in exactly that state.
-
-Two consequences worth understanding before tuning anything:
-
-- **A calibration can only learn from matches it admits.** Everything rejected is a verdict never observed, so the
-  model cannot discover that its own bar is set wrong. `PREFILTER_EXPLORATION_RATE` deliberately scores a small
-  random share of rejected matches to buy exactly those labels. It costs model spend in proportion, and it is the
-  only mechanism that keeps a blind spot from becoming permanent.
-- **The fit runs inside the service.** It yields to the event loop while working, so Telegram and the health
-  endpoints stay responsive while it runs.
-
-Rolling back is deliberately dull: turn `CALIBRATION_AUTO_REFIT` off to freeze the current ordering, or mark the
-active row in `calibrations` as not accepted and the service falls back to the previous accepted one. Coefficients
-are not meant to be hand-written; `PREFILTER_CALIBRATION_JSON` only bootstraps a deployment that has no verdicts of
-its own yet.
+Role equivalences and word-rarity vocabularies are deterministic matching inputs, rebuilt during daily maintenance.
+They improve the free candidate gate and remain diagnostics; no fitted deterministic scoring model exists.
 
 ## Telegram delivery
 

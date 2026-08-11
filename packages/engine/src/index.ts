@@ -34,9 +34,3 @@ export {
   buildIdfVocabulary, createIdfLookup, uniformIdfLookup, uniformIdfLookups,
   type IdfEntry, type IdfLookup, type IdfLookups, type IdfVocabulary,
 } from './idf.ts';
-export {
-  calibratedMatchProbability, compareOnHoldout, evaluateCalibration, evaluateScores, featureColumns,
-  fitPrefilterCalibration, parsePrefilterCalibration, prefilterCalibrationSchema,
-  type CalibrationEvaluation, type CalibrationExample, type CalibrationFeatures, type CalibrationFit,
-  type FeatureColumns, type HoldoutComparison, type PrefilterCalibration, type TrainingExample,
-} from './calibration.ts';

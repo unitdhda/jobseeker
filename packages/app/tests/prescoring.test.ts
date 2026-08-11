@@ -11,9 +11,9 @@ test('semantic prescore admits passes and a frozen exploration sample only', () 
 });
 
 test('prescore exploration is sampled only below the production threshold', () => {
-  assert.equal(explorePrescore(49, () => 0.09), true);
-  assert.equal(explorePrescore(49, () => 0.1), false);
+  assert.equal(explorePrescore(39, () => 0.09), true);
+  assert.equal(explorePrescore(39, () => 0.1), false);
   let called = false;
-  assert.equal(explorePrescore(50, () => { called = true; return 0; }), false);
+  assert.equal(explorePrescore(40, () => { called = true; return 0; }), false);
   assert.equal(called, false);
 });

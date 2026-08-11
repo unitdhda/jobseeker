@@ -25,7 +25,7 @@ export AI_SCORING_MODEL=provider/model    # full vacancy scoring
 # Optional cheap semantic gate before full scoring:
 export AI_PRESCORING_MODEL=openai-codex/gpt-5.4-mini
 export AI_PRESCORING_THINKING_LEVEL=minimal
-export PRESCORE_MIN_SCORE=50
+export PRESCORE_MIN_SCORE=40
 export PRESCORE_EXPLORATION_RATE=0.1
 
 # Or put those values in .env and add --env-file=.env to every command.

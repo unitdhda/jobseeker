@@ -55,26 +55,26 @@ test('judgment runs scoring then delivery, and a scoring failure never blocks de
   assert.deepEqual(calls, ['deliver']);
 });
 
-test('retirement and calibration run after delivery, and neither can hold up an alert', async () => {
+test('retirement and maintenance run after delivery, and neither can hold up an alert', async () => {
   const { ports, calls } = judgmentFixture({
     retire: async () => { calls.push('retire'); return 7; },
-    calibrate: async () => { calls.push('calibrate'); },
+    maintain: async () => { calls.push('maintain'); },
   });
   const report = await runJudgmentIteration(ports, new Date(0));
-  assert.deepEqual(calls, ['score', 'deliver', 'retire', 'calibrate']);
+  assert.deepEqual(calls, ['score', 'deliver', 'retire', 'maintain']);
   assert.equal(report.retired, 7);
   assert.deepEqual(report.stageFailures, []);
 });
 
-test('a retirement failure is recorded without costing the calibration its turn', async () => {
+test('a retirement failure is recorded without costing maintenance its turn', async () => {
   const { ports, calls } = judgmentFixture({
     retire: async () => { throw new Error('update deadlocked'); },
-    calibrate: async () => { calls.push('calibrate'); },
+    maintain: async () => { calls.push('maintain'); },
   });
   const report = await runJudgmentIteration(ports, new Date(0));
   assert.deepEqual(report.stageFailures, ['retire']);
   assert.equal(report.retired, undefined);
-  assert.ok(calls.includes('calibrate'), 'the later stage still ran');
+  assert.ok(calls.includes('maintain'), 'the later stage still ran');
 });
 
 function scoringFixture(spent: Record<string, number>): { ports: ScoringPorts; drained: string[] } {

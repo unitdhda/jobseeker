@@ -2,8 +2,8 @@
  * The application's live word-rarity state: built from the adverts already in the database, persisted so every
  * process agrees, held in memory as the lookups the prefilter consults at compare time.
  *
- * Deliberately the same shape as `role-equivalence.ts` — same refresh points (engine-loop start and the daily
- * calibrate stage), same failure posture. A failed rebuild keeps the previous vocabulary; a vocabulary that has
+ * Deliberately the same shape as `role-equivalence.ts` — same refresh points (engine-loop start and daily
+ * matching-vocabulary maintenance), same failure posture. A failed rebuild keeps the previous vocabulary; a vocabulary that has
  * never been built leaves the rarity features unmeasured, which the prefilter reports as null rather than zero.
  */
 import {

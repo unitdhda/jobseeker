@@ -96,12 +96,11 @@ export const config = {
   scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
   scoringFallbackModel: modelEnv('AI_SCORING_FALLBACK_MODEL'),
   scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
-  // Optional cheap semantic pass before the full judge. While configured it owns scoring admission and ordering;
-  // the deterministic calibration keeps fitting in shadow from frozen evidence plus full-judge labels.
+  // Optional cheap semantic pass before the full judge. While configured it owns scoring admission and ordering.
   prescoringModel: modelEnv('AI_PRESCORING_MODEL'),
   prescoringThinkingLevel: thinkingLevelEnv('AI_PRESCORING_THINKING_LEVEL', 'minimal'),
   // Bump whenever the semantic scoring contract changes; stale backlog rows are then prescored again.
-  prescorePromptVersion: 1,
+  prescorePromptVersion: 2,
   searchPlatforms: platformEnv(),
   additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 1, 1, 20),
   searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),
@@ -126,36 +125,13 @@ export const config = {
   // An advert older than this is rejected outright, however well it matches: it is almost certainly filled.
   // Measured against the advert's own publication date, which every adapter reads from the source.
   prefilterMaxAgeDays: integerEnv('PREFILTER_MAX_AGE_DAYS', 30, 1, 365),
-  // Coefficients from scripts/fit-prefilter-calibration.ts. When set, the stored lexical score becomes the
-  // calibrated P(good)×100, so claimForScoring's best-first order spends the LLM budget where it measurably pays.
-  prefilterCalibrationJson: process.env.PREFILTER_CALIBRATION_JSON?.trim() || null,
-  // The share of prefilter-rejected (but unexpired) matches admitted anyway, buying labels from below the gate
-  // so the calibration cannot freeze its own blind spots. Zero disables exploration.
-  prefilterExplorationRate: fractionEnv('PREFILTER_EXPLORATION_RATE', 0, 0.5),
-  // A user with no verdicts of their own is ordered entirely by other people's; these buy them their own. The
-  // elevated rate applies until they cross the label count, then admission returns to the steady rate.
-  prefilterBootstrapExplorationRate: fractionEnv('PREFILTER_BOOTSTRAP_EXPLORATION_RATE', 0.35, 1),
-  prefilterBootstrapLabels: integerEnv('PREFILTER_BOOTSTRAP_LABELS', 200, 0, 100_000),
-  // Minimum calibrated P(good), as a percentage, for a match to reach the scoring queue. Applies only while a
-  // calibration is active, because without one the stored score is the raw evidence score and means something
-  // else entirely. Zero leaves admission to the raw gate alone. Rejections here still face the exploration dice,
-  // so the calibration keeps seeing a sample of what its own boundary excludes.
-  prefilterMinProbability: integerEnv('PREFILTER_MIN_PROBABILITY', 0, 0, 99),
-  // The daily in-loop refit: fit on the persisted evidence+label pairs, accept only when cross-validated
-  // ordering quality does not regress against the active model. Rows land in `calibrations` either way.
-  calibrationAutoRefit: booleanEnv('CALIBRATION_AUTO_REFIT', true),
-  calibrationMinLabels: integerEnv('CALIBRATION_MIN_LABELS', 300, 50, 100_000),
-  // What the calibration calls a positive. It defaults to the digest threshold because that is the decision the
-  // prefilter is ordering for, but it is its own setting: DIGEST_MIN_SCORE is a delivery knob, and moving it for
-  // inbox reasons would otherwise relabel the entire training corpus on the next refit, silently and backwards.
-  calibrationLabelScore: integerEnv('CALIBRATION_LABEL_SCORE', digestMinScore, 0, 100),
   scoreAgentConcurrencyMin,
   scoreAgentConcurrencyMax,
   userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
-  prescoreMinScore: integerEnv('PRESCORE_MIN_SCORE', 50, 0, 100),
-  prescoreBatchSize: integerEnv('PRESCORE_BATCH_SIZE', 20, 1, 20),
+  prescoreMinScore: integerEnv('PRESCORE_MIN_SCORE', 40, 0, 100),
+  prescoreBatchSize: integerEnv('PRESCORE_BATCH_SIZE', 10, 1, 20),
   prescoreLimitPerCycle: integerEnv('PRESCORE_LIMIT_PER_CYCLE', 60, 1, 10_000),
-  // A frozen sample of mini-rejected rows still reaches the full judge, providing unbiased labels to the shadow fit.
+  // A frozen sample of mini-rejected rows reaches the full judge for unbiased quality measurement.
   prescoreExplorationRate: fractionEnv('PRESCORE_EXPLORATION_RATE', 0.1, 1),
   // The scoring drain stops claiming for a user once the day's LLM spend from `accounts` reaches this ceiling.
   userDailyLlmBudgetUsd: integerEnv('USER_DAILY_LLM_BUDGET_CENTS', 200, 0, 100_000) / 100,

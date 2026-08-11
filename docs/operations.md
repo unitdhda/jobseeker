@@ -118,10 +118,6 @@ file — `schema.sql` says what the columns are, and adding a missing nullable c
 running, because every instance shares one database and every statement in the code names its columns explicitly.
 Widen before the code that writes it, and recover from a mistake by shipping a forward-compatible revision.
 
-`CALIBRATION_LABEL_SCORE` defines what the calibration counts as a positive. It defaults to `DIGEST_MIN_SCORE`,
-which ties the label to the delivery bar. Set it explicitly before you change `DIGEST_MIN_SCORE` for delivery
-reasons, because the next refit relabels the whole corpus at whatever value is in force.
-
 ## Rolling back
 
 Reset the source checkout to the last known-good commit and rebuild, or install the previous package version and
@@ -142,30 +138,6 @@ The probe above assumes the image's own runtime — use `node -e` if yours is No
 
 Symptom-by-symptom diagnosis — no vacancies, no scores, duplicate alerts, failing documents, OAuth trouble — is in
 [troubleshooting](troubleshooting.md).
-
-## Watching the self-calibrating prefilter
-
-The service re-fits the ordering it feeds the LLM once a day and adopts the result only when it measures no worse
-(see [architecture](architecture.md#the-prefilter-calibrates-itself)). It announces every attempt, so a line per day
-in the log tells you whether anything changed:
-
-```bash
-docker compose logs --since 48h jobseeker | grep 'Calibration refit'
-```
-
-`accepted` means the new ordering took over; `rejected` means the running one held and nothing changed. Both are
-normal — a long run of `rejected` means the current ordering is holding up. Every
-attempt is also a row in `calibrations` with its metrics, which is the durable record.
-
-Two controls, both blunt on purpose:
-
-- To freeze the ordering exactly as it is, set `CALIBRATION_AUTO_REFIT=false` and restart.
-- To undo a fit that made things worse, mark the active row in `calibrations` as not accepted; the service falls
-  back to the previous accepted one on restart.
-
-Do not hand-edit coefficients. To make the ordering improve, the lever is
-`PREFILTER_EXPLORATION_RATE`: it buys verdicts from below the current bar, which is the only evidence that can tell
-the model its bar is wrong. It costs model spend in proportion, so raise it deliberately.
 
 ## Backups
 

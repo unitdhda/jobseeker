@@ -4,7 +4,6 @@ import { config } from '../config.ts';
 import { type ScoredVacancy, type ScraperHour, type ScraperSummary, type TelegramUser, type UsageHour } from '../postgres.ts';
 import { getSearchPlatform } from '../vacancies/registry.ts';
 import { jobWorkerStatus } from '../worker-client.ts';
-import { calibrationHealth } from '../matching.ts';
 import { type ApplicationArtifact } from '../postgres.ts';
 import { engineLoopStatus } from '@jobseeker/engine';
 import { messages, type Locale } from '../i18n/index.ts';
@@ -191,17 +190,11 @@ export function deploymentStatusText(locale:Locale):string{
   const cycle=engine.running
     ?text.lanes(lane(text.discoveryLane,engine.discovery),lane(text.judgmentLane,engine.judgment))
     :text.schedulerElsewhere;
-  // What orders LLM spending is worth a line of its own: without a calibration the queue silently reverts to the
-  // weaker raw ordering, and with no probability gate nothing else would ever say so.
-  const health=calibrationHealth();
-  const calibration=!health.active?text.calibrationMissing
-    :health.stale?text.calibrationStale((health.ageDays??0).toFixed(0))
-    :text.calibrationOk((health.ageDays??0).toFixed(0));
   return [text.memory(Math.round(memory.rss/1_048_576),Math.round(memory.heapUsed/1_048_576)),
     text.cpu(((cpu.user+cpu.system)/1e6).toFixed(1),runtimeHours.toFixed(1)),
     text.worker(worker.active,worker.pending,worker.capacity),
     text.aiWorkers(config.scoreAgentConcurrencyMin,config.scoreAgentConcurrencyMax),
-    text.telegram(config.telegramMode),text.cycle(cycle),calibration].join('\n');
+    text.telegram(config.telegramMode),text.cycle(cycle)].join('\n');
 }
 export const digestPageSize = 10;
 /** One vacancy's bold unique-prefix apply id: the shortest reply that still resolves it across the whole set. */

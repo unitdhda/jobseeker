@@ -204,12 +204,12 @@ An optional cheaper model can reject obvious mismatches before full scoring:
 ```dotenv
 AI_PRESCORING_MODEL=openai-codex/gpt-5.4-mini
 AI_PRESCORING_THINKING_LEVEL=minimal
-PRESCORE_MIN_SCORE=50
+PRESCORE_MIN_SCORE=40
 PRESCORE_EXPLORATION_RATE=0.1
 ```
 
-The prescorer handles only vacancies that passed the free lexical candidate gate. Scores below 50 stop before the
-full judge, apart from the frozen 10% audit sample. Leave `AI_PRESCORING_MODEL` unset to disable this pass.
+The prescorer handles only vacancies that passed the free lexical candidate gate. Version 2 uses a conservative
+score scale; scores below 40 stop before the full judge, apart from the frozen 10% audit sample. Leave `AI_PRESCORING_MODEL` unset to disable this pass.
 
 ### Signing in to a provider
 

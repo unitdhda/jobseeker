@@ -75,11 +75,9 @@ Check:
 The daily budget accrues through the UTC day. A user can be temporarily at the paced ceiling without exhausting the
 full daily limit.
 
-**Everything still scores, but the wrong things reach the top.** The order matches are scored in is re-fitted daily
-from past verdicts, so it can change without you touching anything. Check the `Calibration refit` log lines for a
-recent `accepted`, and see [operations](operations.md#watching-the-self-calibrating-prefilter) for how to freeze or
-undo it. Judge it over days — a fit is only adopted when it measures better, but "better on
-average" and "better for the vacancy in front of you" are not the same claim.
+**Everything still scores, but the wrong things reach the top.** The semantic prescore owns queue order. Compare
+`prescore_score` with later `llm_score`, split by `prescore_model` and `prescore_prompt_version`. Audit-sampled rejects
+must be weighted by `1 / PRESCORE_EXPLORATION_RATE` when estimating whole-population quality.
 
 **A specific match that will not score, while others around it do.** A batch that fails hands its matches back to
 `matched` so they can be retried — but a match that keeps failing would otherwise sit at the head of a best-first
