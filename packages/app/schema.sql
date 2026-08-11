@@ -149,6 +149,9 @@ create table public.matches (
   -- Which model produced llm_score, retained for model-quality comparisons.
   score_model text,
   score_updated_at timestamptz,
+  -- Auditable full-judge evidence: weighted dimensions, decisive requirement/CV quotations, and explicit blockers.
+  -- Unlike the short alert fields below, this survives delivery so an old verdict can be inspected without another call.
+  score_explanation jsonb,
   alert_primary_track text,
   alert_summary text,
   alert_reasons jsonb,

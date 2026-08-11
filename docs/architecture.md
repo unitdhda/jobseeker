@@ -163,9 +163,14 @@ Scoring claims each user's best queued matches in bounded batches. The prompt ap
 - compensation when stated;
 - hard blockers.
 
-A hard rejection caps the score below the delivery thresholds. Scores at or above `ALERT_SCORE` alert immediately;
-scores from `DIGEST_MIN_SCORE` up to the alert threshold wait for the user's digest. Lower scores are evaluated state,
-but normal alerts and digests filter them out.
+A hard rejection requires an explicit quoted blocker and caps the score below the delivery thresholds. The six
+weighted dimension scores must add up to the verdict; the judge also records up to five decisive requirements with
+exact vacancy evidence and the supporting CV quotation (or an explicit gap). This full `score_explanation` survives
+alert delivery for audit, while Telegram receives only the short reasons and gaps. Career preferences, employer
+culture, and posting legitimacy remain outside this compatibility score.
+
+Scores at or above `ALERT_SCORE` alert immediately; scores from `DIGEST_MIN_SCORE` up to the alert threshold wait for
+the user's digest. Lower scores are evaluated state, but normal alerts and digests filter them out.
 
 The daily LLM ceiling is per user. Rather than exposing the entire allowance at midnight, the engine accrues spend
 through the UTC day with a small floor fraction. Unused allowance remains available later, preventing morning demand

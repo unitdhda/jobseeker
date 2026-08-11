@@ -94,8 +94,15 @@ try {
   assert.deepEqual(await d.claimMatches(userId, [vacancyId]), [vacancyId]);
   // The state predicate is the whole concurrency guard: a row already taken is no longer 'matched'.
   assert.deepEqual(await d.claimMatches(userId, [vacancyId]), []);
-  await d.saveScore(userId, vacancyId, 91, 'Backend', 'Strong integration match', ['TypeScript'], ['None'], false);
+  const explanation = { dimensions: { skills: 38, seniority: 18, responsibilities: 14, domain: 9,
+    locationWorkFormat: 8, compensation: 4 }, requirements: [{ requirement: 'TypeScript', importance: 'must-have' as const,
+    classification: 'supported' as const, vacancyEvidence: 'Build distributed TypeScript services',
+    cvEvidence: 'TypeScript services' }], blockers: [], hardRejection: false };
+  await d.saveScore(userId, vacancyId, 91, 'Backend', 'Strong integration match', ['TypeScript'], ['None'], false,
+    null, explanation);
   assert.equal((await d.getScoredVacancy(userId, vacancyId))?.score, 91);
+  assert.deepEqual((await postgresQuery('select score_explanation from matches where user_id=$1 and vacancy_id=$2',
+    [userId,vacancyId]))[0]?.score_explanation, explanation);
 
   await d.beginApplication(userId, vacancyId);
   await d.markApplicationReady(userId, vacancyId);
