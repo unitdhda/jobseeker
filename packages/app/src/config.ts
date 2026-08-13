@@ -1,160 +1,270 @@
-import { isLocale, locales, type Locale } from './i18n/locale.ts';
+import { parseSourceKey } from '@jobseeker/engine/contracts';
+import type { ThinkingLevel } from '@earendil-works/pi-ai';
+import type { Locale } from '@jobseeker/store';
 
-function integerEnv(name: string, fallback: number, minimum: number, maximum: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return fallback;
-  const parsed = Number(raw);
+export type TelegramMode = 'polling' | 'webhook' | 'off';
+export type EngineMode = 'run' | 'off';
+export type ModelId = `${string}/${string}`;
+
+export interface AppConfig {
+  readonly generationModel?: ModelId;
+  readonly generationThinking?: ThinkingLevel;
+  readonly scoringModel?: ModelId;
+  readonly scoringThinking?: ThinkingLevel;
+  readonly prescoringModel?: ModelId;
+  readonly prescoringThinking?: ThinkingLevel;
+  readonly scoringFallbackModel?: ModelId;
+  readonly scoringFallbackThinking?: ThinkingLevel;
+
+  readonly additionalMaxPages: number;
+  readonly searchPageBudgetPerPlatform: number;
+  readonly searchQueriesPerCycle: number;
+  readonly searchNewVacancyLimit: number;
+  readonly searchClusterSimilarity: number;
+  readonly vacancyRetentionDays: number;
+  readonly vacancyPurgeBatchSize: number;
+  readonly normalizationBatchSizePerUser: number;
+  readonly normalizeSourceConcurrency: number;
+  readonly discoveryTickConcurrency: number;
+  readonly candidateRefreshBatchSize: number;
+  readonly candidateRefreshDays: number;
+
+  readonly prefilterMinScore: number;
+  readonly prefilterMaxAgeDays: number;
+  readonly prescoreMinScore: number;
+  readonly prescoreBatchSize: number;
+  readonly prescoreLimitPerCycle: number;
+  readonly prescoreExplorationRate: number;
+  readonly prescorePromptVersion: string;
+
+  readonly scoreConcurrencyMin: number;
+  readonly scoreConcurrencyMax: number;
+  readonly scoreBatchSize: number;
+  readonly scoringBatchTimeoutMs: number;
+  readonly scoringBatchMaxAttempts: number;
+  readonly userScoreLimitPerCycle: number;
+  readonly userDailyLlmBudgetUsd: number;
+  readonly unitCadenceFloorMinutes: number;
+  readonly unitCadenceCeilingMinutes: number;
+
+  readonly userDailyApplicationLimit: number;
+  readonly userDailyCoverLetterLimit: number;
+  readonly userDailySearchProfileLimit: number;
+  readonly userWorkflowConcurrency: number;
+  readonly deliveryConcurrency: number;
+  readonly maxPendingWorkerJobs: number;
+  readonly accessRequestCooldownMinutes: number;
+  readonly cvUploadSessionCooldownMinutes: number;
+
+  readonly digestMinScore: number;
+  readonly alertScore: number;
+  readonly timezone: string;
+  readonly defaultLocale: Locale;
+  readonly ownerTelegramUserId?: string;
+  readonly searchPlatforms?: readonly string[];
+  readonly engineMode: EngineMode;
+  readonly telegramMode: TelegramMode;
+  readonly telegramBotToken?: string;
+  readonly telegramWebhookUrl?: string;
+  readonly telegramWebhookSecret?: string;
+
+  readonly databaseUrl?: string;
+  readonly postgresPoolMax: number;
+  readonly postgresSsl: 'disable' | 'require' | 'verify-full';
+  readonly postgresCaCert?: string;
+  readonly appPort: number;
+  readonly extensionsPath: string;
+  readonly aiAuthFile: string;
+
+  readonly stateStorageUrl?: string;
+  readonly stateStorageKey?: string;
+  readonly stateStorageBucket?: string;
+  readonly runtimeStateEncryptionKey?: string;
+}
+
+function optional(value: string | undefined): string | undefined {
+  const cleaned = value?.trim();
+  return cleaned ? cleaned : undefined;
+}
+
+export function parseInteger(value: string | undefined, fallback: number, name: string,
+  minimum = 0, maximum = Number.MAX_SAFE_INTEGER): number {
+  const text = optional(value);
+  if (text === undefined) return fallback;
+  if (!/^-?\d+$/u.test(text)) throw new TypeError(`${name} must be an integer.`);
+  const parsed = Number(text);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
-    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+    throw new RangeError(`${name} must be between ${minimum} and ${maximum}.`);
   }
   return parsed;
 }
 
-function fractionEnv(name: string, fallback: number, maximum: number): number {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return fallback;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < 0 || parsed > maximum) {
-    throw new Error(`${name} must be a number between 0 and ${maximum}.`);
+export function parseFraction(value: string | undefined, fallback: number, name: string): number {
+  const text = optional(value);
+  if (text === undefined) return fallback;
+  // Exponents and signs are rejected to keep deployment values visually auditable.
+  if (!/^(?:0(?:\.\d+)?|1(?:\.0+)?)$/u.test(text)) throw new TypeError(`${name} must be a decimal fraction from 0 through 1.`);
+  return Number(text);
+}
+
+export function parseBoolean(value: string | undefined, fallback: boolean, name: string): boolean {
+  const text = optional(value)?.toLowerCase();
+  if (text === undefined) return fallback;
+  if (text === 'true') return true;
+  if (text === 'false') return false;
+  throw new TypeError(`${name} must be true or false.`);
+}
+
+export function parseLocale(value: string | undefined, fallback: Locale): Locale {
+  const text = optional(value)?.toLowerCase();
+  if (text === undefined) return fallback;
+  if (text !== 'ru' && text !== 'en') throw new TypeError('BOT_LOCALE must be ru or en.');
+  return text;
+}
+
+export function parseModelId(value: string | undefined, name: string): ModelId | undefined {
+  const text = optional(value);
+  if (text === undefined) return undefined;
+  const slash = text.indexOf('/');
+  if (slash < 1 || slash === text.length - 1 || !/^[a-zA-Z0-9._-]+$/u.test(text.slice(0, slash))
+    || /\s|[\u0000-\u001f\u007f]/u.test(text.slice(slash + 1))) {
+    throw new TypeError(`${name} must use provider/model syntax.`);
   }
-  return parsed;
+  return text as ModelId;
 }
 
-function booleanEnv(name: string, fallback: boolean): boolean {
-  const raw = process.env[name];
-  if (raw == null || raw === '') return fallback;
-  if (raw === 'true') return true;
-  if (raw === 'false') return false;
-  throw new Error(`${name} must be true or false.`);
+const thinkingLevels = new Set<ThinkingLevel>(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
+export function parseThinkingLevel(value: string | undefined, name: string): ThinkingLevel | undefined {
+  const text = optional(value)?.toLowerCase();
+  if (text === undefined) return undefined;
+  if (!thinkingLevels.has(text as ThinkingLevel)) throw new TypeError(`${name} has an unsupported thinking level.`);
+  return text as ThinkingLevel;
 }
 
-// Model choice belongs entirely to the operator: no model identifier is hardcoded anywhere in the app, so an
-// unset variable stays undefined and the request path reports which variable is missing when a role is used.
-function modelEnv(name: string): string | undefined {
-  const raw = process.env[name]?.trim();
-  return raw ? raw : undefined;
+export function parseTelegramMode(value: string | undefined, legacyPolling?: string): TelegramMode {
+  const text = optional(value)?.toLowerCase();
+  if (text === undefined) return parseBoolean(legacyPolling, true, 'TELEGRAM_POLLING') ? 'polling' : 'off';
+  if (text !== 'polling' && text !== 'webhook' && text !== 'off') {
+    throw new TypeError('TELEGRAM_MODE must be polling, webhook, or off.');
+  }
+  return text;
 }
 
-const thinkingLevels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-type ThinkingLevel = typeof thinkingLevels[number];
-function thinkingLevelEnv(name: string, fallback: ThinkingLevel): ThinkingLevel {
-  const raw = process.env[name]?.trim();
-  const value = raw ? raw : fallback;
-  if (!thinkingLevels.includes(value as ThinkingLevel)) throw new Error(`Invalid ${name}: ${value}`);
-  return value as ThinkingLevel;
+export function parsePlatformList(value: string | undefined): readonly string[] | undefined {
+  const text = optional(value);
+  if (text === undefined) return undefined;
+  const platforms = text.split(',').map((entry) => parseSourceKey(entry.trim()));
+  if (platforms.length === 0 || new Set(platforms).size !== platforms.length) {
+    throw new TypeError('SEARCH_PLATFORMS must contain unique source IDs.');
+  }
+  return Object.freeze(platforms);
 }
 
-// The language a conversation starts in when Telegram reports a client language we do not translate, and the
-// language of anything the bot says with no person attached.
-function localeEnv(name: string, fallback: Locale): Locale {
-  const raw = process.env[name]?.trim();
-  if (!raw) return fallback;
-  if (!isLocale(raw)) throw new Error(`${name} must be one of: ${locales.join(', ')}.`);
-  return raw;
+function timezone(value: string | undefined): string {
+  const result = optional(value) ?? 'Europe/Moscow';
+  try { new Intl.DateTimeFormat('en', { timeZone: result }).format(); }
+  catch { throw new TypeError('TIMEZONE must be an IANA time-zone identifier.'); }
+  return result;
 }
 
-const telegramModes = ['polling', 'webhook', 'off'] as const;
-type TelegramMode = typeof telegramModes[number];
-function telegramModeEnv(): TelegramMode {
-  const explicit = process.env.TELEGRAM_MODE;
-  const value = explicit ?? (booleanEnv('TELEGRAM_POLLING', true) ? 'polling' : 'off');
-  if (!telegramModes.includes(value as TelegramMode)) throw new Error(`Invalid TELEGRAM_MODE: ${value}`);
-  return value as TelegramMode;
+function score(value: string | undefined, fallback: number, name: string): number {
+  return parseInteger(value, fallback, name, 0, 100);
+}
+function positive(value: string | undefined, fallback: number, name: string): number {
+  return parseInteger(value, fallback, name, 1);
+}
+function seconds(value: string | undefined, fallback: number, name: string): number {
+  const parsed = positive(value, fallback, name);
+  if (parsed > Math.floor(Number.MAX_SAFE_INTEGER / 1_000)) throw new RangeError(`${name} is too large.`);
+  return parsed * 1_000;
 }
 
-// Unset means "every provider the extensions registered"; a set value narrows discovery to the named ids. This
-// parser owns only operator intent; the provider composition validates requested ids against what was registered.
-function platformEnv(): string[] | null {
-  const raw = process.env.SEARCH_PLATFORMS;
-  if (raw == null || raw.trim() === '') return null;
-  const requested = raw.split(',').map((value) => value.trim()).filter(Boolean);
-  if (!requested.length) throw new Error('SEARCH_PLATFORMS must contain at least one platform.');
-  return [...new Set(requested)];
+export function parseConfig(env: Readonly<Record<string, string | undefined>>): AppConfig {
+  const telegramMode = parseTelegramMode(env.TELEGRAM_MODE, env.TELEGRAM_POLLING);
+  const telegramWebhookUrl = optional(env.TELEGRAM_WEBHOOK_URL);
+  const telegramWebhookSecret = optional(env.TELEGRAM_WEBHOOK_SECRET);
+  if (telegramMode === 'webhook') {
+    if (!telegramWebhookUrl || !/^https:\/\//u.test(telegramWebhookUrl)) throw new TypeError('Webhook mode requires an HTTPS TELEGRAM_WEBHOOK_URL.');
+    if (!telegramWebhookSecret || !/^[A-Za-z0-9_-]{32,256}$/u.test(telegramWebhookSecret)) {
+      throw new TypeError('Webhook mode requires a 32–256 character URL-safe TELEGRAM_WEBHOOK_SECRET.');
+    }
+  }
+
+  const digestMinScore = score(env.DIGEST_MIN_SCORE, 50, 'DIGEST_MIN_SCORE');
+  const alertScore = score(env.ALERT_SCORE, 80, 'ALERT_SCORE');
+  if (digestMinScore >= alertScore) throw new RangeError('DIGEST_MIN_SCORE must be below ALERT_SCORE.');
+  const scoreConcurrencyMin = positive(env.SCORE_AGENT_CONCURRENCY_MIN, 5, 'SCORE_AGENT_CONCURRENCY_MIN');
+  const scoreConcurrencyMax = positive(env.SCORE_AGENT_CONCURRENCY_MAX, 10, 'SCORE_AGENT_CONCURRENCY_MAX');
+  if (scoreConcurrencyMin > scoreConcurrencyMax) throw new RangeError('Minimum score concurrency must not exceed maximum.');
+  const unitCadenceFloorMinutes = positive(env.UNIT_CADENCE_FLOOR_MINUTES, 30, 'UNIT_CADENCE_FLOOR_MINUTES');
+  const unitCadenceCeilingMinutes = positive(env.UNIT_CADENCE_CEILING_MINUTES, 720, 'UNIT_CADENCE_CEILING_MINUTES');
+  if (unitCadenceFloorMinutes > unitCadenceCeilingMinutes) throw new RangeError('Cadence floor must not exceed cadence ceiling.');
+  const userDailyApplicationLimit = positive(env.USER_DAILY_APPLICATION_LIMIT, 5, 'USER_DAILY_APPLICATION_LIMIT');
+  const userDailyCoverLetterLimit = positive(env.USER_DAILY_COVER_LETTER_LIMIT, 20, 'USER_DAILY_COVER_LETTER_LIMIT');
+  if (userDailyCoverLetterLimit < userDailyApplicationLimit) {
+    throw new RangeError('Cover-letter limit must not be below tailored-CV limit.');
+  }
+  const budgetCents = parseInteger(env.USER_DAILY_LLM_BUDGET_CENTS, 200, 'USER_DAILY_LLM_BUDGET_CENTS', 0);
+  const clusterPercent = parseInteger(env.SEARCH_CLUSTER_SIMILARITY, 60, 'SEARCH_CLUSTER_SIMILARITY', 0, 100);
+  const postgresSsl = optional(env.POSTGRES_SSL)?.toLowerCase() ?? 'require';
+  if (postgresSsl !== 'disable' && postgresSsl !== 'require' && postgresSsl !== 'verify-full') {
+    throw new TypeError('POSTGRES_SSL must be disable, require, or verify-full.');
+  }
+  const owner = optional(env.TELEGRAM_USER_ID);
+  if (owner !== undefined && !/^[1-9]\d*$/u.test(owner)) throw new TypeError('TELEGRAM_USER_ID must be a positive decimal ID.');
+
+  return Object.freeze({
+    generationModel: parseModelId(env.AI_MODEL, 'AI_MODEL'),
+    generationThinking: parseThinkingLevel(env.AI_THINKING_LEVEL, 'AI_THINKING_LEVEL'),
+    scoringModel: parseModelId(env.AI_SCORING_MODEL, 'AI_SCORING_MODEL'),
+    scoringThinking: parseThinkingLevel(env.AI_SCORING_THINKING_LEVEL, 'AI_SCORING_THINKING_LEVEL'),
+    prescoringModel: parseModelId(env.AI_PRESCORING_MODEL, 'AI_PRESCORING_MODEL'),
+    prescoringThinking: parseThinkingLevel(env.AI_PRESCORING_THINKING_LEVEL, 'AI_PRESCORING_THINKING_LEVEL'),
+    scoringFallbackModel: parseModelId(env.AI_SCORING_FALLBACK_MODEL, 'AI_SCORING_FALLBACK_MODEL'),
+    scoringFallbackThinking: parseThinkingLevel(env.AI_SCORING_FALLBACK_THINKING_LEVEL, 'AI_SCORING_FALLBACK_THINKING_LEVEL'),
+    additionalMaxPages: positive(env.ADDITIONAL_MAX_PAGES, 1, 'ADDITIONAL_MAX_PAGES'),
+    searchPageBudgetPerPlatform: positive(env.SEARCH_PAGE_BUDGET_PER_PLATFORM, 12, 'SEARCH_PAGE_BUDGET_PER_PLATFORM'),
+    searchQueriesPerCycle: positive(env.SEARCH_QUERIES_PER_CYCLE, 1, 'SEARCH_QUERIES_PER_CYCLE'),
+    searchNewVacancyLimit: positive(env.SEARCH_NEW_VACANCY_LIMIT, 10, 'SEARCH_NEW_VACANCY_LIMIT'),
+    searchClusterSimilarity: clusterPercent / 100,
+    vacancyRetentionDays: positive(env.VACANCY_RETENTION_DAYS, 30, 'VACANCY_RETENTION_DAYS'),
+    vacancyPurgeBatchSize: positive(env.VACANCY_PURGE_BATCH_SIZE, 500, 'VACANCY_PURGE_BATCH_SIZE'),
+    normalizationBatchSizePerUser: positive(env.NORMALIZATION_BATCH_SIZE_PER_USER, 10, 'NORMALIZATION_BATCH_SIZE_PER_USER'),
+    normalizeSourceConcurrency: positive(env.NORMALIZE_SOURCE_CONCURRENCY, 3, 'NORMALIZE_SOURCE_CONCURRENCY'),
+    discoveryTickConcurrency: positive(env.DISCOVERY_TICK_CONCURRENCY, 3, 'DISCOVERY_TICK_CONCURRENCY'),
+    candidateRefreshBatchSize: positive(env.CANDIDATE_REFRESH_BATCH_SIZE, 2, 'CANDIDATE_REFRESH_BATCH_SIZE'),
+    candidateRefreshDays: positive(env.CANDIDATE_REFRESH_DAYS, 7, 'CANDIDATE_REFRESH_DAYS'),
+    prefilterMinScore: score(env.PREFILTER_MIN_SCORE, 20, 'PREFILTER_MIN_SCORE'),
+    prefilterMaxAgeDays: positive(env.PREFILTER_MAX_AGE_DAYS, 30, 'PREFILTER_MAX_AGE_DAYS'),
+    prescoreMinScore: score(env.PRESCORE_MIN_SCORE, 40, 'PRESCORE_MIN_SCORE'),
+    prescoreBatchSize: positive(env.PRESCORE_BATCH_SIZE, 10, 'PRESCORE_BATCH_SIZE'),
+    prescoreLimitPerCycle: positive(env.PRESCORE_LIMIT_PER_CYCLE, 60, 'PRESCORE_LIMIT_PER_CYCLE'),
+    prescoreExplorationRate: parseFraction(env.PRESCORE_EXPLORATION_RATE, 0.1, 'PRESCORE_EXPLORATION_RATE'),
+    prescorePromptVersion: optional(env.PRESCORE_PROMPT_VERSION) ?? 'v2',
+    scoreConcurrencyMin, scoreConcurrencyMax,
+    scoreBatchSize: positive(env.SCORE_BATCH_SIZE, 3, 'SCORE_BATCH_SIZE'),
+    scoringBatchTimeoutMs: seconds(env.SCORING_BATCH_TIMEOUT_SECONDS, 180, 'SCORING_BATCH_TIMEOUT_SECONDS'),
+    scoringBatchMaxAttempts: positive(env.SCORING_BATCH_MAX_ATTEMPTS, 3, 'SCORING_BATCH_MAX_ATTEMPTS'),
+    userScoreLimitPerCycle: positive(env.USER_SCORE_LIMIT_PER_CYCLE, 3, 'USER_SCORE_LIMIT_PER_CYCLE'),
+    userDailyLlmBudgetUsd: budgetCents / 100,
+    unitCadenceFloorMinutes, unitCadenceCeilingMinutes,
+    userDailyApplicationLimit, userDailyCoverLetterLimit,
+    userDailySearchProfileLimit: positive(env.USER_DAILY_SEARCH_PROFILE_LIMIT, 24, 'USER_DAILY_SEARCH_PROFILE_LIMIT'),
+    userWorkflowConcurrency: positive(env.USER_WORKFLOW_CONCURRENCY, 5, 'USER_WORKFLOW_CONCURRENCY'),
+    deliveryConcurrency: positive(env.DELIVERY_CONCURRENCY, 5, 'DELIVERY_CONCURRENCY'),
+    maxPendingWorkerJobs: positive(env.MAX_PENDING_WORKER_JOBS, 100, 'MAX_PENDING_WORKER_JOBS'),
+    accessRequestCooldownMinutes: positive(env.ACCESS_REQUEST_COOLDOWN_MINUTES, 60, 'ACCESS_REQUEST_COOLDOWN_MINUTES'),
+    cvUploadSessionCooldownMinutes: positive(env.CV_UPLOAD_SESSION_COOLDOWN_MINUTES, 15, 'CV_UPLOAD_SESSION_COOLDOWN_MINUTES'),
+    digestMinScore, alertScore, timezone: timezone(env.TIMEZONE), defaultLocale: parseLocale(env.BOT_LOCALE, 'ru'),
+    ownerTelegramUserId: owner, searchPlatforms: parsePlatformList(env.SEARCH_PLATFORMS),
+    engineMode: parseBoolean(env.RUN_JOBS, true, 'RUN_JOBS') ? 'run' : 'off', telegramMode,
+    telegramBotToken: optional(env.TELEGRAM_BOT_TOKEN), telegramWebhookUrl, telegramWebhookSecret,
+    databaseUrl: optional(env.DATABASE_URL), postgresPoolMax: positive(env.POSTGRES_POOL_MAX, 4, 'POSTGRES_POOL_MAX'),
+    postgresSsl, postgresCaCert: optional(env.POSTGRES_CA_CERT), appPort: parseInteger(env.APP_PORT, 3000, 'APP_PORT', 1, 65535),
+    extensionsPath: optional(env.JOBSEEKER_EXTENSIONS) ?? './extensions', aiAuthFile: optional(env.AI_AUTH_FILE) ?? './auth/auth.json',
+    stateStorageUrl: optional(env.STATE_STORAGE_URL), stateStorageKey: optional(env.STATE_STORAGE_KEY),
+    stateStorageBucket: optional(env.STATE_STORAGE_BUCKET), runtimeStateEncryptionKey: optional(env.RUNTIME_STATE_ENCRYPTION_KEY),
+  });
 }
 
-const digestMinScore = integerEnv('DIGEST_MIN_SCORE', 50, 0, 99);
-const alertScore = integerEnv('ALERT_SCORE', 80, 1, 100);
-if (digestMinScore >= alertScore) throw new Error('DIGEST_MIN_SCORE must be lower than ALERT_SCORE.');
-// One counter, two thresholds: the first N deliveries of the day carry a tailored CV, and up to the second limit
-// a cover letter is still written on its own. The letter is the part a person actually sends, and the PDF is the
-// expensive half, so running out of documents should not mean running out of applications.
-const userDailyApplicationLimit = integerEnv('USER_DAILY_APPLICATION_LIMIT', 5, 1, 100);
-const userDailyCoverLetterLimit = integerEnv('USER_DAILY_COVER_LETTER_LIMIT', 20, 1, 500);
-if (userDailyCoverLetterLimit < userDailyApplicationLimit) {
-  throw new Error('USER_DAILY_COVER_LETTER_LIMIT must not be lower than USER_DAILY_APPLICATION_LIMIT.');
-}
-const scoreAgentConcurrencyMin = integerEnv('SCORE_AGENT_CONCURRENCY_MIN', 5, 1, 10);
-const scoreAgentConcurrencyMax = integerEnv('SCORE_AGENT_CONCURRENCY_MAX', 10, 1, 20);
-if (scoreAgentConcurrencyMin > scoreAgentConcurrencyMax) {
-  throw new Error('SCORE_AGENT_CONCURRENCY_MIN must not exceed SCORE_AGENT_CONCURRENCY_MAX.');
-}
-
-export const config = {
-  model: modelEnv('AI_MODEL'),
-  thinkingLevel: thinkingLevelEnv('AI_THINKING_LEVEL', 'high'),
-  scoringModel: modelEnv('AI_SCORING_MODEL'),
-  scoringThinkingLevel: thinkingLevelEnv('AI_SCORING_THINKING_LEVEL', 'medium'),
-  scoringFallbackModel: modelEnv('AI_SCORING_FALLBACK_MODEL'),
-  scoringFallbackThinkingLevel: thinkingLevelEnv('AI_SCORING_FALLBACK_THINKING_LEVEL', 'medium'),
-  // Optional cheap semantic pass before the full judge. While configured it owns scoring admission and ordering.
-  prescoringModel: modelEnv('AI_PRESCORING_MODEL'),
-  prescoringThinkingLevel: thinkingLevelEnv('AI_PRESCORING_THINKING_LEVEL', 'minimal'),
-  // Bump whenever the semantic scoring contract changes; stale backlog rows are then prescored again.
-  prescorePromptVersion: 2,
-  searchPlatforms: platformEnv(),
-  additionalMaxPages: integerEnv('ADDITIONAL_MAX_PAGES', 1, 1, 20),
-  searchPageBudgetPerPlatform: integerEnv('SEARCH_PAGE_BUDGET_PER_PLATFORM', 12, 3, 100),
-  searchQueriesPerCycle: integerEnv('SEARCH_QUERIES_PER_CYCLE', 1, 1, 8),
-  searchNewVacancyLimit: integerEnv('SEARCH_NEW_VACANCY_LIMIT', 10, 1, 1_000),
-  // Token overlap, as a percentage, at which two users' searches count as one query and are fetched once.
-  // Lower merges more aggressively and broadens each fetch; 100 merges only identical queries.
-  searchClusterSimilarity: integerEnv('SEARCH_CLUSTER_SIMILARITY', 60, 0, 100),
-  // How long a vacancy is kept after it stops appearing in searches, and the oldest the store will serve.
-  vacancyRetentionDays: integerEnv('VACANCY_RETENTION_DAYS', 30, 7, 365),
-  // Rows deleted per retention pass, so one cycle cannot spend itself purging a large backlog.
-  vacancyPurgeBatchSize: integerEnv('VACANCY_PURGE_BATCH_SIZE', 500, 0, 20_000),
-  normalizationBatchSizePerUser: integerEnv('NORMALIZATION_BATCH_SIZE_PER_USER', 10, 1, 1_000),
-  // How many sources normalize queued candidates at once. 1 preserves the historical single queue; a browser-backed
-  // source at ~50s per candidate otherwise blocks sources that normalize in fractions of a second.
-  normalizeSourceConcurrency: integerEnv('NORMALIZE_SOURCE_CONCURRENCY', 1, 1, 8),
-  // How many platforms may scrape concurrently inside one discovery tick; hosts are disjoint across platforms.
-  tickPlatformConcurrency: integerEnv('DISCOVERY_TICK_CONCURRENCY', 1, 1, 8),
-  candidateRefreshBatchSize: integerEnv('CANDIDATE_REFRESH_BATCH_SIZE', 2, 0, 1_000),
-  candidateRefreshDays: integerEnv('CANDIDATE_REFRESH_DAYS', 7, 1, 365),
-  prefilterMinScore: integerEnv('PREFILTER_MIN_SCORE', 20, 0, 100),
-  // An advert older than this is rejected outright, however well it matches: it is almost certainly filled.
-  // Measured against the advert's own publication date, which every adapter reads from the source.
-  prefilterMaxAgeDays: integerEnv('PREFILTER_MAX_AGE_DAYS', 30, 1, 365),
-  scoreAgentConcurrencyMin,
-  scoreAgentConcurrencyMax,
-  userScoreLimitPerCycle: integerEnv('USER_SCORE_LIMIT_PER_CYCLE', 3, 1, 10_000),
-  prescoreMinScore: integerEnv('PRESCORE_MIN_SCORE', 40, 0, 100),
-  prescoreBatchSize: integerEnv('PRESCORE_BATCH_SIZE', 10, 1, 20),
-  prescoreLimitPerCycle: integerEnv('PRESCORE_LIMIT_PER_CYCLE', 60, 1, 10_000),
-  // A frozen sample of mini-rejected rows reaches the full judge for unbiased quality measurement.
-  prescoreExplorationRate: fractionEnv('PRESCORE_EXPLORATION_RATE', 0.1, 1),
-  // The scoring drain stops claiming for a user once the day's LLM spend from `accounts` reaches this ceiling.
-  userDailyLlmBudgetUsd: integerEnv('USER_DAILY_LLM_BUDGET_CENTS', 200, 0, 100_000) / 100,
-  unitCadenceFloorMinutes: integerEnv('UNIT_CADENCE_FLOOR_MINUTES', 30, 5, 1_440),
-  unitCadenceCeilingMinutes: integerEnv('UNIT_CADENCE_CEILING_MINUTES', 720, 30, 10_080),
-  scoreBatchSize: integerEnv('SCORE_BATCH_SIZE', 3, 1, 20),
-  scoringBatchTimeoutSeconds: integerEnv('SCORING_BATCH_TIMEOUT_SECONDS', 180, 30, 1_800),
-  scoringBatchMaxAttempts: integerEnv('SCORING_BATCH_MAX_ATTEMPTS', 3, 1, 5),
-  userDailyApplicationLimit,
-  userDailyCoverLetterLimit,
-  // Counted per platform, so three refreshes of the eight default platforms.
-  userDailySearchProfileLimit: integerEnv('USER_DAILY_SEARCH_PROFILE_LIMIT', 24, 1, 100),
-  maxPendingWorkerJobs: integerEnv('MAX_PENDING_WORKER_JOBS', 100, 1, 1_000),
-  userWorkflowConcurrency: integerEnv('USER_WORKFLOW_CONCURRENCY', 5, 1, 20),
-  deliveryConcurrency: integerEnv('DELIVERY_CONCURRENCY', 5, 1, 20),
-  accessRequestCooldownMinutes: integerEnv('ACCESS_REQUEST_COOLDOWN_MINUTES', 60, 1, 43_200),
-  cvUploadSessionCooldownMinutes: integerEnv('CV_UPLOAD_SESSION_COOLDOWN_MINUTES', 15, 1, 1_440),
-  alertScore,
-  digestMinScore,
-  timezone: process.env.TIMEZONE ?? 'Europe/Moscow',
-  defaultLocale: localeEnv('BOT_LOCALE', 'ru'),
-  telegramUserId: process.env.TELEGRAM_USER_ID,
-  runJobs: booleanEnv('RUN_JOBS', true),
-  telegramMode: telegramModeEnv(),
-  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET,
-} as const;
+export const config = parseConfig(process.env);

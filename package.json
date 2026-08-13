@@ -1,20 +1,16 @@
 {
-  "name": "hh-jobseeker",
+  "name": "jobseeker",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "cd packages/app && vite dev",
     "build": "cd packages/app && bun run build",
-    "start": "bun packages/app/dist/server.mjs",
     "typecheck": "tsc --noEmit",
     "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts",
-    "test:postgres": "bun --env-file=.env packages/app/tests/database-postgres.integration.ts",
-    "cv:prepare": "bun packages/app/src/scripts/prepare-cv.ts"
+    "test:postgres": "JOBSEEKER_POSTGRES_TEST_REQUIRED=1 bun --env-file=.env packages/app/tests/database-postgres.integration.ts"
   },
   "devDependencies": {
     "@types/node": "26.1.2",
     "@types/pg": "^8.20.3",
-    "adm-zip": "0.6.0",
     "typescript": "7.0.2",
     "vite": "8.1.5"
   },

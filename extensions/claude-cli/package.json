@@ -1,0 +1,8 @@
+{
+  "name": "@jobseeker-extension/claude-cli",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@earendil-works/pi-ai": "0.81.1"
+  }
+}

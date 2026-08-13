@@ -1,163 +1,89 @@
-import { createHash } from 'node:crypto';
 import * as v from 'valibot';
-import type { SourceContext } from '@jobseeker/sources';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import type { JsonObject, SearchPlan, SearchPlatform } from '@jobseeker/sources';
-import { asObject, createSourceProvider, examplePages, htmlText, initToolkit, jobPostings, plainText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
+import type { SearchPlan, SearchPlatform } from '@jobseeker/sources';
+import { entriesOf, boardListings } from './text.ts';
+import {
+  assertToolkitInitialized,
+  createSourceProvider,
+  examplePages,
+  initToolkit,
+  jobPostings,
+  parseSourceKey,
+  parseSourceVacancyId,
+  postingMatchesQuery,
+  structuredVacancy,
+  VacancySearchCollector,
+  type SourceExtensionApi,
+} from './toolkit.ts';
 
-export const hireHiSpecializations=[
-  '1c','analytics','android','backend','business-analyst','ci-cd','cloud','cpp','data-analyst','data-engineer',
-  'development','devops','dotnet','frontend','fullstack','go','iac','infrastructure','ios','java','kotlin','kubernetes',
-  'manual-qa','ml-ai','mobile','nodejs','observability','php','product-analyst','product-manager','project-manager',
-  'python','qa','qa-automation','rust','security','sre-platform','system-analyst',
-] as const;
-const facets=['all','remote','intern','junior','middle','senior','lead','head'] as const;
-const searchSchema=v.strictObject({name:v.pipe(v.string(),v.minLength(2),v.maxLength(80)),
-  rationale:v.pipe(v.string(),v.minLength(2),v.maxLength(300)),specialization:v.picklist(hireHiSpecializations),facet:v.picklist(facets)});
-/** Declared to the profile agent as `maxSearches`: the schema rejects the whole profile past this count. */
-export const maxHireHiSearches=8;
-export const hireHiSearchProfileSchema=v.strictObject({version:v.literal(1),searches:v.pipe(v.array(searchSchema),v.maxLength(maxHireHiSearches),
-  v.check(searches=>new Set(searches.map(search=>`${search.facet}:${search.specialization}`)).size===searches.length,
-    'HireHi searches must use unique facet and specialization pairs'))});
-export type HireHiSearchProfile=v.InferOutput<typeof hireHiSearchProfileSchema>;
-export type HireHiSearch=HireHiSearchProfile['searches'][number];
+export const hireHiSpecializations = Object.freeze(['development', 'analytics', 'management', 'design', 'marketing', 'support'] as const);
+export const maxHireHiSearches = 8;
+const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
+export const hireHiSearchProfileSchema = v.strictObject({ version: v.literal(1), searches: v.pipe(v.array(v.strictObject({
+  name: label, rationale: v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(300)), query: label,
+  specialization: v.picklist(hireHiSpecializations),
+})), v.maxLength(maxHireHiSearches)) });
+export type HireHiSearchProfile = v.InferOutput<typeof hireHiSearchProfileSchema>;
+export type HireHiSearch = HireHiSearchProfile['searches'][number];
 
-export const hireHiPlatform:SearchPlatform<typeof hireHiSearchProfileSchema>={
-  id:'hirehi',name:'HireHi',hosts:['hirehi.ru','www.hirehi.ru'],schema:hireHiSearchProfileSchema,template:()=>({platform:'hirehi',version:1,
-    purpose:'Validated public HireHi SEO landing pages. The adapter does not call the disallowed HireHi search API.',
-    jsonShape:{version:1,searches:[{name:'Supported CV track',rationale:'direct CV evidence',specialization:'one listed specialization',facet:'all'}]},
-    capabilities:{maxSearches:maxHireHiSearches,specializations:hireHiSpecializations,facets,facetMeaning:{all:'all levels and work formats',remote:'remote vacancies',
-      intern:'intern grade',junior:'junior grade',middle:'middle grade',senior:'senior grade',lead:'lead grade',head:'head grade'}},
-    rules:['Choose only listed specialization and facet values.','Use all unless the CV clearly supports a narrower facet.',
-      'Prefer precise specializations over development.','Do not substitute an adjacent occupation.',
-      `Return at most ${maxHireHiSearches} searches; more than that is rejected in full rather than trimmed.`,
-      'Return an empty searches array when HireHi has no specialization supported by the CV.']}),
+export const hireHiPlatform: SearchPlatform<typeof hireHiSearchProfileSchema> = {
+  id: 'hirehi', name: 'HireHi', hosts: ['hirehi.ru', 'www.hirehi.ru'], schema: hireHiSearchProfileSchema,
+  template: () => ({ platform: 'hirehi', version: 1, purpose: 'Generate constrained HireHi specialization searches.',
+    jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct evidence', query: 'role title', specialization: 'development' }] },
+    capabilities: { maxSearches: maxHireHiSearches, specializations: hireHiSpecializations },
+    rules: ['Return at most 8 searches.', 'Choose exactly one supported specialization.', 'Use one concise role title.'] }),
 };
 
-export function hireHiSearchUrl(search:HireHiSearch,page:number):string{
-  const path=search.facet==='all'?`/vacancies/${search.specialization}`:`/${search.facet}-${search.specialization}-jobs`;
-  const url=new URL(path,'https://hirehi.ru');if(page>1)url.searchParams.set('page',String(page));return url.toString();
+export function hireHiSearchUrl(search: HireHiSearch, page: number): string {
+  const url = new URL(`/vacancies/${encodeURIComponent(search.specialization)}`, 'https://hirehi.ru');
+  url.searchParams.set('query', search.query); if (page > 1) url.searchParams.set('page', String(page)); return url.href;
 }
 
-function scriptJson(html:string,id:string):unknown{
-  const escaped=id.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');
-  const match=html.match(new RegExp(`<script\\b(?=[^>]*\\bid=["']${escaped}["'])[^>]*>([\\s\\S]*?)<\\/script>`,'i'));
-  if(!match)throw new Error(`HireHi page does not contain ${id} data`);return JSON.parse(match[1]!);
-}
-function itemLists(value:unknown):JsonObject[]{
-  if(Array.isArray(value))return value.flatMap(itemLists);const object=asObject(value);if(!object)return[];
-  return[...(object['@type']==='ItemList'?[object]:[]),...itemLists(object['@graph'])];
-}
-export function hireHiListingUrls(html:string,
-  validateUrl:(source:string,input:string)=>URL):Map<string,string>{
-  const urls=new Map<string,string>();
-  for(const script of html.matchAll(/<script\b(?=[^>]*\btype=["']application\/ld\+json["'])[^>]*>([\s\S]*?)<\/script>/gi))try{
-    for(const list of itemLists(JSON.parse(script[1]!))){const items=Array.isArray(list.itemListElement)?list.itemListElement:[];
-      for(const value of items){const item=asObject(value),nested=asObject(item?.item);
-        const raw=plainText(item?.url)||plainText(item?.item)||plainText(nested?.url);if(!raw)continue;
-        try{const url=validateUrl('hirehi',raw);if(url.search||url.hash)continue;
-          const id=url.pathname.match(/^\/[^/]+\/[^/]+-(\d+)\/?$/)?.[1];if(id)urls.set(id,url.toString());}catch{/* Ignore unrelated invalid structured links. */}
-      }
-    }
-  }catch{/* Ignore unrelated malformed JSON-LD. */}
-  return urls;
-}
-export function hireHiCandidateUrl(id:number,category:string,canonicalUrls:ReadonlyMap<string,string>):string{
-  return canonicalUrls.get(String(id))??`https://hirehi.ru/${encodeURIComponent(category)}/job-${id}`;
-}
-function pause():Promise<void>{return new Promise(resolve=>setTimeout(resolve,250+Math.random()*400));}
-function listingJobs(value:unknown):JsonObject[]{
-  const jobs=asObject(value)?.jobs;return Array.isArray(jobs)?jobs.map(asObject).filter(job=>job!==null):[];
-}
-function integer(value:unknown):number|null{const parsed=Number(value);return Number.isSafeInteger(parsed)&&parsed>0?parsed:null;}
-function parseSalary(value:string):Pick<VacancyInput,'salaryFrom'|'salaryTo'|'salaryCurrency'|'salaryGross'>{
-  const normalized=value.replace(/\u00a0/g,' ').trim();if(!normalized||/не указана/i.test(normalized))
-    return{salaryFrom:null,salaryTo:null,salaryCurrency:null,salaryGross:null};
-  const amounts=[...normalized.matchAll(/\d[\d ]*/g)].map(match=>Number(match[0].replace(/\s/g,''))).filter(Number.isFinite);
-  let salaryFrom:number|null=null,salaryTo:number|null=null;
-  if(amounts.length>=2)[salaryFrom,salaryTo]=amounts;else if(/^\s*до\b/i.test(normalized))salaryTo=amounts[0]??null;else salaryFrom=amounts[0]??null;
-  const salaryCurrency=normalized.includes('₽')||/руб/i.test(normalized)?'RUR':normalized.includes('$')?'USD':normalized.includes('€')?'EUR':null;
-  return{salaryFrom,salaryTo,salaryCurrency,salaryGross:null};
-}
-function workFormat(value:string):string{
-  const normalized=value.toLowerCase();return ['удалённо по рф','удалённо','гибрид','офис'].find(format=>normalized.startsWith(format))??'';
-}
-function listingLocation(value:string):string{const format=workFormat(value);return format?value.slice(format.length).trim():'';}
-
-export async function scrapeHireHi(plan:SearchPlan<HireHiSearch>,context:SourceContext,
-  maxPages:number):Promise<{seen:number;discovered:number}>{
-  const collector=new VacancySearchCollector(context.limits.searchNewVacancyLimit,context.recordListingCandidate);
-  const pagesPerSearch=Math.max(1,Math.min(maxPages,
-    Math.floor(context.limits.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
-  searches:for(const {search,recipients} of plan.searches)for(let page=1;page<=pagesPerSearch;page++){
-    try{
-      const url=hireHiSearchUrl(search,page);context.trace('scrape.search.request',{platform:'hirehi',page});
-      const {html}=await context.http.fetchSourceHtml('hirehi',url),canonicalUrls=hireHiListingUrls(html,context.http.sourceUrl);
-      const listing=asObject(scriptJson(html,'__SSR_JOBS__')),jobs=listingJobs(listing);
-      context.trace('scrape.search.result',{platform:'hirehi',page,found:jobs.length});
-      for(const job of jobs){const id=integer(job.id),category=plainText(job.category);if(id&&category)await collector.record({source:'hirehi',sourceId:String(id),
-        url:hireHiCandidateUrl(id,category,canonicalUrls),searchName:search.name,title:plainText(job.title)||search.name,
-        summary:[plainText(job.company),plainText(job.format),plainText(job.salary_display)].filter(Boolean).join(' '),
-        publishedAt:plainText(job.created_at),payload:job},recipients);if(collector.complete)break;}
-      if(collector.complete)break searches;if(!jobs.length||listing?.has_more===false)break;await pause();
-    }catch(error){console.error(`Failed to read HireHi search page ${page}: ${context.errorMessage(error)}`);break;}
-  }
-  return collector.result();
+export function hireHiListingUrls(html: string, base = 'https://hirehi.ru') {
+  return entriesOf(boardListings(html, base,
+    /<a\b[^>]*href=["'](?<url>\/vacancies\/[^"']+\/\d+)["'][^>]*>(?<title>[\s\S]*?)<\/a>/giu));
 }
 
-export function hireHiVacancyPosting(html:string,sourceId:string):JsonObject|null{
-  // HireHi keeps archived vacancy pages at HTTP 200 but removes their JobPosting block. Treat the explicit archive
-  // banner as a terminal vacancy state; an unexplained missing block remains a parser failure worth retrying.
-  if(/Вакансия находится в архиве/i.test(htmlText(html)))return null;
-  const posting=jobPostings(html)[0];
-  if(!posting)throw new Error(`HireHi vacancy ${sourceId} has no JobPosting JSON-LD`);
-  return posting;
+export function hireHiVacancyPosting(html: string, title: string) {
+  const postings = jobPostings(html);
+  return postings.find((posting) => String(posting.title ?? '').trim().toLocaleLowerCase() === title.trim().toLocaleLowerCase())
+    ?? (postings.length === 1 ? postings[0] : null);
 }
 
-export async function normalizeHireHiCandidate(candidate:VacancyCandidate,
-  context:SourceContext):Promise<VacancyInput|null>{
-  const {html,url}=await context.http.fetchSourceHtml('hirehi',candidate.url);
-  const canonicalId=url.match(/-(\d+)\/?(?:\?.*)?$/)?.[1];if(canonicalId!==candidate.sourceId)throw new Error('Unexpected HireHi canonical vacancy URL');
-  const posting=hireHiVacancyPosting(html,candidate.sourceId);if(!posting)return null;
-  let detail:JsonObject|null=null;try{detail=asObject(scriptJson(html,'vacancy-data-json'));}catch{/* JSON-LD remains authoritative. */}
-  const listing=asObject(candidate.payload),name=plainText(posting.title)||candidate.title;
-  const employer=plainText(asObject(posting.hiringOrganization)?.name)||plainText(listing?.company)||'Не указано';
-  const description=htmlText(plainText(posting.description));if(!name||description.length<20)throw new Error(`HireHi vacancy ${candidate.sourceId} is missing required content`);
-  const formatText=plainText(listing?.format)||plainText(detail?.format),format=workFormat(formatText);
-  const locations=Array.isArray(posting.jobLocation)?posting.jobLocation:[posting.jobLocation];
-  const postingArea=locations.map(location=>plainText(asObject(asObject(location)?.address)?.addressLocality)).find(Boolean)??'';
-  const skills=plainText(posting.skills).split(/[;,]/).map(skill=>skill.trim()).filter(skill=>skill.length>1&&!skill.endsWith('...')).slice(0,30);
-  const salary=parseSalary(plainText(listing?.salary_display)||plainText(listing?.salary)||plainText(detail?.salary));
-  const base={source:'hirehi',sourceId:candidate.sourceId,name,employer,
-    area:plainText(detail?.location)||postingArea||listingLocation(formatText)||'Не указано',...salary,
-    experience:plainText(listing?.level)||plainText(detail?.level),employment:plainText(posting.employmentType),
-    schedule:plainText(posting.workHours),workFormat:format,description,keySkills:skills,url,
-    publishedAt:plainText(posting.datePosted)||candidate.publishedAt,sourceQuery:candidate.searchName};
-  return{...base,contentHash:createHash('sha256').update(JSON.stringify(base)).digest('hex')};
-}
-
-/** Application-owned HireHi provider using public source runtime ports. */
-export function hireHiSource(options: { maxPages?: number } = {}) {
-  return createSourceProvider({
-    ...hireHiPlatform,
-    async discover(plan, context) {
-      const result = await scrapeHireHi(plan, context, options.maxPages ?? 1);
+export function hireHiSource(options: { readonly maxPages?: number } = {}) {
+  assertToolkitInitialized(); const maxPages = options.maxPages ?? 1;
+  if (!Number.isSafeInteger(maxPages) || maxPages < 1) throw new RangeError('Invalid HireHi page limit.');
+  return createSourceProvider({ ...hireHiPlatform,
+    async discover(plan: SearchPlan<HireHiSearch>, context) {
+      const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
       const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
-      return { searches: plan.searches.length, users: users.size, ...result };
-    },
-    async normalize(candidates, context) {
-      const results = new Map<string, VacancyInput | null | Error>();
-      for (const candidate of candidates) {
-        try { results.set(candidate.sourceId, await normalizeHireHiCandidate(candidate, context)); }
-        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
+      const pages = Math.min(maxPages, Math.max(1, Math.floor(context.limits.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
+      for (const planned of plan.searches) for (let page = 1; page <= pages && !collector.complete; page += 1) {
+        const response = await context.http.fetchSourceHtml('hirehi', hireHiSearchUrl(planned.search, page));
+        const entries = hireHiListingUrls(response.html, response.url); if (entries.size === 0) break;
+        for (const [sourceId, entry] of entries) {
+          if (!postingMatchesQuery(entry.title, planned.search.query)) continue;
+          await collector.record({ source: parseSourceKey('hirehi'), sourceId: parseSourceVacancyId(sourceId),
+            url: context.http.sourceUrl('hirehi', entry.url), searchName: planned.search.name, title: entry.title,
+            ...(entry.publishedAt ? { publishedAt: new Date(entry.publishedAt) } : {}) }, planned.recipients);
+        }
       }
+      return { searches: plan.searches.length, users: users.size, ...collector.result() };
+    },
+    async normalize(candidates: readonly VacancyCandidate[], context) {
+      const results = new Map<string, VacancyInput | null | Error>();
+      await Promise.all(candidates.map(async (candidate) => {
+        try {
+          const response = await context.http.fetchSourceHtml('hirehi', candidate.url.href);
+          const posting = hireHiVacancyPosting(response.html, candidate.title);
+          results.set(candidate.sourceId, posting ? structuredVacancy('hirehi', candidate.sourceId, response.url, candidate.searchName, posting) : null);
+        } catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(context.errorMessage(error))); }
+      }));
       return results;
     },
   });
 }
 
-/** Registers this example; the loader calls it once the file sits in an extensions directory. */
 export default function register(api: SourceExtensionApi): void {
-  initToolkit(api);
-  api.registerSourceProvider(hireHiSource({ maxPages: examplePages(api) }));
+  initToolkit(api); api.registerSourceProvider(hireHiSource({ maxPages: examplePages(api) }));
 }

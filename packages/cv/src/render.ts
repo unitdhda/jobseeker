@@ -1,133 +1,223 @@
 import { NodeCompiler } from '@myriaddreamin/typst-ts-node-compiler';
 import { parseCvText, type CvBlock, type CvDocument } from './document.ts';
+import { detectCvLanguage } from './extract.ts';
 import { cvPreamble } from './template.ts';
 
-const forbidden = /#\s*(?:import|include|read)\b/i;
-
-/**
- * Escapes every character Typst treats as markup. The hyphen and tilde matter as much as the brackets: Typst rewrites
- * `--` into an en dash and `~` into a non-breaking space, so a CV that mentioned `CI --- pipeline` used to come out
- * with an em dash and a swallowed tilde. Escaping each one individually is harmless, since `\-` renders as `-`.
- */
-function escapeTypst(value: string): string {
-  return value.replace(/[\\#\[\]$@<>*_`~\-.]/g, '\\$&');
+export interface CvPdfOptions {
+  readonly fontPaths?: readonly string[];
 }
-
-const emphasisPattern = /\*\*([^*]+)\*\*|\*([^*]+)\*/g;
-
-/**
- * Renders one run of text, honouring the only inline markup the contract allows. Emphasis is resolved before escaping
- * so the markers themselves never reach the compiler as literal asterisks.
- */
-function inlineContent(value: string): string {
-  let result = '';
-  let cursor = 0;
-  for (const match of value.matchAll(emphasisPattern)) {
-    result += escapeTypst(value.slice(cursor, match.index));
-    result += match[1] != null ? `#strong[${escapeTypst(match[1])}]` : `#emph[${escapeTypst(match[2]!)}]`;
-    cursor = match.index + match[0].length;
-  }
-  return result + escapeTypst(value.slice(cursor));
-}
-
-const content = (value: string): string => `[${inlineContent(value)}]`;
-const optional = (value: string | undefined): string => value ? content(value) : 'none';
-/** Always trailing-comma: `(x)` is a parenthesised value in Typst and `(k: v)` a dictionary, only `(x,)` is an array. */
-const tuple = (items: readonly string[]): string => items.length ? `(${items.join(', ')},)` : '()';
-const array = (values: readonly string[]): string => tuple(values.map(content));
-
-function blockContent(block: CvBlock): string {
-  switch (block.kind) {
-    case 'text': return `#cv-text(${content(block.text)})`;
-    case 'bullets': return `#cv-bullets(${array(block.items)})`;
-    case 'facts':
-      // The template supplies the colon, so a term the model already punctuated must not end up with two.
-      return `#cv-facts(${tuple(block.items.map((item) =>
-        `(term: ${content(item.term.replace(/\s*:$/, ''))}, detail: ${content(item.detail)})`))})`;
-    case 'entry':
-      return `#cv-entry(${content(block.title)}, ${optional(block.subtitle)}, ${optional(block.meta)}, `
-        + `${optional(block.text)}, ${array(block.bullets ?? [])})`;
-  }
-}
-
-/** Cyrillic content needs its own quotation marks and hyphenation rules; anything else is treated as English. */
-function documentLanguage(document: CvDocument): string {
-  const sample = `${document.name} ${document.sections.map((section) => section.title).join(' ')}`;
-  return /[Ѐ-ӿ]/.test(sample) ? 'ru' : 'en';
-}
-
-export function cvSource(document: CvDocument, density: number): string {
-  const sections = document.sections.map((section) => {
-    const blocks = section.blocks.map(blockContent).join('\n  #cv-gap\n  ');
-    return `#cv-section(${content(section.title)})[\n  ${blocks}\n]`;
-  }).join('\n');
-  return `${cvPreamble(density, documentLanguage(document))}
-#cv-header(${content(document.name)}, ${optional(document.headline)}, ${array(document.contacts)})
-${sections}
-`;
-}
-
-/**
- * Densities tried in order. The first one that needs fewer pages than the natural layout wins, so the gentlest
- * compression that removes a stranded page is the one used. The floor of 0.82 puts the body around 7.9pt — dense but
- * ordinary for a CV — and a document that still does not fit keeps its pages rather than being squeezed unread.
- */
-const densitySteps = [1, 0.96, 0.93, 0.9, 0.87, 0.84, 0.82] as const;
-
-export interface CvPdfOptions { fontPaths?: readonly string[] }
 
 export interface CvPdf {
   compileTypst(source: string): Buffer;
-  /**
-   * One compilation, one page. The page height follows the content, so there is no stranded trailing page to fit
-   * away and no reason to shrink the type: what used to be a density search is now the layout's own job.
-   */
   compileCvDocument(document: CvDocument): Buffer;
-  /** Kept for callers that still hold plain text: it recovers the structure first, then takes the same path. */
   compilePlainTextCv(text: string): Buffer;
 }
 
-/** Closes over one Typst compiler instance; creation is where fonts are decided, so nothing here reads the environment. */
-export function createCvPdf(options: CvPdfOptions = {}): CvPdf {
-  const compiler = NodeCompiler.create(options.fontPaths?.length
-    ? { fontArgs: [{ fontPaths: [...options.fontPaths] }] } : undefined);
+interface CompiledTypst {
+  readonly pdf: Buffer;
+  readonly pages: number;
+}
 
-  /** Compiles once and reports the page count alongside the PDF, so density fitting costs no extra compilation. */
-  const compileMeasured = (source: string): { pdf: Buffer; pages: number } => {
-    if (forbidden.test(source)) {
-      throw new Error('Typst source must be self-contained; import, include, and read are forbidden.');
-    }
-    try {
-      const compiled = compiler.compile({ mainFileContent: source });
-      const error = compiled.takeError();
-      if (error) throw error;
-      const document = compiled.result;
-      if (!document) throw new Error('Compiler produced no document.');
-      const pdf = compiler.pdf(document);
-      if (!pdf.length || pdf.subarray(0, 4).toString() !== '%PDF') throw new Error('Compiler returned an invalid PDF.');
-      return { pdf, pages: document.numOfPages };
-    } catch (error) {
-      const shortDiagnostics = error && typeof error === 'object' && 'shortDiagnostics' in error
-        ? (error as { shortDiagnostics: unknown }).shortDiagnostics : undefined;
-      const diagnostics = shortDiagnostics != null
-        ? JSON.stringify(shortDiagnostics)
-        : error instanceof Error ? error.message || error.name : String(error) || 'unknown compiler error';
-      throw new Error(`Typst compilation failed: ${diagnostics}`, { cause: error });
-    }
+export interface CvCompilerAdapter {
+  compile(source: string): CompiledTypst;
+}
+
+const fittingDensities = [0.96, 0.93, 0.90, 0.87, 0.84, 0.82] as const;
+
+function typstString(value: string): string {
+  let result = '"';
+  for (const character of value.normalize('NFC')) {
+    const code = character.codePointAt(0)!;
+    if (character === '"') result += '\\"';
+    else if (character === '\\') result += '\\\\';
+    else if (character === '\n') result += '\\n';
+    else if (character === '\r') result += '\\r';
+    else if (character === '\t') result += '\\t';
+    else if (code < 0x20 || code === 0x7f) result += `\\u{${code.toString(16)}}`;
+    else result += character;
+  }
+  return `${result}"`;
+}
+
+function typstTuple(values: readonly string[]): string {
+  return `(${values.map((value) => `${value},`).join('')})`;
+}
+
+type InlinePart = { readonly text: string; readonly emphasis: 'plain' | 'bold' | 'italic' };
+
+function inlineParts(value: string): InlinePart[] {
+  const parts: InlinePart[] = [];
+  let plain = '';
+  const flush = (): void => {
+    if (plain) parts.push({ text: plain, emphasis: 'plain' });
+    plain = '';
   };
+  for (let index = 0; index < value.length;) {
+    if (value.startsWith('**', index)) {
+      const end = value.indexOf('**', index + 2);
+      if (end >= 0) {
+        flush();
+        parts.push({ text: value.slice(index + 2, end), emphasis: 'bold' });
+        index = end + 2;
+        continue;
+      }
+    }
+    if (value[index] === '*') {
+      const end = value.indexOf('*', index + 1);
+      if (end >= 0) {
+        flush();
+        parts.push({ text: value.slice(index + 1, end), emphasis: 'italic' });
+        index = end + 1;
+        continue;
+      }
+    }
+    plain += value[index]!;
+    index += 1;
+  }
+  flush();
+  return parts;
+}
 
-  const compileTypst = (source: string): Buffer => compileMeasured(source).pdf;
+/** Inline content is a fixed expression tree; only bold and italic markers can create Typst markup. */
+function inlineContent(value: string): string {
+  const parts = inlineParts(value).filter((part) => part.text.length > 0);
+  if (parts.length === 0) return '[]';
+  return `[${parts.map((part) => {
+    const literal = typstString(part.text);
+    if (part.emphasis === 'bold') return `#text(weight: "bold", ${literal})`;
+    if (part.emphasis === 'italic') return `#emph(${literal})`;
+    return `#${literal}`;
+  }).join('')}]`;
+}
 
+function optionalContent(value: string | undefined): string {
+  return value === undefined ? 'none' : inlineContent(value);
+}
+
+function blockSource(block: CvBlock): string {
+  switch (block.kind) {
+    case 'text':
+      return `#cv-text(${inlineContent(block.text)})`;
+    case 'bullets':
+      return `#cv-list(${typstTuple(block.items.map(inlineContent))})`;
+    case 'entry':
+      return `#cv-entry(${inlineContent(block.title)}, subtitle: ${optionalContent(block.subtitle)}, meta: ${optionalContent(block.meta)}, body: ${optionalContent(block.text)}, bullets: ${typstTuple((block.bullets ?? []).map(inlineContent))})`;
+    case 'facts':
+      return `#cv-facts(${typstTuple(block.items.map((fact) => typstTuple([
+        inlineContent(fact.term), inlineContent(fact.detail),
+      ])))})`;
+  }
+}
+
+function codeWithoutStringsOrComments(source: string): string {
+  let output = '';
+  let index = 0;
+  while (index < source.length) {
+    if (source.startsWith('//', index)) {
+      const end = source.indexOf('\n', index + 2);
+      index = end < 0 ? source.length : end;
+      output += '\n';
+      continue;
+    }
+    if (source.startsWith('/*', index)) {
+      const end = source.indexOf('*/', index + 2);
+      index = end < 0 ? source.length : end + 2;
+      output += ' ';
+      continue;
+    }
+    if (source[index] === '"') {
+      output += '""';
+      index += 1;
+      while (index < source.length) {
+        if (source[index] === '\\') { index += 2; continue; }
+        if (source[index] === '"') { index += 1; break; }
+        index += 1;
+      }
+      continue;
+    }
+    output += source[index]!;
+    index += 1;
+  }
+  return output;
+}
+
+function assertSafeTypst(source: string): void {
+  const code = codeWithoutStringsOrComments(source);
+  if (/(^|[^\p{L}\p{N}_])(?:import|include|read)\s*\(/iu.test(code)) {
+    throw new TypeError('Unsafe Typst source: import, include, and read calls are forbidden.');
+  }
+}
+
+/** Serializes a validated document into calls to the fixed template component library only. */
+export function cvSource(document: CvDocument, density: number): string {
+  const evidenceText = [
+    document.name,
+    document.headline ?? '',
+    ...document.contacts,
+    ...document.sections.flatMap((section) => [section.title, ...section.blocks.flatMap((block) => {
+      if (block.kind === 'text') return [block.text];
+      if (block.kind === 'bullets') return block.items;
+      if (block.kind === 'facts') return block.items.flatMap((fact) => [fact.term, fact.detail]);
+      return [block.title, block.subtitle ?? '', block.meta ?? '', block.text ?? '', ...(block.bullets ?? [])];
+    })]),
+  ].join('\n');
+  const language = detectCvLanguage(evidenceText);
+  const contacts = typstTuple(document.contacts.map((contact) => inlineContent(contact)));
+  const sections = document.sections.map((section) => {
+    const body = section.blocks.map(blockSource).join('\n');
+    return `#cv-section(${inlineContent(section.title)}, [${body}])`;
+  }).join('\n');
+  const source = `${cvPreamble(density, language)}
+#cv-header(${inlineContent(document.name)}, headline: ${optionalContent(document.headline)}, contacts: ${contacts})
+${sections}
+`;
+  assertSafeTypst(source);
+  return source;
+}
+
+function realCompiler(options: CvPdfOptions): CvCompilerAdapter {
+  const compiler = NodeCompiler.create({
+    ...(options.fontPaths?.length
+      ? { fontArgs: [{ fontPaths: [...options.fontPaths] }] }
+      : {}),
+  });
+  return {
+    compile(source: string): CompiledTypst {
+      assertSafeTypst(source);
+      const execution = compiler.compile({ mainFileContent: source });
+      if (execution.hasError() || !execution.result) {
+        const diagnostics = execution.takeDiagnostics() ?? execution.takeError();
+        const count = diagnostics?.shortDiagnostics.length ?? 0;
+        throw new Error(`Typst compilation failed with ${count || 'unknown'} diagnostic errors.`);
+      }
+      const pdf = compiler.pdf(execution.result);
+      if (pdf.subarray(0, 4).toString('ascii') !== '%PDF') {
+        throw new Error('Typst compiler returned output without a PDF signature.');
+      }
+      return { pdf, pages: execution.result.numOfPages };
+    },
+  };
+}
+
+/** Internal adapter seam keeps density fitting deterministic in tests without widening the public PDF API. */
+export function createCvPdfWithCompiler(compiler: CvCompilerAdapter): CvPdf {
+  const compileTypst = (source: string): Buffer => compiler.compile(source).pdf;
   const compileCvDocument = (document: CvDocument): Buffer => {
-    const natural = compileMeasured(cvSource(document, 1));
+    const natural = compiler.compile(cvSource(document, 1));
     if (natural.pages <= 1) return natural.pdf;
-    for (const density of densitySteps.slice(1)) {
-      const candidate = compileMeasured(cvSource(document, density));
+    for (const density of fittingDensities) {
+      const candidate = compiler.compile(cvSource(document, density));
       if (candidate.pages < natural.pages) return candidate.pdf;
     }
     return natural.pdf;
   };
+  return Object.freeze({
+    compileTypst,
+    compileCvDocument,
+    compilePlainTextCv: (text: string) => compileCvDocument(parseCvText(text)),
+  });
+}
 
-  const compilePlainTextCv = (text: string): Buffer => compileCvDocument(parseCvText(text));
-  return { compileTypst, compileCvDocument, compilePlainTextCv };
+export function createCvPdf(options: CvPdfOptions = {}): CvPdf {
+  return createCvPdfWithCompiler(realCompiler(options));
 }

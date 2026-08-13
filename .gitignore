@@ -1,27 +1,10 @@
-node_modules
+node_modules/
 dist/
 data/
 auth/
-/fonts/
 .env
 .env.*
 !.env.example
 *.pdf
-# Release tarballs are built by npm pack for deployment, never tracked.
 *.tgz
-/scripts/
-.pi/
-
-# layout workbench (dev-only, holds real CV data)
-corpus/
-out/
-probe/
-tools/
-/tools/
-
-# Deployment-local extensions. Nothing here is the repository's: a deployment supplies its own modules and the
-# manifest that installs their dependencies. Only the README explaining that is tracked.
-/extensions/*
-!/extensions/README.md
-!/packages/app/fonts/
 .DS_Store

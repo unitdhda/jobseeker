@@ -1,50 +1,47 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import * as v from 'valibot';
-import { coverLetterResultSchema, cvResultSchema } from '../src/workflows.ts';
+import { parseApplicationOutput } from '../src/application-schema.ts';
 
-const coverLetter='Concrete overlap with the vacancy and an evidence-based application. '.repeat(2);
-const tailoredCvText='Tailored CV evidence. '.repeat(30);
-const cv={name:'Ivan Petrov',headline:'Backend Engineer',contacts:['Remote','first.last@example.com'],
-  sections:[{title:'SUMMARY',blocks:[{kind:'text' as const,text:'Eight years of backend work.'}]}]};
-
-test('cv output accepts a structured cv document',()=>{
-  const result=v.parse(cvResultSchema,{cv});
-  assert.deepEqual(result.cv,cv);
-  assert.equal(result.tailoredCvText,null);
+test('structured CV output repairs contact objects and block drift', () => {
+  const parsed = parseApplicationOutput({ artifact: 'cv', document: {
+    name: 'Ada Lovelace',
+    contacts: [{ value: 'ada@example.test' }],
+    sections: [{ title: 'Experience', blocks: [{ type: 'entry', employer: 'Analytical Engines', points: ['Built systems'] }] }],
+  } }, 'cv');
+  assert.equal(parsed.artifact, 'cv');
+  if (parsed.artifact !== 'cv') return;
+  assert.equal(parsed.source, 'structured');
+  assert.deepEqual(parsed.document.contacts, ['ada@example.test']);
+  assert.deepEqual(parsed.document.sections[0]!.blocks[0], {
+    kind: 'entry', title: 'Analytical Engines', bullets: ['Built systems'],
+  });
 });
 
-test('cv output still accepts a plain-text cv so a regressed model is not a hard failure',()=>{
-  const result=v.parse(cvResultSchema,{tailoredCvText});
-  assert.equal(result.tailoredCvText,tailoredCvText);
-  assert.equal(result.cv,null);
+test('prose CV fallback uses the conservative structured salvage path', () => {
+  const text = `Ada Lovelace\nSoftware Engineer\n\nEXPERIENCE\nAnalytical Engines 2020–2024\nBuilt deterministic analytical systems and documented reusable engineering evidence for production teams.\n`;
+  const parsed = parseApplicationOutput({ artifact: 'cv', text }, 'cv');
+  assert.equal(parsed.artifact, 'cv');
+  if (parsed.artifact !== 'cv') return;
+  assert.equal(parsed.source, 'prose');
+  assert.equal(parsed.document.name, 'Ada Lovelace');
+  assert.equal(parsed.document.sections[0]!.title, 'EXPERIENCE');
 });
 
-test('contacts given as label/value objects are reduced to the value',()=>{
-  const result=v.parse(cvResultSchema,{cv:{...cv,
-    contacts:[{label:'Email',value:'first.last@example.com'},{label:'Telegram',handle:'@username'}]}});
-  assert.deepEqual(result.cv?.contacts,['first.last@example.com','@username']);
+test('cover letter is independent, bounded plain text with no document output', () => {
+  const text = `My production experience building deterministic analytical systems matches the role's core requirements.\n\nI can contribute tested TypeScript and PostgreSQL work while communicating concrete trade-offs with the team.`;
+  const parsed = parseApplicationOutput({ artifact: 'letter', text }, 'letter');
+  assert.deepEqual(parsed, { artifact: 'letter', text });
+  assert.equal('document' in parsed, false);
+  assert.throws(() => parseApplicationOutput({ artifact: 'cv', text }, 'letter'));
+  assert.throws(() => parseApplicationOutput({ artifact: 'letter', text }, 'cv'));
 });
 
-test('a response carrying neither a cv nor cv text is rejected',()=>{
-  assert.equal(v.safeParse(cvResultSchema,{}).success,false);
-  assert.equal(v.safeParse(cvResultSchema,{coverLetter}).success,false);
-});
-
-test('the two deliverables are independent contracts',()=>{
-  // A CV request no longer has to carry a letter, and a letter request no longer has to carry a CV.
-  assert.equal(v.safeParse(cvResultSchema,{cv}).success,true);
-  assert.equal(v.safeParse(coverLetterResultSchema,{coverLetter}).success,true);
-  assert.equal(v.safeParse(coverLetterResultSchema,{cv}).success,false);
-});
-
-test('the letter contract normalizes the model coverLetterText alias',()=>{
-  assert.equal(v.parse(coverLetterResultSchema,{coverLetterText:coverLetter}).coverLetter,coverLetter);
-  assert.equal(v.safeParse(coverLetterResultSchema,{coverLetter:'too short'}).success,false);
-});
-
-test('a cover letter that ignores the length instruction is rejected rather than sent',()=>{
-  const overlong='Evidence-based paragraph about the concrete overlap with this vacancy. '.repeat(40);
-  assert.ok(overlong.length>2_000);
-  assert.equal(v.safeParse(coverLetterResultSchema,{coverLetter:overlong}).success,false);
+test('cover letter rejects Markdown, excess paragraphs, salutations, and signature blocks', () => {
+  const validParagraph = 'Concrete production evidence demonstrates a close match for the role and its technical requirements.';
+  for (const text of [
+    `# Heading\n\n${validParagraph}`,
+    [validParagraph, validParagraph, validParagraph, validParagraph].join('\n\n'),
+    `Dear Hiring Manager,\n\n${validParagraph}`,
+    `${validParagraph}\n\nSincerely,\nAda`,
+  ]) assert.throws(() => parseApplicationOutput({ artifact: 'letter', text }, 'letter'));
 });

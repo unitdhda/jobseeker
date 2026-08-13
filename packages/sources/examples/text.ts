@@ -1,180 +1,45 @@
-import * as v from 'valibot';
-import type { SearchPlatform } from '@jobseeker/sources';
+import { asObject, htmlText, jobPostings, plainText, russianDate } from './toolkit.ts';
 
-const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
-export const textSearchProfileSchema = v.strictObject({
-  version: v.literal(1),
-  searches: v.pipe(v.array(v.strictObject({
-    name: label,
-    rationale: v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(300)),
-    query: label,
-  })), v.maxLength(8)),
-});
-export type TextSearchProfile = v.InferOutput<typeof textSearchProfileSchema>;
+export interface BoardListing { readonly sourceId: string; readonly url: string; readonly title: string; readonly publishedAt?: string }
 
-const textHosts: Record<'habr' | 'rabota', readonly string[]> = {
-  habr: ['career.habr.com'], rabota: ['rabota.ru', 'www.rabota.ru'],
-};
-
-function textPlatform(id: 'habr' | 'rabota', name: string, rules: string[]): SearchPlatform<typeof textSearchProfileSchema> {
-  return {
-    id, name, hosts: textHosts[id], schema: textSearchProfileSchema,
-    template: () => ({
-      platform: id,
-      version: 1,
-      purpose: `Public ${name} vacancy search.`,
-      jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }] },
-      capabilities: { query: 'One concise role title supported by a CV-derived career track', maxSearches: 8 },
-      rules: [
-        'Each query contains one role title in the language expected by the platform.',
-        'Put translations and alternative titles in separate searches.',
-        'Do not combine titles with slash, pipe, parentheses, or boolean syntax.',
-        'Do not add adjacent occupations, generic industries, location, salary, or work-format terms.',
-        ...rules,
-      ],
-    }),
-  };
+function sourceIdFromUrl(value: string): string | null {
+  try {
+    const url = new URL(value, 'https://placeholder.invalid');
+    const segment = url.pathname.split('/').filter(Boolean).at(-1);
+    return segment?.trim() || null;
+  } catch { return null; }
 }
 
-export const habrPlatform = textPlatform('habr', 'Habr Career', [
-  'Use Russian or established English vacancy titles that occur on Habr Career.',
-]);
-export const rabotaPlatform = textPlatform('rabota', 'Работа.ру', [
-  'Use Russian role titles because the query becomes an SEO path segment.',
-]);
-
-import type { SourceContext } from '@jobseeker/sources';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import type { JsonObject, SearchPlan } from '@jobseeker/sources';
-import { asObject, htmlText, jobPostings, plainText, russianDate, structuredVacancy, VacancySearchCollector } from './toolkit.ts';
-
-type TextSearch = TextSearchProfile['searches'][number];
-
-function pause(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 400));
+/** Extracts real title/date from JSON-LD listing blocks before falling back to vacancy anchors. */
+export function boardListings(html: string, base: string, anchorPattern: RegExp): readonly BoardListing[] {
+  const output = new Map<string, BoardListing>();
+  for (const posting of jobPostings(html)) {
+    const url = plainText(posting.url); const title = plainText(posting.title); const sourceId = sourceIdFromUrl(url);
+    if (!url || !title || !sourceId) continue;
+    const date = plainText(posting.datePosted);
+    output.set(sourceId, { sourceId, url: new URL(url, base).href, title, ...(date ? { publishedAt: date } : {}) });
+  }
+  for (const match of html.matchAll(anchorPattern)) {
+    const attributes = match.groups ?? {};
+    const url = attributes.url; const title = htmlText(attributes.title ?? '');
+    const sourceId = sourceIdFromUrl(url ?? '');
+    if (!url || !title || !sourceId || output.has(sourceId)) continue;
+    const printed = htmlText(attributes.date ?? ''); const date = printed ? russianDate(printed) : null;
+    output.set(sourceId, { sourceId, url: new URL(url, base).href, title, ...(date ? { publishedAt: date } : {}) });
+  }
+  return Object.freeze([...output.values()]);
 }
 
-export interface HabrListing { sourceId: string; url: string; title: string; publishedAt?: string }
-
-/**
- * Habr renders each result as a card that carries the posting date in a `datetime` attribute and the real title in
- * a `vacancy-card__title-link`. The card is parsed as a unit because the first `/vacancies/<id>` link inside it is
- * an empty backdrop anchor: scanning links alone took that anchor's empty text, which left 703 of 708 stored habr
- * listings titled with the search query and the candidate prefilter comparing a query against itself.
- *
- * A markup change falls back to the old link scan, so discovery degrades to titles-from-query rather than to
- * nothing at all.
- */
-export function habrListings(html: string, base: string): HabrListing[] {
-  const listings = new Map<string, HabrListing>();
-  // The class token must end at a space or quote, so the card's own `vacancy-card__date` and `__inner` children
-  // cannot be mistaken for the start of the next card and cut it short before its date and title.
-  for (const card of html.matchAll(/<div class="vacancy-card(?:\s[^"]*)?">[\s\S]*?(?=<div class="vacancy-card(?:\s[^"]*)?">|<\/body|$)/gi)) {
-    const block = card[0]!;
-    const title = /<a[^>]*class="vacancy-card__title-link"[^>]*href="\/vacancies\/(\d+)[^"]*"[^>]*>([\s\S]*?)<\/a>/i.exec(block);
-    if (!title) continue;
-    const attribute = /<time[^>]*datetime="([^"]+)"/i.exec(block)?.[1];
-    const printed = /<time[^>]*>([\s\S]*?)<\/time>/i.exec(block)?.[1];
-    const publishedAt = attribute && Number.isFinite(Date.parse(attribute)) ? new Date(attribute).toISOString()
-      : printed ? russianDate(htmlText(printed)) ?? undefined : undefined;
-    const sourceId = title[1]!;
-    listings.set(sourceId, { sourceId, url: new URL(`/vacancies/${sourceId}`, base).toString(),
-      title: htmlText(title[2]!), publishedAt });
-  }
-  if (listings.size) return [...listings.values()];
-  for (const match of html.matchAll(/href=["'](\/vacancies\/(\d+))(?:\?[^"']*)?["'][^>]*>([\s\S]*?)<\/a>/gi)) {
-    const sourceId = match[2]!;
-    if (!listings.has(sourceId)) {
-      listings.set(sourceId, { sourceId, url: new URL(match[1]!, base).toString().split('?')[0]!, title: htmlText(match[3]!) });
-    }
-  }
-  return [...listings.values()];
+export function entriesOf(listings: readonly BoardListing[]): ReadonlyMap<string, Omit<BoardListing, 'sourceId'>> {
+  return new Map(listings.map(({ sourceId, ...entry }) => [sourceId, entry]));
 }
 
-export async function scrapeHabr(plan: SearchPlan<TextSearch>, context: SourceContext,
-  maxPages: number): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
-  const pagesPerSearch=Math.max(1,Math.min(maxPages,
-    Math.floor(context.limits.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
-  searches: for (const { search, recipients } of plan.searches) {
-    for (let page = 1; page <= pagesPerSearch; page++) {
-      const url = new URL('/vacancies', 'https://career.habr.com');
-      url.searchParams.set('q', search.query);
-      url.searchParams.set('type', 'all');
-      if (page > 1) url.searchParams.set('page', String(page));
-      try {
-        context.trace('scrape.search.request', { platform: 'habr', page });
-        const { html } = await context.http.fetchSourceHtml('habr', url.toString());
-        const listings = habrListings(html, url.toString());
-        for (const listing of listings) {
-          await collector.record({ source: 'habr', sourceId: listing.sourceId, url: listing.url,
-            searchName: search.name, title: listing.title || search.name, summary: search.name,
-            publishedAt: listing.publishedAt }, recipients);
-          if (collector.complete) break;
-        }
-        const found = listings.length;
-        context.trace('scrape.search.result', { platform: 'habr', page, found,
-          dated: listings.filter((listing) => listing.publishedAt).length });
-        if (collector.complete) break searches;
-        if (!found) break;
-        await pause();
-      } catch (error) {
-        console.error(`Failed to read Habr search page ${page}: ${context.errorMessage(error)}`);
-        break;
-      }
-    }
-  }
-  return collector.result();
+export function jsonLdEntries(html: string, base: string): ReadonlyMap<string, Omit<BoardListing, 'sourceId'>> {
+  return entriesOf(boardListings(html, base, /(?!) /gu));
 }
 
-export async function scrapeRabota(plan: SearchPlan<TextSearch>, context: SourceContext,
-  maxPages: number): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
-  const pagesPerSearch=Math.max(1,Math.min(maxPages,
-    Math.floor(context.limits.searchPageBudgetPerPlatform/Math.max(1,plan.searches.length))));
-  searches: for (const { search, recipients } of plan.searches) {
-    for (let page = 1; page <= pagesPerSearch; page++) {
-      try {
-        const url = new URL(`/vacancy/${encodeURIComponent(search.query)}/`, 'https://www.rabota.ru');
-        if (page > 1) url.searchParams.set('page', String(page));
-        context.trace('scrape.search.request', { platform: 'rabota', page });
-        const { html } = await context.http.fetchSourceHtml('rabota', url.toString());
-        const postings = jobPostings(html);
-        context.trace('scrape.search.result', { platform: 'rabota', page, found: postings.length });
-        for (const posting of postings) {
-          const postingUrl = plainText(posting.url);
-          const sourceId = postingUrl.match(/\/vacancy\/(\d+)/)?.[1] ?? plainText(asObject(posting.identifier)?.value);
-          if (sourceId) await collector.record({ source: 'rabota', sourceId,
-            url: postingUrl || `https://www.rabota.ru/vacancy/${sourceId}/`, searchName: search.name,
-            title: plainText(posting.title) || search.name, summary: plainText(posting.description).slice(0, 1_000),
-            publishedAt: plainText(posting.datePosted), payload: posting }, recipients);
-          if (collector.complete) break;
-        }
-        if (collector.complete) break searches;
-        if (!postings.length) break;
-        await pause();
-      } catch (error) {
-        console.error(`Failed to read Работа.ру search page ${page}: ${context.errorMessage(error)}`);
-        break;
-      }
-    }
-  }
-  return collector.result();
+export function objectArray(value: unknown): readonly Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(asObject).filter((item): item is Record<string, unknown> => item !== null) : [];
 }
 
-export async function normalizeAdditionalCandidate(candidate: VacancyCandidate,
-  context: SourceContext): Promise<VacancyInput | null> {
-  if (candidate.source === 'habr') {
-    const page = await context.http.fetchSourceHtml('habr', candidate.url);
-    const posting = jobPostings(page.html)[0];
-    if (!posting) return null;
-    return structuredVacancy('habr', candidate.sourceId, page.url, candidate.searchName, posting);
-  }
-  if (candidate.source === 'rabota') {
-    return structuredVacancy('rabota', candidate.sourceId, candidate.url, candidate.searchName, candidate.payload as JsonObject);
-  }
-  throw new Error(`Unsupported vacancy source: ${candidate.source}`);
-}
-
-/** A shared helper, not a provider: the loader imports every module here, so this default export is a deliberate no-op. */
 export default function register(): void {}

@@ -1,62 +1,103 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compileDemand, searchTokens, tokenSimilarity, unitIdentityOf } from '../src/index.ts';
+import {
+  parseSourceKey,
+  parseSourceVacancyId,
+  parseUserId,
+  type VacancyContent,
+} from '../src/contracts.ts';
+import { roleNgramSimilarity, searchTokens } from '../src/canon.ts';
+import { unitIdentityOf } from '../src/identity.ts';
+import { buildIdfVocabulary, createIdfLookup } from '../src/idf.ts';
+import {
+  careerProfileSchema,
+  normalizeCareerProfileJson,
+  prefilterVacancy,
+} from '../src/prefilter.ts';
+import { compileDemand } from '../src/subscribe.ts';
+import * as v from 'valibot';
 
-test('canonicalization folds languages and grades into one vocabulary', () => {
-  assert.deepEqual([...searchTokens('Senior Machine Learning Engineer')].sort(),
-    [...searchTokens('Инженер машинного обучения')].sort());
+test('canonicalization preserves identity tokens and compares morphology without translation guesses', () => {
+  assert.deepEqual([...searchTokens('Senior C++ / .NET Developer')], ['c++', '.net', 'developer']);
+  assert.ok(roleNgramSimilarity(searchTokens('разработчик'), searchTokens('разработчика')) > 0.7);
+  assert.equal(roleNgramSimilarity(searchTokens('developer'), searchTokens('разработчик')), 0);
 });
 
-test('unit identity is content-addressed: wording order and grades do not matter, filters do', () => {
-  const a = unitIdentityOf('hh', { name: 'ML', text: 'Senior ML Engineer', areas: ['1'] });
-  const b = unitIdentityOf('hh', { name: 'МО', text: 'инженер ML', areas: ['1'] });
-  const c = unitIdentityOf('hh', { name: 'ML', text: 'Senior ML Engineer', areas: ['2'] });
-  assert.equal(a.unitId, b.unitId, 'equivalent demand must collapse into one unit');
-  assert.notEqual(a.unitId, c.unitId, 'a different area filter is a different listing page');
+test('unit identity is stable across private labels and recursive key order', () => {
+  const platform = parseSourceKey('example');
+  const first = unitIdentityOf(platform, {
+    name: 'Private label', rationale: 'Private rationale', text: 'Backend Developer',
+    filters: { remote: true, levels: [1, 2] }, salary: 100,
+  });
+  const second = unitIdentityOf(platform, {
+    salary: 100, filters: { levels: [1, 2], remote: true }, query: 'Backend Developer',
+    name: 'Other label', rationale: 'Other rationale',
+  });
+  assert.equal(first.unitId, second.unitId);
+  assert.deepEqual(first.canonicalTokens, ['backend', 'developer']);
 });
 
-test('compilation subscribes equivalent searches to one unit and keeps each user\'s own name', () => {
-  const demand = compileDemand([
-    { userId: 'u1', platform: 'habr', searches: [{ name: 'ML track', query: 'Machine Learning Engineer' }] },
-    { userId: 'u2', platform: 'habr', searches: [{ name: 'МО', query: 'Инженер машинного обучения' }] },
-  ], 0.6);
-  assert.equal(demand.units.length, 1);
-  assert.deepEqual(demand.subscriptions.map((s) => [s.userId, s.searchName]).sort(),
-    [['u1', 'ML track'], ['u2', 'МО']]);
+test('profile repair splits and deduplicates packed title variants before strict parsing', () => {
+  const repaired = normalizeCareerProfileJson({ version: 1, tracks: [{
+    name: 'Engineering',
+    titleVariants: [' Developer / Разработчик ', 'developer'],
+    coreSkills: [' TypeScript ', 'typescript'],
+    evidence: [' Built APIs '],
+  }] });
+  const profile = v.parse(careerProfileSchema, repaired);
+  assert.deepEqual(profile.tracks[0]!.titleVariants, ['Developer', 'Разработчик']);
+  assert.deepEqual(profile.tracks[0]!.coreSkills, ['TypeScript']);
 });
 
-test('adoption is similarity-bounded: unrelated roles never share a unit', () => {
-  const demand = compileDemand([
-    { userId: 'u1', platform: 'habr', searches: [{ name: 'ML', query: 'ML Engineer' }] },
-    { userId: 'u2', platform: 'habr', searches: [{ name: 'Design', query: 'Продуктовый дизайнер' }] },
-  ], 0.6);
-  assert.equal(demand.units.length, 2);
+test('prefilter requires role or skill evidence and keeps IDF diagnostic-only', () => {
+  const profile = v.parse(careerProfileSchema, { version: 1, tracks: [{
+    name: 'Backend engineering', titleVariants: ['Backend Developer'],
+    coreSkills: ['TypeScript'], evidence: ['Built APIs'],
+  }] });
+  const vacancy: VacancyContent = {
+    source: parseSourceKey('example'), sourceId: parseSourceVacancyId('42'), name: 'Backend Developer',
+    employer: 'Acme', area: 'Remote', salary: null, experience: { kind: 'unspecified' },
+    employment: 'full-time', schedule: 'flexible', workFormat: 'remote', description: 'TypeScript APIs',
+    keySkills: ['TypeScript'], url: new URL('https://example.test/42'), publishedAt: new Date('2026-01-01'),
+    sourceQuery: 'private',
+  };
+  const options = { profile, minimumScore: 1, maxAgeDays: 30, now: new Date('2026-01-02') } as const;
+  const plain = prefilterVacancy('Backend TypeScript APIs', vacancy, options);
+  const title = createIdfLookup(buildIdfVocabulary([['backend'], ['backend'], ['accountant']]));
+  const body = createIdfLookup(buildIdfVocabulary([['typescript'], ['typescript'], ['accounting']]));
+  const measured = prefilterVacancy('Backend TypeScript APIs', vacancy, { ...options, idfLookups: { title, body } });
+  assert.equal(measured.filtered, false);
+  assert.equal(measured.combinedScore, plain.combinedScore);
+  assert.notEqual(measured.specificity, null);
+  const unrelated = prefilterVacancy('Excellent communication', {
+    ...vacancy, name: 'Accountant', description: 'Excellent communication', keySkills: [],
+  }, options);
+  assert.equal(unrelated.filtered, true);
+  assert.ok(unrelated.reasons.includes('insufficient-role-or-skill-evidence'));
 });
 
-test('compilation is stable under input order', () => {
-  const inputs = [
-    { userId: 'u1', platform: 'hh', searches: [{ name: 'a', text: 'Python Developer', areas: ['1'] }] },
-    { userId: 'u2', platform: 'hh', searches: [{ name: 'b', text: 'Python-разработчик', areas: ['1'] }] },
-    { userId: 'u3', platform: 'hh', searches: [{ name: 'c', text: 'Java Developer', areas: ['1'] }] },
+test('demand compilation is input-order stable and adopts learned cross-language equivalence', () => {
+  const platform = parseSourceKey('example');
+  const one = parseUserId('1');
+  const two = parseUserId('2');
+  interface ExampleSearch {
+    readonly name: string;
+    readonly text: string;
+    readonly area: number;
+  }
+  const demands: readonly {
+    readonly userId: typeof one;
+    readonly platform: typeof platform;
+    readonly searches: readonly ExampleSearch[];
+  }[] = [
+    { userId: two, platform, searches: [{ name: 'Russian', text: 'разработчик', area: 1 }] },
+    { userId: one, platform, searches: [{ name: 'English', text: 'developer', area: 1 }] },
   ];
-  const forward = compileDemand(inputs, 0.6);
-  const reversed = compileDemand([...inputs].reverse(), 0.6);
-  assert.deepEqual(forward.units.map((u) => u.unitId).sort(), reversed.units.map((u) => u.unitId).sort());
-  assert.equal(forward.subscriptions.length, reversed.subscriptions.length);
-});
-
-test('existing units adopt new demand instead of minting duplicates', () => {
-  const first = compileDemand([
-    { userId: 'u1', platform: 'habr', searches: [{ name: 'ML', query: 'ML Engineer' }] }], 0.6);
-  const second = compileDemand([
-    { userId: 'u2', platform: 'habr', searches: [{ name: 'МО', query: 'Machine Learning инженер' }] }],
-    0.6, first.units);
-  assert.equal(second.units.length, 0, 'no new unit should be minted');
-  assert.equal(second.subscriptions[0]?.unitId, first.units[0]?.unitId);
-});
-
-test('similarity is symmetric and bounded', () => {
-  assert.equal(tokenSimilarity(['a', 'b'], ['a', 'b']), 1);
-  assert.equal(tokenSimilarity(['a'], ['b']), 0);
-  assert.equal(tokenSimilarity([], []), 1);
+  const resolver = (token: string): string =>
+    token === 'developer' || token === 'разработчик' ? 'role:developer' : token;
+  const forward = compileDemand(demands, 0.9, [], resolver);
+  const backward = compileDemand([...demands].reverse(), 0.9, [], resolver);
+  assert.deepEqual(forward, backward);
+  assert.equal(forward.units.length, 1);
+  assert.equal(forward.subscriptions.length, 2);
 });

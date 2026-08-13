@@ -1,5 +1,16 @@
+export type {
+  CompanyListing,
+  CompanyListingPage,
+  CompanySearch,
+  CompanySearchProfile,
+  CompanySite,
+} from '../companies.ts';
 export {
-  companyPlatform, companySearchProfileSchema, companyVacancyInput, createCompanySiteSource, mainVacancyText,
-  normalizeCompanyCandidate, scrapeCompanySite, type CompanyListing, type CompanyListingPage, type CompanySearch,
-  type CompanySearchProfile, type CompanySite,
+  companyPlatform,
+  companySearchProfileSchema,
+  companyVacancyInput,
+  createCompanySiteSource,
+  mainVacancyText,
+  normalizeCompanyCandidate,
+  scrapeCompanySite,
 } from '../companies.ts';

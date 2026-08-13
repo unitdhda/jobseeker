@@ -1,44 +1,47 @@
-/**
- * First-party career sites run by large companies. The runner is deliberately data-driven: a new company supplies
- * its hosts, search-page codec, and detail-page codec while pagination, collection, profile validation, budgets,
- * observability, URL checks, and VacancyPlatform wiring remain shared.
- */
 import * as v from 'valibot';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import type { SourceContext } from './context.ts';
-import type { SearchPlan, SearchPlatform } from './contract.ts';
 import {
-  hashedVacancy, htmlText, sourceUserAgent, VacancySearchCollector, type JsonObject,
-} from './http.ts';
+  parseSourceKey,
+  parseSourceVacancyId,
+  type ExperienceRequirement,
+  type VacancyCandidate,
+  type VacancyInput,
+  type WorkFormat,
+} from '@jobseeker/engine/contracts';
+import type { SearchPlan, SearchPlatform } from './contract.ts';
+import type { SourceContext } from './context.ts';
+import { hashedVacancy, htmlText, VacancySearchCollector } from './http.ts';
 import { createSourceProvider, type SourceProvider } from './sources.ts';
 
 export interface CompanyListing {
-  sourceId: string;
-  url: string;
-  title: string;
-  summary: string;
-  employer: string;
-  area: string;
-  experience: string;
-  employment: string;
-  workFormat: string;
-  keySkills: string[];
+  readonly sourceId: string;
+  readonly url: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly employer: string;
+  readonly area: string;
+  readonly experience: string;
+  readonly employment: string;
+  readonly workFormat: string;
+  readonly keySkills: readonly string[];
+  readonly publishedAt?: string;
 }
 
-export interface CompanyListingPage { listings: CompanyListing[]; nextCursor?: string }
+export interface CompanyListingPage {
+  readonly listings: readonly CompanyListing[];
+  readonly nextCursor?: string;
+}
 
-/** A site definition contains only the behavior that really differs between company career portals. */
 export interface CompanySite {
-  id: string;
-  name: string;
-  employer: string;
-  hosts: readonly string[];
-  queryLanguage: string;
+  readonly id: string;
+  readonly name: string;
+  readonly employer: string;
+  readonly hosts: readonly string[];
+  readonly queryLanguage: string;
   searchUrl(query: string, cursor?: string): string;
-  listingPage(payload: unknown): CompanyListingPage;
-  vacancy(site: CompanySite, candidate: VacancyCandidate, html: string, resolvedUrl: string,
+  listingPage(payload: unknown, cursor?: string): CompanyListingPage;
+  vacancy?(site: CompanySite, candidate: VacancyCandidate, html: string, resolvedUrl: string,
     context: SourceContext): VacancyInput | null;
-  rules?: readonly string[];
+  readonly rules?: readonly string[];
 }
 
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
@@ -53,134 +56,124 @@ export const companySearchProfileSchema = v.strictObject({
 export type CompanySearchProfile = v.InferOutput<typeof companySearchProfileSchema>;
 export type CompanySearch = CompanySearchProfile['searches'][number];
 
-/** Generic server-rendered detail extraction used by company definitions without schema.org JobPosting. */
-export function mainVacancyText(html: string): { title: string; description: string } | null {
-  const titleMatch = /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
-  const mainMatch = /<main\b[^>]*>([\s\S]*?)<\/main>/i.exec(html);
-  const title = htmlText(titleMatch?.[1] ?? '');
-  const description = htmlText(mainMatch?.[1] ?? '');
-  return title && description.length >= 20 ? { title, description } : null;
+export function mainVacancyText(html: string): { readonly title: string; readonly description: string } | null {
+  const title = htmlText(/<h1\b[^>]*>([\s\S]*?)<\/h1>/iu.exec(html)?.[1] ?? '');
+  const description = htmlText(/<main\b[^>]*>([\s\S]*?)<\/main>/iu.exec(html)?.[1] ?? '');
+  return title && description.length >= 20 ? Object.freeze({ title, description }) : null;
 }
 
-export function companyVacancyInput(site: CompanySite, candidate: VacancyCandidate, html: string,
-  resolvedUrl: string,
-  validateUrl: (source: string, input: string) => string): VacancyInput | null {
+function experience(labelValue: string): ExperienceRequirement {
+  if (!labelValue.trim()) return { kind: 'unspecified' };
+  const years = /(?:от\s*)?(\d+(?:[.,]\d+)?)\s*(?:лет|года?|years?)/iu.exec(labelValue);
+  return years
+    ? { kind: 'range', minimumYears: Number(years[1]!.replace(',', '.')), maximumYears: null }
+    : { kind: 'other', label: labelValue.trim() };
+}
+
+function workFormat(value: string): WorkFormat {
+  const text = value.toLocaleLowerCase();
+  if (/remote|удален/iu.test(text)) return 'remote';
+  if (/hybrid|гибрид/iu.test(text)) return 'hybrid';
+  if (/office|офис|on.?site/iu.test(text)) return 'on-site';
+  return text ? 'other' : 'unspecified';
+}
+
+export function companyVacancyInput(
+  site: CompanySite, candidate: VacancyCandidate, html: string, resolvedUrl: string,
+  validateUrl: (source: string, input: string) => string,
+): VacancyInput | null {
   const detail = mainVacancyText(html);
-  const listing = candidate.payload as unknown as CompanyListing | null;
+  const listing = candidate.payload as CompanyListing | undefined;
   if (!detail || !listing?.title) return null;
-  const experience = listing.experience || detail.description.match(/от\s+\d+\s+лет/iu)?.[0] || '';
   return hashedVacancy({
-    source: site.id,
-    sourceId: candidate.sourceId,
-    name: detail.title,
-    employer: listing.employer || site.employer,
-    area: listing.area || 'Не указано',
-    salaryFrom: null,
-    salaryTo: null,
-    salaryCurrency: null,
-    salaryGross: null,
-    experience,
-    employment: listing.employment,
-    schedule: '',
-    workFormat: listing.workFormat,
-    description: detail.description,
-    keySkills: listing.keySkills,
-    url: validateUrl(site.id, resolvedUrl),
-    publishedAt: candidate.publishedAt,
-    sourceQuery: candidate.searchName,
+    source: parseSourceKey(site.id), sourceId: candidate.sourceId, name: detail.title,
+    employer: listing.employer || site.employer, area: listing.area || 'Не указано', salary: null,
+    experience: experience(listing.experience), employment: listing.employment ? 'other' : 'unspecified',
+    schedule: 'unspecified', workFormat: workFormat(listing.workFormat), description: detail.description,
+    keySkills: Object.freeze([...listing.keySkills]), url: new URL(validateUrl(site.id, resolvedUrl)),
+    publishedAt: candidate.publishedAt, sourceQuery: candidate.searchName,
   });
 }
 
 export function companyPlatform(site: CompanySite): SearchPlatform<typeof companySearchProfileSchema> {
-  return {
-    id: site.id, name: site.name, hosts: site.hosts, schema: companySearchProfileSchema,
+  return Object.freeze({
+    id: site.id, name: site.name, hosts: Object.freeze([...new Set(site.hosts)]), schema: companySearchProfileSchema,
     template: () => ({
-      platform: site.id,
-      version: 1,
-      purpose: `Public first-party vacancy search operated by ${site.employer}.`,
-      jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }] },
-      capabilities: {
-        query: `One concise role title in ${site.queryLanguage}`,
-        maxSearches: 8,
-      },
-      rules: [
-        'Each query contains one role title without boolean syntax, slashes, pipes, or parentheses.',
-        'Put translations and alternative titles in separate searches.',
-        'Do not add adjacent occupations, generic industries, location, salary, or work-format terms.',
-        ...(site.rules ?? []),
-      ],
+      platform: site.id, version: 1, purpose: `Search the public ${site.employer} careers site.`,
+      jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct evidence', query: 'role title' }] },
+      capabilities: { maxSearches: 8, queryLanguage: site.queryLanguage },
+      rules: Object.freeze([
+        'Return at most 8 searches.', 'Use one concise role title per query.',
+        'Put translations and alternative titles in separate searches.', ...(site.rules ?? []),
+      ]),
     }),
-  };
+  });
 }
 
-export async function scrapeCompanySite(site: CompanySite, plan: SearchPlan<CompanySearch>, context: SourceContext,
-  maxPages: number): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
-    context.recordListingCandidate);
-  const pagesPerSearch = Math.max(1, Math.min(maxPages,
-    Math.floor(context.limits.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
-  searches: for (const { search, recipients } of plan.searches) {
-    let cursor: string | undefined;
-    for (let page = 1; page <= pagesPerSearch; page++) {
-      const url = site.searchUrl(search.query, cursor);
-      try {
-        context.trace('scrape.search.request', { platform: site.id, page });
-        const result = site.listingPage(await context.http.fetchSourceJson(site.id, url, {
-          headers: { accept: 'application/json', 'user-agent': sourceUserAgent },
-          signal: AbortSignal.timeout(45_000),
-        }));
-        context.trace('scrape.search.result', { platform: site.id, page, found: result.listings.length });
-        for (const listing of result.listings) {
-          await collector.record({
-            source: site.id,
-            sourceId: listing.sourceId,
-            url: context.http.safeVacancyUrl(site.id, listing.url),
-            searchName: search.name,
-            title: listing.title,
-            summary: listing.summary.slice(0, 1_000),
-            payload: listing as unknown as JsonObject,
-          }, recipients);
-          if (collector.complete) break;
-        }
-        if (collector.complete) break searches;
-        cursor = result.nextCursor;
-        if (!cursor) break;
-      } catch (error) {
-        console.error(`Failed to read ${site.name} search page ${page}: ${context.errorMessage(error)}`);
-        break;
+function pageAllocation(searches: number, budget: number, maxPages: number): readonly number[] {
+  if (searches === 0) return [];
+  const base = Math.floor(budget / searches); const remainder = budget % searches;
+  return Array.from({ length: searches }, (_, index) => Math.min(maxPages, base + (index < remainder ? 1 : 0)));
+}
+
+export async function scrapeCompanySite(
+  site: CompanySite, plan: SearchPlan<CompanySearch>, context: SourceContext, maxPages: number,
+) {
+  if (!Number.isSafeInteger(maxPages) || maxPages < 1) throw new RangeError('Invalid company-site page limit.');
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
+  const allocations = pageAllocation(plan.searches.length, context.limits.searchPageBudgetPerPlatform, maxPages);
+  for (let index = 0; index < plan.searches.length && !collector.complete; index += 1) {
+    const planned = plan.searches[index]!; let cursor: string | undefined; const cursors = new Set<string>();
+    for (let page = 0; page < allocations[index]! && !collector.complete; page += 1) {
+      const payload = await context.http.fetchSourceJson(site.id, site.searchUrl(planned.search.query, cursor));
+      const decoded = site.listingPage(payload, cursor);
+      if (!Array.isArray(decoded.listings)) throw new TypeError(`Company source ${site.id} returned an invalid page.`);
+      for (const listing of decoded.listings) {
+        if (collector.complete) break;
+        if (!listing.title.trim()) throw new TypeError(`Company source ${site.id} returned an empty title.`);
+        const publishedAt = listing.publishedAt ? new Date(listing.publishedAt) : undefined;
+        if (publishedAt && !Number.isFinite(publishedAt.getTime())) throw new TypeError(`Company source ${site.id} returned an invalid date.`);
+        await collector.record({
+          source: parseSourceKey(site.id), sourceId: parseSourceVacancyId(listing.sourceId),
+          url: context.http.sourceUrl(site.id, listing.url), searchName: planned.search.name,
+          title: listing.title, summary: listing.summary, ...(publishedAt ? { publishedAt } : {}), payload: listing,
+        }, planned.recipients);
       }
+      const next = decoded.nextCursor;
+      if (!next || cursors.has(next)) break;
+      cursors.add(next); cursor = next;
     }
   }
   return collector.result();
 }
 
-export async function normalizeCompanyCandidate(site: CompanySite, candidate: VacancyCandidate,
-  context: SourceContext): Promise<VacancyInput | null> {
-  if (candidate.source !== site.id) {
-    throw new Error(`Company provider ${site.id} cannot normalize source ${candidate.source}.`);
-  }
-  const page = await context.http.fetchSourceHtml(site.id, candidate.url);
-  return site.vacancy(site, candidate, page.html, page.url, context);
+export async function normalizeCompanyCandidate(
+  site: CompanySite, candidate: VacancyCandidate, context: SourceContext,
+): Promise<VacancyInput | null> {
+  if (candidate.source !== site.id) throw new Error(`Company provider ${site.id} cannot normalize source ${candidate.source}.`);
+  const page = await context.http.fetchSourceHtml(site.id, candidate.url.href);
+  return site.vacancy
+    ? site.vacancy(site, candidate, page.html, page.url, context)
+    : companyVacancyInput(site, candidate, page.html, page.url, context.http.safeVacancyUrl);
 }
 
-/** Builds a fresh first-party company provider without editing a central company-id union or site map. */
-export function createCompanySiteSource(site: CompanySite,
-  options: { maxPages?: number } = {}): SourceProvider<typeof companySearchProfileSchema> {
+export function createCompanySiteSource(
+  site: CompanySite, options: { readonly maxPages?: number } = {},
+): SourceProvider<typeof companySearchProfileSchema> {
+  const maxPages = options.maxPages ?? 1;
+  if (!Number.isSafeInteger(maxPages) || maxPages < 1) throw new RangeError('Invalid company-site page limit.');
   const platform = companyPlatform(site);
-  return createSourceProvider({
-    ...platform,
+  return createSourceProvider({ ...platform,
     async discover(plan, context) {
-      const result = await scrapeCompanySite(site, plan, context, options.maxPages ?? 1);
-      const users = new Set(plan.searches.flatMap((search) =>
-        search.recipients.map((recipient) => recipient.userId)));
-      return { searches: plan.searches.length, users: users.size, ...result };
+      const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
+      return { searches: plan.searches.length, users: users.size, ...await scrapeCompanySite(site, plan, context, maxPages) };
     },
     async normalize(candidates, context) {
       const results = new Map<string, VacancyInput | null | Error>();
-      for (const candidate of candidates) {
+      await Promise.all(candidates.map(async (candidate) => {
         try { results.set(candidate.sourceId, await normalizeCompanyCandidate(site, candidate, context)); }
-        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
-      }
+        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(context.errorMessage(error))); }
+      }));
       return results;
     },
   });

@@ -1,18 +1,36 @@
-# @jobseeker/cv
+# `@jobseeker/cv`
 
-Everything about CV files and structured documents, in two deliberately separate subpaths — there is no root barrel, because
-the two halves have different dependency weights and consumers:
+Deterministic CV extraction, evidence validation, and Typst PDF rendering. The package does not know users, models, persistence, or environment variables.
 
-- **`@jobseeker/cv/extract`** — turns an uploaded PDF/DOCX/Markdown into authoritative text plus a normalized
-  document structure; detects the CV language. Heavy parsing dependencies live only here.
-- **`@jobseeker/cv/pdf`** — renders a structured CV (the `cvDocumentSchema` block vocabulary: headline, roles
-  with meta, skill groups, sections) into a paginated A4 PDF through Typst. Fixed pagination with a density
-  ladder at fixed page height; single column; no letter-spacing tricks, so ATS text extraction reads
-  what the human reads. `parseCvText` salvages prose CVs from a model that regressed to plain text.
+## Extraction
 
-Fonts are a factory option (`createCvPdf({fontPaths})`), never an environment read. The application supplies its
-bundled JetBrains Mono and Spectral directories at composition.
+```ts
+import { extractCvDocument } from '@jobseeker/cv/extract';
 
-```bash
-bun test packages/cv
+const extracted = await extractCvDocument(
+  'cv.pdf',
+  'application/pdf',
+  uploadedBytes,
+);
 ```
+
+Extraction accepts bytes rather than file paths, validates extension/media/magic agreement, preflights DOCX ZIP safety, and returns normalized text plus annotated canonical blocks.
+
+## Structured PDF rendering
+
+```ts
+import {
+  assertTailoredCvEvidence,
+  createCvPdf,
+  parseCvText,
+} from '@jobseeker/cv/pdf';
+
+const document = parseCvText(authoritativeText);
+assertTailoredCvEvidence(document, authoritativeText);
+
+const pdf = createCvPdf({
+  fontPaths: ['/deployment/fonts'],
+}).compileCvDocument(document);
+```
+
+Rendering accepts only structured document content and emits calls into a fixed Typst component library. Font paths are injected explicitly; this package never reads environment variables.

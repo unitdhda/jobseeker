@@ -1,156 +1,266 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { Client, Pool, type PoolClient, type QueryResultRow, type PoolConfig } from 'pg';
+import { setTimeout as sleep } from 'node:timers/promises';
+import pg, {
+  type PoolClient,
+  type PoolConfig,
+  type QueryResult,
+  type QueryResultRow,
+} from 'pg';
 
-/** The knobs repositories read through their owning store instance. */
 export interface StoreSettings {
-  telegramUserId?: string;
-  accessRequestCooldownMinutes: number;
-  prefilterMaxAgeDays: number;
-  searchPlatforms: readonly string[];
-  digestMinScore: number;
-  alertScore: number;
-  timezone: string;
-  /** URL hygiene belongs to sources; persistence applies the injected guard defensively. */
+  readonly telegramUserId?: string;
+  readonly accessRequestCooldownMinutes: number;
+  readonly prefilterMaxAgeDays: number;
+  readonly searchPlatforms: readonly string[];
+  readonly digestMinScore: number;
+  readonly alertScore: number;
+  readonly timezone: string;
   safeVacancyUrl(source: string, url: string): string;
 }
 
 export interface StoreOptions {
-  /** May be empty at construction; absence only fails when the pool is first needed. */
-  databaseUrl: string;
-  poolMax: number;
-  ssl: PoolConfig['ssl'];
-  settings: StoreSettings;
+  readonly databaseUrl: string;
+  readonly poolMax: number;
+  readonly ssl: PoolConfig['ssl'];
+  readonly settings: StoreSettings;
+}
+
+interface Queryable {
+  query<TRow extends QueryResultRow = QueryResultRow>(
+    text: string,
+    values?: readonly unknown[],
+  ): Promise<QueryResult<TRow>>;
+}
+
+interface ReleasableClient extends Queryable {
+  release(error?: Error | boolean): void;
+}
+
+interface SingletonClient extends Queryable {
+  connect(): Promise<unknown>;
+  end(): Promise<void>;
+}
+
+interface PoolLike extends Queryable {
+  connect(): Promise<ReleasableClient>;
+  end(): Promise<void>;
+}
+
+export interface StoreRuntimeDependencies {
+  createPool(config: PoolConfig): PoolLike;
+  createClient(config: PoolConfig): SingletonClient;
+  sleep(milliseconds: number): Promise<void>;
 }
 
 export interface StoreRuntime {
+  readonly id: symbol;
   readonly options: StoreOptions;
-  pool?: Pool;
+  readonly settings: StoreSettings;
+  readonly dependencies: StoreRuntimeDependencies;
+  pool?: PoolLike;
+  readonly singletonClients: Set<SingletonClient>;
+  closed: boolean;
+  closePromise?: Promise<void>;
 }
 
-const currentStore = new AsyncLocalStorage<StoreRuntime>();
+const defaults: StoreRuntimeDependencies = {
+  createPool: (config) => new pg.Pool(config) as PoolLike,
+  createClient: (config) => new pg.Client(config) as unknown as SingletonClient,
+  sleep: async (milliseconds) => { await sleep(milliseconds); },
+};
+const owners = new AsyncLocalStorage<StoreRuntime>();
 
-export function createStoreRuntime(options: StoreOptions): StoreRuntime {
-  return { options };
+function assertSettings(settings: StoreSettings): void {
+  const positiveInteger = (value: number, name: string): void => {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new RangeError(`Invalid store ${name}: expected a positive safe integer, received ${value}.`);
+    }
+  };
+  positiveInteger(settings.accessRequestCooldownMinutes, 'access cooldown');
+  positiveInteger(settings.prefilterMaxAgeDays, 'prefilter maximum age');
+  for (const [name, score] of [['digest score', settings.digestMinScore], ['alert score', settings.alertScore]] as const) {
+    if (!Number.isFinite(score) || score < 0 || score > 100) {
+      throw new RangeError(`Invalid store ${name}: expected a finite number from 0 through 100, received ${score}.`);
+    }
+  }
+  if (settings.digestMinScore > settings.alertScore) {
+    throw new RangeError('Invalid store scores: digest minimum must not exceed alert score.');
+  }
+  if (!settings.timezone.trim()) throw new TypeError('Invalid store timezone: expected a nonempty string.');
+  if (new Set(settings.searchPlatforms).size !== settings.searchPlatforms.length
+    || settings.searchPlatforms.some((platform) => !platform.trim())) {
+    throw new TypeError('Invalid store search platforms: expected unique nonempty IDs.');
+  }
+  if (settings.telegramUserId !== undefined && !/^[1-9]\d*$/u.test(settings.telegramUserId)) {
+    throw new TypeError('Invalid store Telegram owner ID.');
+  }
+  if (typeof settings.safeVacancyUrl !== 'function') throw new TypeError('Invalid store safe URL policy.');
 }
 
-export function runWithStore<T>(runtime: StoreRuntime, operation: () => T): T {
-  return currentStore.run(runtime, operation);
+export function createStoreRuntime(
+  options: StoreOptions,
+  dependencies: StoreRuntimeDependencies = defaults,
+): StoreRuntime {
+  if (!options.databaseUrl.trim()) throw new TypeError('Invalid store database URL: expected a nonempty string.');
+  if (!Number.isSafeInteger(options.poolMax) || options.poolMax < 1) {
+    throw new RangeError(`Invalid store pool maximum: expected a positive safe integer, received ${options.poolMax}.`);
+  }
+  assertSettings(options.settings);
+  return {
+    id: Symbol('StoreRuntime'),
+    options,
+    settings: Object.freeze({ ...options.settings, searchPlatforms: Object.freeze([...options.settings.searchPlatforms]) }),
+    dependencies,
+    singletonClients: new Set(),
+    closed: false,
+  };
+}
+
+export function runWithStore<TResult>(runtime: StoreRuntime, operation: () => TResult): TResult {
+  return owners.run(runtime, operation);
 }
 
 export function currentStoreRuntime(): StoreRuntime {
-  const value = currentStore.getStore();
-  if (!value) throw new Error('A store repository was called outside its createStore instance.');
-  return value;
+  const runtime = owners.getStore();
+  if (!runtime) throw new Error('Store repository call has no owning store runtime.');
+  if (runtime.closed) throw new Error('Store runtime is closed.');
+  return runtime;
 }
 
 export function storeSettings(): StoreSettings {
-  return currentStoreRuntime().options.settings;
+  return currentStoreRuntime().settings;
 }
 
-function errorCode(error: unknown): string {
-  if (!error || typeof error !== 'object') return 'unknown';
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' ? code : 'unknown';
-}
-function errorText(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return `${errorCode(error)}: ${message.replace(/\s+/g,' ').slice(0,180)}`;
-}
-export function transientPostgresError(error: unknown): boolean {
-  const code=errorCode(error);
-  if(['ECONNRESET','ECONNREFUSED','ETIMEDOUT','ENOTFOUND','EAI_AGAIN','57P01','57P02','57P03','08000','08001','08003','08004','08006','08007','08P01'].includes(code))return true;
-  return /connection terminated|connection timeout|server closed the connection|socket hang up/i.test(error instanceof Error?error.message:String(error));
-}
-const wait=(milliseconds:number)=>new Promise(resolve=>setTimeout(resolve,milliseconds));
-
-export function getPostgresPool(): Pool {
-  const owner = currentStoreRuntime();
-  const connectionString = owner.options.databaseUrl;
-  if (!connectionString) throw new Error('DATABASE_URL is required for Postgres persistence.');
-  if(owner.pool)return owner.pool;
-  const created=new Pool({
-    connectionString,
-    max: owner.options.poolMax,
-    idleTimeoutMillis: 15 * 60_000,
+function poolConfig(runtime: StoreRuntime): PoolConfig {
+  return {
+    connectionString: runtime.options.databaseUrl,
+    max: runtime.options.poolMax,
+    ssl: runtime.options.ssl,
     connectionTimeoutMillis: 10_000,
-    keepAlive:true,
-    keepAliveInitialDelayMillis:10_000,
-    ssl: owner.options.ssl,
-  });
-  created.on('connect',(client)=>client.on('error',(error)=>
-    console.warn(`PostgreSQL client connection error: ${errorText(error)}`)));
-  created.on('error',(error)=>console.warn(`PostgreSQL idle connection error: ${errorText(error)}`));
-  owner.pool=created;
-  return created;
+    idleTimeoutMillis: 30_000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
+    allowExitOnIdle: false,
+  };
 }
 
-export async function postgresQuery<T extends QueryResultRow = QueryResultRow>(text: string,
-  params: unknown[] = []): Promise<T[]> {
-  let lastError:unknown;
-  for(let attempt=0;attempt<3;attempt++){
-    try{return (await getPostgresPool().query<T>(text, params)).rows;}
-    catch(error){
-      lastError=error;if(!transientPostgresError(error)||attempt===2)throw error;
-      console.warn(`Retrying PostgreSQL query after connection failure (${attempt+1}/2): ${errorText(error)}`);
-      await wait(300*2**attempt);
+/** Pool creation is intentionally deferred until the first SQL operation, not store construction. */
+export function getPostgresPool(runtime: StoreRuntime = currentStoreRuntime()): PoolLike {
+  if (runtime.closed) throw new Error('Store runtime is closed.');
+  runtime.pool ??= runtime.dependencies.createPool(poolConfig(runtime));
+  return runtime.pool;
+}
+
+const transientCodes = new Set([
+  'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN',
+  '57P01', '57P02', '57P03', '08000', '08001', '08003', '08004', '08006', '08007', '08P01',
+]);
+
+export function transientPostgresError(error: unknown): boolean {
+  const code = typeof error === 'object' && error !== null && 'code' in error && typeof error.code === 'string'
+    ? error.code
+    : '';
+  return transientCodes.has(code);
+}
+
+export class StoreConnectionError extends Error {
+  readonly operation: string;
+  readonly code?: string;
+
+  constructor(operation: string, cause: unknown) {
+    const code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string'
+      ? cause.code
+      : undefined;
+    super(`PostgreSQL ${operation} failed${code ? ` (${code})` : ''}.`, { cause });
+    this.name = 'StoreConnectionError';
+    this.operation = operation;
+    this.code = code;
+  }
+}
+
+export async function postgresQuery<TRow extends QueryResultRow = QueryResultRow>(
+  text: string,
+  values: readonly unknown[] = [],
+): Promise<QueryResult<TRow>> {
+  const runtime = currentStoreRuntime();
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const pool = getPostgresPool(runtime);
+      return values.length > 0 ? await pool.query<TRow>(text, values) : await pool.query<TRow>(text);
+    } catch (error) {
+      if (attempt === 2 || !transientPostgresError(error)) throw new StoreConnectionError('query', error);
+      await runtime.dependencies.sleep(50 * 2 ** attempt);
     }
   }
-  throw lastError;
+  throw new Error('Unreachable PostgreSQL retry state.');
 }
 
-export async function withPostgresTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  const client = await getPostgresPool().connect();
-  let failure:unknown;
+export async function withPostgresTransaction<TResult>(
+  operation: (client: PoolClient) => Promise<TResult>,
+): Promise<TResult> {
+  const client = await getPostgresPool().connect() as unknown as PoolClient;
+  let poisoned = false;
   try {
-    await client.query('BEGIN');
-    const result = await fn(client);
-    await client.query('COMMIT');
+    await client.query('begin');
+    const result = await operation(client);
+    await client.query('commit');
     return result;
   } catch (error) {
-    failure=error;
-    await client.query('ROLLBACK').catch(()=>undefined);
+    try {
+      await client.query('rollback');
+    } catch {
+      poisoned = true;
+    }
     throw error;
   } finally {
-    client.release(failure instanceof Error?failure:undefined);
+    // A client whose rollback failed may still be in a transaction; pg must destroy rather than reuse it.
+    client.release(poisoned);
   }
 }
 
-export function withPostgresAdvisoryLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
-  if (!key) throw new Error('PostgreSQL advisory-lock key is required.');
+export function withPostgresAdvisoryLock<TResult>(
+  key: string,
+  operation: (client: PoolClient) => Promise<TResult>,
+): Promise<TResult> {
+  if (!key) throw new TypeError('Invalid advisory lock key: expected a nonempty string.');
   return withPostgresTransaction(async (client) => {
-    await client.query('select pg_advisory_xact_lock(hashtext($1))', [key]);
-    return fn();
+    await client.query('select pg_advisory_xact_lock(hashtextextended($1, 0))', [key]);
+    return operation(client);
   });
 }
 
-/**
- * Session-held advisory lock for process-lifetime singletons (the engine loop). A dedicated connection holds the
- * lock until the returned release runs or the process dies, so a second instance acquires nothing while the first
- * lives and takes over automatically when it stops. Returns null when another session already holds the key.
- */
-export async function tryAcquireSingletonLock(owner: StoreRuntime,
-  key: string): Promise<(() => Promise<void>) | null> {
-  if (!key) throw new Error('PostgreSQL advisory-lock key is required.');
-  if (!owner.options.databaseUrl) throw new Error('DATABASE_URL is required.');
-  const client = new Client({ connectionString: owner.options.databaseUrl, ssl: owner.options.ssl });
-  await client.connect();
-  client.on('error', (error) => {
-    console.error(`Singleton-lock connection for ${key} failed: ${errorText(error)}`);
-  });
+export async function tryAcquireSingletonLock(
+  runtime: StoreRuntime,
+  key: string,
+): Promise<(() => Promise<void>) | null> {
+  if (!key) throw new TypeError('Invalid singleton lock key: expected a nonempty string.');
+  if (runtime.closed) throw new Error('Store runtime is closed.');
+  const client = runtime.dependencies.createClient(poolConfig(runtime));
   try {
+    await client.connect();
     const result = await client.query<{ locked: boolean }>(
-      'select pg_try_advisory_lock(hashtext($1)) as locked', [key]);
-    if (result.rows[0]?.locked) {
-      return async () => {
-        await client.query('select pg_advisory_unlock(hashtext($1))', [key]).catch(() => undefined);
-        await client.end().catch(() => undefined);
-      };
+      'select pg_try_advisory_lock(hashtextextended($1, 0)) locked',
+      [key],
+    );
+    if (!result.rows[0]?.locked) {
+      await client.end();
+      return null;
     }
-    await client.end();
-    return null;
+    runtime.singletonClients.add(client);
+    let released = false;
+    return async (): Promise<void> => {
+      if (released) return;
+      released = true;
+      runtime.singletonClients.delete(client);
+      try {
+        await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+      } finally {
+        await client.end();
+      }
+    };
   } catch (error) {
     await client.end().catch(() => undefined);
-    throw error;
+    throw new StoreConnectionError('singleton lock', error);
   }
 }
 
@@ -159,8 +269,14 @@ export async function persistenceReady(): Promise<'postgres'> {
   return 'postgres';
 }
 
-export async function closeStoreRuntime(owner: StoreRuntime): Promise<void> {
-  const current = owner.pool;
-  owner.pool = undefined;
-  await current?.end();
+export async function closeStoreRuntime(runtime: StoreRuntime): Promise<void> {
+  if (runtime.closePromise) return runtime.closePromise;
+  runtime.closed = true;
+  runtime.closePromise = (async () => {
+    const clients = [...runtime.singletonClients];
+    runtime.singletonClients.clear();
+    await Promise.allSettled(clients.map((client) => client.end()));
+    if (runtime.pool) await runtime.pool.end();
+  })();
+  return runtime.closePromise;
 }

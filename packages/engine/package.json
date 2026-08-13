@@ -5,7 +5,18 @@
   "exports": {
     ".": "./src/index.ts",
     "./contracts": "./src/contracts.ts",
-    "./concurrency": "./src/concurrency.ts"
+    "./canon": "./src/canon.ts",
+    "./identity": "./src/identity.ts",
+    "./subscribe": "./src/subscribe.ts",
+    "./cadence": "./src/cadence.ts",
+    "./pick": "./src/pick.ts",
+    "./match-state": "./src/match-state.ts",
+    "./prefilter": "./src/prefilter.ts",
+    "./idf": "./src/idf.ts",
+    "./equivalence": "./src/equivalence.ts",
+    "./concurrency": "./src/concurrency.ts",
+    "./runtime": "./src/runtime.ts",
+    "./loop": "./src/loop.ts"
   },
   "dependencies": {
     "p-limit": "7.3.1",

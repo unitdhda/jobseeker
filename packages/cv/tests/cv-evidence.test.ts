@@ -1,27 +1,63 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertTailoredCvEvidence, tailoredCvEvidenceIssues, type CvDocument } from '../src/pdf.ts';
+import {
+  assertTailoredCvEvidence,
+  CvEvidenceError,
+  tailoredCvEvidenceIssues,
+} from '../src/evidence.ts';
+import type { CvDocument } from '../src/document.ts';
 
-const source=`Jane Example\njane@example.com | Berlin\nAcme Corp\nPlatform Engineer | 2021-2024\nReduced latency by 35% for 12 services.\nSkills: TypeScript, PostgreSQL, Kubernetes, retrieval augmented generation`;
-const cv: CvDocument={name:'Jane Example',headline:'Senior Platform Engineer',contacts:['jane@example.com','Berlin'],sections:[
-  {title:'EXPERIENCE',blocks:[{kind:'entry',title:'Acme Corp',subtitle:'Platform Engineer',meta:'2021-2024',
-    bullets:['Reduced latency by 35% for 12 services.']}]},
-  {title:'SKILLS',blocks:[{kind:'facts',items:[{term:'Platform',detail:'TypeScript, Postgres, K8s, RAG'}]}]},
-]};
+const authoritative = `Ada Lovelace
+ada@example.test
+Analytical Engines
+Software Engineer, 2020–2024
+Improved throughput by 25% while using JavaScript, TypeScript, PostgreSQL, Kubernetes,
+retrieval augmented generation, large language models, and generative AI.
+`;
 
-test('tailored CV evidence accepts source identities, metrics, contacts, and skill aliases',()=>{
-  assert.deepEqual(tailoredCvEvidenceIssues(cv,source),[]);
-  assert.doesNotThrow(()=>assertTailoredCvEvidence(cv,source));
+function documentWith(blocks: CvDocument['sections'][number]['blocks'], contacts = ['ada@example.test']): CvDocument {
+  return { name: 'Ada Lovelace', contacts, sections: [{ title: 'Experience', blocks }] };
+}
+
+test('authoritative entries, contacts, numeric claims, and explicit aliases are accepted', () => {
+  const document = documentWith([
+    { kind: 'entry', title: 'Analytical Engines', subtitle: 'Software Engineer', meta: '2020–2024', bullets: ['Improved throughput by 25%'] },
+    { kind: 'facts', items: [{ term: 'Skills', detail: 'JS, TS, Postgres, K8s, RAG, LLM, GenAI' }] },
+  ]);
+  assert.deepEqual(tailoredCvEvidenceIssues(document, authoritative), []);
+  assert.doesNotThrow(() => assertTailoredCvEvidence(document, authoritative));
 });
 
-test('tailored CV evidence rejects invented facts before rendering',()=>{
-  const changed: CvDocument={...cv,contacts:['invented@example.com'],sections:[
-    {title:'EXPERIENCE',blocks:[{kind:'entry',title:'Other Corp',meta:'2021-2025',bullets:['Improved revenue by 80%.']}]},
-    {title:'SKILLS',blocks:[{kind:'facts',items:[{term:'Platform',detail:'TypeScript, Rust'}]}]},
-  ]};
-  const issues=tailoredCvEvidenceIssues(changed,source);
-  assert.deepEqual(new Set(issues.map((issue)=>issue.kind)),new Set([
-    'new-number','unknown-entry','unknown-contact','unsupported-skill',
-  ]));
-  assert.throws(()=>assertTailoredCvEvidence(changed,source),/unsupported evidence/);
+test('invented numbers, entries, contacts, and named skills are rejected deterministically', () => {
+  const document = documentWith([
+    { kind: 'entry', title: 'Imaginary Corporation', bullets: ['Improved throughput by 40%'] },
+    { kind: 'facts', items: [{ term: 'Skills', detail: 'TypeScript, Rust' }] },
+  ], ['invented@example.test']);
+  assert.deepEqual(tailoredCvEvidenceIssues(document, authoritative), [
+    { kind: 'new-number', value: '40%' },
+    { kind: 'unknown-contact', value: 'invented@example.test' },
+    { kind: 'unknown-entry', value: 'Imaginary Corporation' },
+    { kind: 'unsupported-skill', value: 'Rust' },
+  ]);
+});
+
+test('token boundaries prevent short aliases from matching unrelated words', () => {
+  const document = documentWith([
+    { kind: 'facts', items: [{ term: 'Skills', detail: 'Go' }] },
+  ], []);
+  const issues = tailoredCvEvidenceIssues(document, 'Built products at Google.');
+  assert.deepEqual(issues, [{ kind: 'unsupported-skill', value: 'Go' }]);
+});
+
+test('assertion exposes issues and bounds the error summary', () => {
+  const document = documentWith([
+    { kind: 'facts', items: [{ term: 'Skills', detail: Array.from({ length: 12 }, (_, index) => `Invented${index}`).join(', ') }] },
+  ], []);
+  assert.throws(() => assertTailoredCvEvidence(document, authoritative), (error) => {
+    assert.ok(error instanceof CvEvidenceError);
+    assert.equal(error.issues.length, 12);
+    assert.match(error.message, /and 4 more/);
+    assert.doesNotMatch(error.message, /Improved throughput/);
+    return true;
+  });
 });

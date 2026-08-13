@@ -1,112 +1,92 @@
 import { fork, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import type { GeneratedApplication } from './documents.ts';
-import type { ApplicationArtifact } from './postgres.ts';
-import { config } from './config.ts';
+import type { JobPayload, JobResult, JobWorkerMessage } from './worker-protocol.ts';
+import { deserializeJobResult, parseJobPayload } from './worker-protocol.ts';
 
-type JobPayload =
-  | { type: 'refresh-user'; userId: string; cvHash: string }
-  | { type: 'tailor-application'; userId: string; vacancyId: number; artifact: ApplicationArtifact };
-
-let child: ChildProcess | undefined;
-let nextId = 1;
-let ready: Promise<void> | undefined;
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
-
-/** The worker entry lives next to this module in both layouts: dist/ when built, the package src/ otherwise. */
-function workerCommand(): { modulePath: string; args: string[] } {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const built = join(here, 'worker.mjs');
-  if (existsSync(built)) return { modulePath: built, args: [] };
-  const source = join(here, 'worker.ts');
-  if (process.versions.bun && existsSync(source)) return { modulePath: source, args: [] };
-  throw new Error('Background worker entry was not found. Run bun run build.');
+export interface JobWorkerCommand {
+  readonly modulePath: string;
+  readonly args?: readonly string[];
+  readonly execArgv?: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
+}
+export interface JobWorkerClientOptions {
+  readonly command: JobWorkerCommand;
+  readonly maxPending: number;
+  readonly readyTimeoutMs?: number;
+  readonly spawn?: (command: JobWorkerCommand) => ChildProcess;
+}
+export interface JobWorkerClient {
+  readonly ready: Promise<void>;
+  readonly pendingCount: number;
+  request(payload: JobPayload): Promise<JobResult>;
+  close(): Promise<void>;
 }
 
-function ensureWorker(): { child: ChildProcess; ready: Promise<void> } {
-  if (child?.connected && ready) return { child, ready };
-  const command = workerCommand();
-  let resolveReady!: () => void;
-  let rejectReady!: (error: Error) => void;
-  ready = new Promise<void>((resolvePromise, rejectPromise) => {
-    resolveReady = resolvePromise; rejectReady = rejectPromise;
+interface Pending { resolve(value: JobResult): void; reject(error: Error): void }
+function defaultSpawn(command: JobWorkerCommand): ChildProcess {
+  return fork(command.modulePath, [...(command.args ?? [])], { execArgv: [...(command.execArgv ?? [])],
+    env: { ...process.env, ...(command.env ?? {}), TELEGRAM_MODE: 'off', TELEGRAM_POLLING: 'false', RUN_JOBS: 'false' },
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });
+}
+
+export function createJobWorkerClient(options: JobWorkerClientOptions): JobWorkerClient {
+  if (!Number.isSafeInteger(options.maxPending) || options.maxPending < 1) throw new RangeError('Invalid worker maximum pending queue.');
+  const readyTimeoutMs = options.readyTimeoutMs ?? 30_000;
+  if (!Number.isSafeInteger(readyTimeoutMs) || readyTimeoutMs < 1) throw new RangeError('Invalid worker ready timeout.');
+  const child = (options.spawn ?? defaultSpawn)(options.command);
+  const pending = new Map<number, Pending>(); let nextId = 1; let ready = false; let closed = false; let closePromise: Promise<void> | undefined;
+  let resolveReady!: () => void; let rejectReady!: (error: Error) => void;
+  const readyPromise = new Promise<void>((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+  const readyTimer = setTimeout(() => fail(new Error('Job worker did not become ready in time.')), readyTimeoutMs);
+  function fail(error: Error): void {
+    if (closed) return;
+    closed = true; clearTimeout(readyTimer); if (!ready) rejectReady(error);
+    for (const item of pending.values()) item.reject(error); pending.clear();
+  }
+  child.on('message', (raw: unknown) => {
+    const message = raw as Partial<JobWorkerMessage>;
+    if (message.kind === 'ready') { if (!ready && !closed) { ready = true; clearTimeout(readyTimer); resolveReady(); } return; }
+    if (message.kind !== 'result' || !Number.isSafeInteger(message.id)) { fail(new Error('Job worker sent an invalid IPC message.')); return; }
+    const item = pending.get(message.id!); if (!item) { fail(new Error('Job worker replied with an unknown request ID.')); return; }
+    pending.delete(message.id!);
+    if (message.ok === true && message.result) {
+      try { item.resolve(deserializeJobResult(message.result)); } catch (error) { item.reject(error instanceof Error ? error : new Error('Invalid worker result.')); }
+    } else {
+      const failure = message as Record<string, unknown>;
+      item.reject(new Error(typeof failure.error === 'string' ? failure.error.slice(0, 1_000) : 'Job worker failed.'));
+    }
   });
-  const spawned = fork(command.modulePath, command.args, {
-    env: { ...process.env, RUN_JOBS: 'false', RUN_INITIAL_CYCLE: 'false', TELEGRAM_MODE: 'off', TELEGRAM_POLLING: 'false' },
-    stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
-  });
-  child = spawned;
-  spawned.on('message', (message: JobWorkerMessage) => {
-    if (message.kind === 'ready') { resolveReady(); return; }
-    const request = pending.get(message.id);
-    if (!request) return;
-    pending.delete(message.id);
-    if (message.ok) request.resolve(message.result);
-    else request.reject(new Error(message.error));
-  });
-  spawned.once('error', (error) => rejectReady(error));
-  spawned.once('exit', (code, signal) => {
-    const error = new Error(`Background worker exited (${signal ?? code ?? 'unknown'}).`);
-    rejectReady(error);
-    for (const request of pending.values()) request.reject(error);
-    pending.clear();
-    if (child === spawned) { child = undefined; ready = undefined; }
-  });
-  return { child: spawned, ready };
-}
+  child.once('error', (error) => fail(new Error('Job worker process failed.', { cause: error })));
+  child.once('exit', (code, signal) => fail(new Error(`Job worker exited${code !== null ? ` with code ${code}` : ` on ${signal}`}.`)));
+  child.once('disconnect', () => { if (!closed) fail(new Error('Job worker disconnected.')); });
 
-async function request<T>(payload: JobPayload): Promise<T> {
-  if (pending.size >= config.maxPendingWorkerJobs) throw new Error('Background job queue is full; retry later.');
-  const id = nextId++;
-  const worker = ensureWorker();
-  await worker.ready;
-  if (pending.size >= config.maxPendingWorkerJobs) throw new Error('Background job queue is full; retry later.');
-  return new Promise<T>((resolvePromise, rejectPromise) => {
-    pending.set(id, { resolve: (value) => resolvePromise(value as T), reject: rejectPromise });
-    worker.child.send({ id, ...payload } satisfies JobWorkerRequest, (error) => {
-      if (!error) return;
-      pending.delete(id);
-      rejectPromise(error);
-    });
+  return Object.freeze({
+    get ready(): Promise<void> { return readyPromise; },
+    get pendingCount(): number { return pending.size; },
+    async request(payload: JobPayload): Promise<JobResult> {
+      const validated = parseJobPayload(payload);
+      await readyPromise;
+      if (closed || !child.connected) throw new Error('Job worker is not available.');
+      if (pending.size >= options.maxPending) throw new Error('Job worker pending queue is full.');
+      if (nextId > Number.MAX_SAFE_INTEGER) throw new Error('Job worker request ID space is exhausted.');
+      const id = nextId++; return new Promise<JobResult>((resolve, reject) => {
+        pending.set(id, { resolve, reject });
+        child.send({ kind: 'request', id, payload: validated }, (error) => {
+          if (!error) return; const item = pending.get(id); pending.delete(id); item?.reject(new Error('Job worker IPC send failed.', { cause: error }));
+        });
+      });
+    },
+    close(): Promise<void> {
+      if (closePromise) return closePromise;
+      closePromise = (async () => {
+        const error = new Error('Job worker is shutting down.'); fail(error);
+        if (!child.connected && child.exitCode !== null) return;
+        child.disconnect();
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); resolve(); }, 3_000);
+          child.once('exit', () => { clearTimeout(timer); resolve(); });
+        });
+      })();
+      return closePromise;
+    },
   });
 }
-
-export function jobWorkerStatus():{active:number;pending:number;capacity:number}{
-  return {active:child?.connected?1:0,pending:pending.size,capacity:config.maxPendingWorkerJobs};
-}
-
-export async function stopJobWorker():Promise<void>{
-  const running=child;if(!running)return;
-  child=undefined;ready=undefined;
-  if(running.connected)running.disconnect();
-  await Promise.race([new Promise<void>(resolve=>running.once('exit',()=>resolve())),
-    new Promise<void>(resolve=>setTimeout(()=>{running.kill('SIGKILL');resolve();},3_000))]);
-}
-
-export function refreshUserInWorker(userId: string, cvHash: string): Promise<RefreshUserResult> {
-  return request({ type: 'refresh-user', userId, cvHash });
-}
-export async function tailorApplicationInWorker(userId: string, vacancyId: number,
-  artifact: ApplicationArtifact): Promise<GeneratedApplication> {
-  const result = await request<SerializedApplication>({ type: 'tailor-application', userId, vacancyId, artifact });
-  return { tailoredCvPdf: result.tailoredCvPdfBase64 ? Buffer.from(result.tailoredCvPdfBase64, 'base64') : null,
-    coverLetter: result.coverLetter };
-}
-
-export type JobWorkerRequest =
-  | { id: number; type: 'refresh-user'; userId: string; cvHash: string }
-  | { id: number; type: 'tailor-application'; userId: string; vacancyId: number; artifact: ApplicationArtifact };
-
-export interface RefreshUserResult {
-  searchCount: number;
-  platformCount: number;
-}
-export interface SerializedApplication extends Omit<GeneratedApplication, 'tailoredCvPdf'> {
-  tailoredCvPdfBase64: string | null;
-}
-
-export type JobWorkerSuccess = { kind: 'result'; id: number; ok: true; result: unknown };
-export type JobWorkerFailure = { kind: 'result'; id: number; ok: false; error: string };
-export type JobWorkerMessage = { kind: 'ready' } | JobWorkerSuccess | JobWorkerFailure;

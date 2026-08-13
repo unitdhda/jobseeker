@@ -1,49 +1,58 @@
-/**
- * The contract between the app's planner and the source adapters. The plan shapes live here — with their consumer —
- * so the planner produces what the adapters declare they accept, not the other way round.
- */
 import type { BaseIssue, BaseSchema, InferOutput } from 'valibot';
-import type { SearchPlan, VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
+import type {
+  SearchPlan,
+  VacancyCandidate,
+  VacancyInput,
+} from '@jobseeker/engine/contracts';
 
 export type { PlannedSearch, SearchPlan, SearchRecipient } from '@jobseeker/engine/contracts';
-export interface UserSearches<T> { userId: string; searches: readonly T[] }
+
+export interface UserSearches<T> {
+  readonly userId: string;
+  readonly searches: readonly T[];
+}
+
 export interface PlanOptions {
-  /** The platform lists everything it has whatever the query, so one job covers every cluster. */
-  enumerates?: boolean;
-  /** The platform accepts boolean text, so a cluster becomes one OR query rather than its broadest member. */
-  mergeText?: 'or';
+  readonly enumerates?: boolean;
+  readonly mergeText?: 'or';
 }
 
 export interface PlatformValidationTemplate {
-  platform: string;
-  version: number;
-  purpose: string;
-  jsonShape: unknown;
-  capabilities: Record<string, unknown>;
-  rules: string[];
+  readonly platform: string;
+  readonly version: number;
+  readonly purpose: string;
+  readonly jsonShape: unknown;
+  readonly capabilities: Readonly<Record<string, unknown>>;
+  readonly rules: readonly string[];
 }
 
-export interface SearchPlatform<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>> {
-  id: string;
-  name: string;
-  schema: S;
+export type SourceSchema = BaseSchema<unknown, unknown, BaseIssue<unknown>>;
+
+export interface SearchPlatform<S extends SourceSchema> {
+  readonly id: string;
+  readonly name: string;
+  readonly schema: S;
   template(): PlatformValidationTemplate;
-  /** Every host this platform is allowed to touch; the union feeds the SSRF guard at registration. */
-  hosts: readonly string[];
-  /** The platform lists everything it has whatever the query, so its plan is one job covering every cluster. */
-  enumerates?: boolean;
-  /** The platform accepts boolean text, so a cluster of equivalent queries becomes one OR search. */
-  mergeText?: 'or';
+  /** Closed host declaration consumed by the URL and SSRF boundary. */
+  readonly hosts: readonly string[];
+  readonly enumerates?: boolean;
+  readonly mergeText?: 'or';
 }
 
-export type PlatformProfile<P extends SearchPlatform<BaseSchema<unknown, unknown, BaseIssue<unknown>>>> =
-  InferOutput<P['schema']>;
+export type PlatformProfile<P extends SearchPlatform<SourceSchema>> = InferOutput<P['schema']>;
 
-export interface PlatformDiscoveryResult { searches: number; users: number; seen: number; discovered: number;
-  discoveredBySearch?: Record<string, number> }
-export type PlatformSearch<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>> =
-  InferOutput<S> extends { searches: readonly (infer T)[] } ? T : never;
-export interface VacancyPlatform<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>> extends SearchPlatform<S> {
+export type PlatformSearch<S extends SourceSchema> =
+  InferOutput<S> extends { readonly searches: readonly (infer T)[] } ? T : never;
+
+export interface PlatformDiscoveryResult {
+  readonly searches: number;
+  readonly users: number;
+  readonly seen: number;
+  readonly discovered: number;
+  readonly discoveredBySearch?: Readonly<Record<string, number>>;
+}
+
+export interface VacancyPlatform<S extends SourceSchema> extends SearchPlatform<S> {
   discover(plan: SearchPlan<PlatformSearch<S>>): Promise<PlatformDiscoveryResult>;
-  normalize(candidates: VacancyCandidate[]): Promise<Map<string, VacancyInput | null | Error>>;
+  normalize(candidates: readonly VacancyCandidate[]): Promise<Map<string, VacancyInput | null | Error>>;
 }

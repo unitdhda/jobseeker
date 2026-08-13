@@ -1,0 +1,72 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+const read = (name: string): Promise<string> => readFile(new URL(`../src/${name}`, import.meta.url), 'utf8');
+
+test('store domain receives settings explicitly and never reads environment variables', async () => {
+  const source = (await Promise.all(['client.ts', 'store.ts', 'repos.ts', 'engine-repos.ts', 'telegram-repos.ts'].map(read))).join('\n');
+  assert.doesNotMatch(source, /\bprocess\s*\.\s*env\b|\bBun\s*\.\s*env\b/u);
+});
+
+test('match claims and transitions retain source-state predicates and delivered wall', async () => {
+  const engine = await read('engine-repos.ts');
+  const repos = await read('repos.ts');
+  assert.match(engine, /where user_id=\$1 and vacancy_id=any\(\$2::bigint\[\]\) and state='matched' returning vacancy_id/u);
+  assert.match(engine, /where user_id=\$1 and vacancy_id=\$2 and state=\$3/u);
+  assert.match(repos, /state in \('matched','queued','scored'\) and delivered_at is null/u);
+  assert.match(repos, /Full score_explanation survives delivery/u);
+  assert.match(repos, /application_artifacts=jsonb_set/u);
+  assert.doesNotMatch(repos, /application_artifacts[^\n]*(?:bytea|Buffer)/iu);
+});
+
+test('engine scheduling, refresh, vocabularies, and applications retain their ownership predicates', async () => {
+  const engine = await read('engine-repos.ts');
+  const repos = await read('repos.ts');
+  assert.match(engine, /u\.platform=any\(\$2::text\[\]\)/u);
+  assert.match(engine, /export async function replaceMatchingVocabularies[\s\S]*?withPostgresTransaction/u);
+  assert.match(repos, /export async function markCandidateRefreshFailed[\s\S]*?lifecycle_status='normalized'/u);
+  assert.match(repos, /export async function beginApplication[\s\S]*?artifact: ApplicationArtifact[\s\S]*?cvSha256/u);
+  assert.match(repos, /state in \('alerted','digested','skipped','applied'\)/u);
+  assert.match(repos, /application_artifacts->\$3->>'cvSha256' is distinct from \$4/u);
+});
+
+test('CV confirmation locks a live preview, saves, then consumes it', async () => {
+  const repos = await read('repos.ts');
+  const confirmation = /export async function confirmStagedCvSource[\s\S]*?\n\}\n/u.exec(repos)?.[0] ?? '';
+  assert.match(confirmation, /expires_at>now\(\) for update/u);
+  assert.ok(confirmation.indexOf('saveCvWithClient') < confirmation.indexOf("delete from pending_cv_imports"));
+});
+
+test('personal deletion preserves access identity while removing user-owned data', async () => {
+  const repos = await read('repos.ts');
+  const deletion = /export async function deleteUserData[\s\S]*?\n\}\n/u.exec(repos)?.[0] ?? '';
+  assert.doesNotMatch(deletion, /delete from users/u);
+  for (const table of ['matches', 'pending_cv_imports', 'cv_documents', 'usage_events', 'accounts', 'user_state']) {
+    assert.match(deletion, new RegExp(`'${table}'`, 'u'));
+  }
+  assert.match(deletion, /delete from unit_subscriptions/u);
+});
+
+test('session and webhook claims use token/state/lease predicates', async () => {
+  const source = await read('telegram-repos.ts');
+  assert.match(source, /where user_state\.expires_at<=now\(\)/u);
+  assert.match(source, /where user_id=\$1 and kind=\$2 and token=\$3 and expires_at>now\(\)/u);
+  assert.match(source, /state='failed' or \(state='processing' and lease_expires_at<=now\(\)\)/u);
+  assert.match(source, /where update_id=\$1 and state='processing'/u);
+});
+
+test('match-history search is bounded to one user and includes rows without a full score', async () => {
+  const repos = await read('repos.ts');
+  const search = /export async function searchMatchedVacancies[\s\S]*?\n\}\n/u.exec(repos)?.[0] ?? '';
+  assert.match(search, /where m\.user_id=\$1 and v\.search_vector@@search\.query/u);
+  assert.match(search, /m\.llm_score desc nulls last/u);
+  assert.doesNotMatch(search, /m\.llm_score is not null/u);
+  assert.match(search, /limit \$3/u);
+});
+
+test('operational summaries contain exactly the current hour plus previous 24 hours', async () => {
+  const repos = await read('repos.ts');
+  const series = /generate_series\(date_trunc\('hour',now\(\)\)-interval '24 hours',date_trunc\('hour',now\(\)\),interval '1 hour'\)/gu;
+  assert.equal([...repos.matchAll(series)].length, 2);
+});

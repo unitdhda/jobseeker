@@ -18,6 +18,7 @@
     "packages/*/src/**/*.ts",
     "packages/*/tests/**/*.ts",
     "packages/sources/examples/**/*.ts",
+    "extensions/**/*.ts",
     "packages/app/vite.config.ts",
     "*.ts"
   ]

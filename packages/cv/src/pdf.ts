@@ -1,7 +1,18 @@
+export type { CvBlock, CvDocument, CvSection } from './document.ts';
 export {
-  cvDocumentLimits, cvDocumentSchema, normalizeCvDocumentJson, parseCvText,
-  type CvBlock, type CvDocument, type CvSection,
+  cvBlockSchema,
+  cvDocumentLimits,
+  cvDocumentSchema,
+  cvSectionSchema,
+  normalizeCvDocumentJson,
+  parseCvText,
 } from './document.ts';
+export type { CvEvidenceIssue } from './evidence.ts';
+export {
+  assertTailoredCvEvidence,
+  CvEvidenceError,
+  tailoredCvEvidenceIssues,
+} from './evidence.ts';
 export { cvPreamble } from './template.ts';
-export { assertTailoredCvEvidence, tailoredCvEvidenceIssues, type CvEvidenceIssue } from './evidence.ts';
-export { createCvPdf, cvSource, type CvPdf, type CvPdfOptions } from './render.ts';
+export type { CvPdf, CvPdfOptions } from './render.ts';
+export { createCvPdf, cvSource } from './render.ts';

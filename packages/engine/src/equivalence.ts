@@ -1,83 +1,153 @@
-/**
- * Learned role-token equivalences, mined from the career profiles the LLM already produces.
- *
- * A track's titleVariants all name the same role — the schema forces translations into separate variants — so
- * variant pairs are labelled equivalence data manufactured as a side effect of profile generation. Mining is
- * precision-first: after canonicalization through the frozen core markers, a pair of variants contributes a
- * token pair only when the alignment is unambiguous — and only across scripts. Same-script residuals are
- * usually adjacent roles the same person holds (frontend|fullstack, python|backend), not names for one role;
- * production profiles proved that merging them conflates occupations. Cross-script residuals of one track are
- * translations with near certainty. Coverage therefore grows with the deployment's actual occupations instead
- * of a curated dictionary, at the cost of ignoring same-language synonyms the core table must cover itself.
- *
- * The learned layer is consulted only at compare time (prefilter evidence, unit adoption). Unit identity hashing
- * keeps using the frozen core alone: late-learned pairs must never re-key existing units.
- */
-import { searchTokens } from './canon.ts';
+import { roleNgramSimilarity, searchTokens } from './canon.ts';
 
 export interface RoleEquivalencePair {
-  /** Lexicographically ordered so (a,b) and (b,a) are one fact. */
-  tokenA: string;
-  tokenB: string;
-  support: number;
+  readonly tokenA: string;
+  readonly tokenB: string;
+  readonly support: number;
 }
 
-export interface RoleTrackTitles { titleVariants: readonly string[] }
-
-/**
- * Extracts equivalence candidates from tracks. Two rules, both unambiguous by construction:
- * single-token variants of one track pair directly; multi-token variants pair only when they share at least one
- * anchor token and each side leaves exactly one residual.
- */
-export function mineRoleEquivalences(tracks: readonly RoleTrackTitles[]): RoleEquivalencePair[] {
-  const support = new Map<string, number>();
-  const cyrillic = (token: string): boolean => /[Ѐ-ӿ]/.test(token);
-  const count = (left: string, right: string): void => {
-    if (left === right || cyrillic(left) === cyrillic(right)) return;
-    const key = left < right ? `${left}\n${right}` : `${right}\n${left}`;
-    support.set(key, (support.get(key) ?? 0) + 1);
-  };
-  for (const track of tracks) {
-    const variants = track.titleVariants.map((variant) => searchTokens(variant)).filter((tokens) => tokens.size > 0);
-    for (let first = 0; first < variants.length; first++) {
-      for (let second = first + 1; second < variants.length; second++) {
-        const a = variants[first]!; const b = variants[second]!;
-        if (a.size === 1 && b.size === 1) { count([...a][0]!, [...b][0]!); continue; }
-        const residualA = [...a].filter((token) => !b.has(token));
-        const residualB = [...b].filter((token) => !a.has(token));
-        const anchors = a.size - residualA.length;
-        if (anchors >= 1 && residualA.length === 1 && residualB.length === 1) {
-          count(residualA[0]!, residualB[0]!);
-        }
-      }
-    }
-  }
-  return [...support.entries()].map(([key, times]) => {
-    const [tokenA, tokenB] = key.split('\n') as [string, string];
-    return { tokenA, tokenB, support: times };
-  }).sort((left, right) => right.support - left.support || left.tokenA.localeCompare(right.tokenA));
+export interface RoleTrackTitles {
+  readonly titleVariants: readonly string[];
 }
 
-/** Maps a token to its equivalence-class representative; unlisted tokens map to themselves. */
 export type RoleTokenResolver = (token: string) => string;
 
 export const identityRoleResolver: RoleTokenResolver = (token) => token;
 
-/** Union-find over the learned pairs, collapsed to a representative per class. */
-export function createRoleTokenResolver(pairs: readonly Pick<RoleEquivalencePair, 'tokenA' | 'tokenB'>[]):
-  RoleTokenResolver {
+const anchorNgramThreshold = 0.8;
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function normalizeToken(token: string): string {
+  return token.normalize('NFKC').toLowerCase().trim();
+}
+
+type TokenScript = 'latin' | 'cyrillic' | 'unknown';
+
+function tokenScript(token: string): TokenScript {
+  const letters = token.match(/\p{L}/gu) ?? [];
+  if (letters.length === 0) return 'unknown';
+  if (letters.every((letter) => /\p{Script=Latin}/u.test(letter))) return 'latin';
+  if (letters.every((letter) => /\p{Script=Cyrillic}/u.test(letter))) return 'cyrillic';
+  return 'unknown';
+}
+
+function crossScript(left: string, right: string): boolean {
+  const leftScript = tokenScript(left);
+  const rightScript = tokenScript(right);
+  return leftScript !== 'unknown' && rightScript !== 'unknown' && leftScript !== rightScript;
+}
+
+function anchoredResiduals(
+  left: readonly string[],
+  right: readonly string[],
+): readonly [string, string] | null {
+  const remainingRight = new Set(right.map((_token, index) => index));
+  const unmatchedLeft: string[] = [];
+
+  for (const leftToken of left) {
+    let matchedIndex: number | undefined;
+    for (const index of remainingRight) {
+      const rightToken = right[index]!;
+      if (leftToken === rightToken
+        || (tokenScript(leftToken) === tokenScript(rightToken)
+          && tokenScript(leftToken) !== 'unknown'
+          && roleNgramSimilarity([leftToken], [rightToken]) >= anchorNgramThreshold)) {
+        matchedIndex = index;
+        break;
+      }
+    }
+    if (matchedIndex === undefined) unmatchedLeft.push(leftToken);
+    else remainingRight.delete(matchedIndex);
+  }
+
+  const unmatchedRight = [...remainingRight].map((index) => right[index]!);
+  const sharedAnchorCount = left.length - unmatchedLeft.length;
+  return sharedAnchorCount > 0 && unmatchedLeft.length === 1 && unmatchedRight.length === 1
+    ? [unmatchedLeft[0]!, unmatchedRight[0]!]
+    : null;
+}
+
+/** Mines only unambiguous cross-script residual equivalence from title variants within the same career track. */
+export function mineRoleEquivalences(tracks: readonly RoleTrackTitles[]): RoleEquivalencePair[] {
+  const support = new Map<string, { tokenA: string; tokenB: string; tracks: Set<number> }>();
+
+  tracks.forEach((track, trackIndex) => {
+    const variants = track.titleVariants.map((title) => [...searchTokens(title)]).filter((tokens) => tokens.length > 0);
+    for (let leftIndex = 0; leftIndex < variants.length; leftIndex += 1) {
+      for (let rightIndex = leftIndex + 1; rightIndex < variants.length; rightIndex += 1) {
+        const left = variants[leftIndex]!;
+        const right = variants[rightIndex]!;
+        let residuals: readonly [string, string] | null = null;
+        if (left.length === 1 && right.length === 1) residuals = [left[0]!, right[0]!];
+        else residuals = anchoredResiduals(left, right);
+        if (!residuals || !crossScript(residuals[0], residuals[1])) continue;
+
+        const [tokenA, tokenB] = [...residuals].sort(compareStrings) as [string, string];
+        if (tokenA === tokenB) continue;
+        const key = `${tokenA}\0${tokenB}`;
+        const entry = support.get(key) ?? { tokenA, tokenB, tracks: new Set<number>() };
+        entry.tracks.add(trackIndex);
+        support.set(key, entry);
+      }
+    }
+  });
+
+  return [...support.values()]
+    .map((entry) => Object.freeze({ tokenA: entry.tokenA, tokenB: entry.tokenB, support: entry.tracks.size }))
+    .sort((left, right) => compareStrings(left.tokenA, right.tokenA) || compareStrings(left.tokenB, right.tokenB));
+}
+
+function validatePair(pair: RoleEquivalencePair): readonly [string, string] {
+  const tokenA = normalizeToken(pair.tokenA);
+  const tokenB = normalizeToken(pair.tokenB);
+  if (!tokenA || !tokenB) throw new TypeError('Invalid role equivalence pair: tokens must not be empty.');
+  if (tokenA !== pair.tokenA || tokenB !== pair.tokenB) {
+    throw new TypeError('Invalid role equivalence pair: tokens must already be NFKC-normalized and lowercase.');
+  }
+  if (tokenA === tokenB) throw new TypeError('Invalid role equivalence pair: tokens must be distinct.');
+  if (!Number.isSafeInteger(pair.support) || pair.support < 1) {
+    throw new RangeError(
+      `Invalid role equivalence support: expected a positive safe integer, received ${pair.support}.`,
+    );
+  }
+  return [tokenA, tokenB];
+}
+
+/** Builds deterministic transitive equivalence classes from approved persisted pair data. */
+export function createRoleTokenResolver(pairs: readonly RoleEquivalencePair[]): RoleTokenResolver {
   const parent = new Map<string, string>();
+
   const find = (token: string): string => {
-    let root = token;
-    while (parent.get(root) !== undefined && parent.get(root) !== root) root = parent.get(root)!;
+    const current = parent.get(token);
+    if (current === undefined) {
+      parent.set(token, token);
+      return token;
+    }
+    if (current === token) return token;
+    const root = find(current);
+    parent.set(token, root);
     return root;
   };
+
+  const union = (left: string, right: string): void => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot === rightRoot) return;
+    const [representative, other] = [leftRoot, rightRoot].sort(compareStrings);
+    parent.set(other!, representative!);
+  };
+
   for (const pair of pairs) {
-    for (const token of [pair.tokenA, pair.tokenB]) if (!parent.has(token)) parent.set(token, token);
-    const rootA = find(pair.tokenA); const rootB = find(pair.tokenB);
-    if (rootA !== rootB) parent.set(rootB < rootA ? rootA : rootB, rootB < rootA ? rootB : rootA);
+    const [tokenA, tokenB] = validatePair(pair);
+    union(tokenA, tokenB);
   }
-  const resolved = new Map<string, string>();
-  for (const token of parent.keys()) resolved.set(token, find(token));
-  return (token) => resolved.get(token) ?? token;
+  for (const token of parent.keys()) find(token);
+
+  return (rawToken: string): string => {
+    const token = normalizeToken(rawToken);
+    return parent.get(token) ?? token;
+  };
 }

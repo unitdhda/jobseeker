@@ -1,43 +1,43 @@
-/** Generic JSON API provider assembled through the public createSourceProvider contract. */
-import type { BaseIssue, BaseSchema } from 'valibot';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import type { PlatformSearch, SearchPlan, SearchPlatform } from '../contract.ts';
+import type { VacancyCandidate, VacancyCandidateInput, VacancyInput } from '@jobseeker/engine/contracts';
+import { parseSourceKey, parseSourceVacancyId } from '@jobseeker/engine/contracts';
+import type { PlatformSearch, SearchPlan, SearchPlatform, SourceSchema } from '../contract.ts';
 import type { SourceContext } from '../context.ts';
 import { sourceUserAgent, VacancySearchCollector } from '../http.ts';
 import { createSourceProvider, type SourceProvider } from '../sources.ts';
 
 export interface ApiListing {
-  sourceId: string;
-  url: string;
-  title: string;
-  summary?: string;
-  publishedAt?: string;
-  payload?: unknown;
+  readonly sourceId: string;
+  readonly url: string;
+  readonly title: string;
+  readonly summary?: string;
+  readonly publishedAt?: string;
+  readonly payload?: unknown;
 }
 
 export interface ApiListingPage {
-  listings: readonly ApiListing[];
-  nextCursor?: string;
+  readonly listings: readonly ApiListing[];
+  readonly nextCursor?: string;
 }
 
 export type ApiRequestPhase = 'listing' | 'detail';
 
-export interface ApiSourceDefinition<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>>
-  extends SearchPlatform<S> {
+export interface ApiSourceDefinition<S extends SourceSchema> extends SearchPlatform<S> {
   searchName(search: PlatformSearch<S>): string;
   searchUrl(search: PlatformSearch<S>, cursor?: string): string;
-  /** `cursor` is the value the page was requested with, for codecs whose payloads do not echo their position. */
   listingPage(payload: unknown, search: PlatformSearch<S>, cursor?: string): ApiListingPage;
-  /** Omit when listing payloads are already complete and normalization needs no second request. */
   detailUrl?(candidate: VacancyCandidate): string;
   vacancy(candidate: VacancyCandidate, payload: unknown, context: SourceContext):
     Promise<VacancyInput | null> | VacancyInput | null;
   requestInit?(phase: ApiRequestPhase, candidate?: VacancyCandidate): RequestInit;
 }
 
-export interface ApiSourceOptions { maxPages?: number }
+export interface ApiSourceOptions { readonly maxPages?: number }
 
-function requestInit<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>>(
+function positiveInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`Invalid API source ${name}.`);
+}
+
+function requestInit<S extends SourceSchema>(
   definition: ApiSourceDefinition<S>, phase: ApiRequestPhase, candidate?: VacancyCandidate,
 ): RequestInit {
   const supplied = definition.requestInit?.(phase, candidate) ?? {};
@@ -47,68 +47,92 @@ function requestInit<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>>
   return { ...supplied, headers, signal: supplied.signal ?? AbortSignal.timeout(45_000) };
 }
 
-async function discoverApi<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>>(
-  definition: ApiSourceDefinition<S>, plan: SearchPlan<PlatformSearch<S>>, context: SourceContext, maxPages: number,
-): Promise<{ seen: number; discovered: number; discoveredBySearch?: Record<string, number> }> {
-  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
-    context.recordListingCandidate);
-  const pagesPerSearch = Math.max(1, Math.min(maxPages,
-    Math.floor(context.limits.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
-  searches: for (const { search, recipients } of plan.searches) {
-    let cursor: string | undefined;
-    for (let page = 1; page <= pagesPerSearch; page++) {
-      const payload = await context.http.fetchSourceJson(definition.id,
-        definition.searchUrl(search, cursor), requestInit(definition, 'listing'));
-      const result = definition.listingPage(payload, search, cursor);
-      context.trace('scrape.search.result', { platform: definition.id, page, found: result.listings.length });
-      for (const listing of result.listings) {
-        if (!listing.sourceId || !listing.title) continue;
-        await collector.record({
-          source: definition.id,
-          sourceId: listing.sourceId,
-          url: context.http.safeVacancyUrl(definition.id, listing.url),
-          searchName: definition.searchName(search),
-          title: listing.title,
-          summary: (listing.summary ?? '').slice(0, 1_000),
-          publishedAt: listing.publishedAt,
-          payload: listing.payload ?? listing,
-        }, recipients);
-        if (collector.complete) break;
-      }
-      if (collector.complete) break searches;
-      cursor = result.nextCursor;
-      if (!cursor) break;
-    }
-  }
-  return collector.result();
+function pageAllocations(searches: number, budget: number, maximum: number): readonly number[] {
+  if (searches === 0) return [];
+  const base = Math.floor(budget / searches);
+  const remainder = budget % searches;
+  return Object.freeze(Array.from({ length: searches }, (_, index) =>
+    Math.min(maximum, base + (index < remainder ? 1 : 0))));
 }
 
-/** Creates a fresh provider for paginated JSON listings and optional JSON detail requests. */
-export function createApiSource<S extends BaseSchema<unknown, unknown, BaseIssue<unknown>>>(
+function listingInput<S extends SourceSchema>(
+  definition: ApiSourceDefinition<S>, listing: ApiListing, search: PlatformSearch<S>, context: SourceContext,
+): VacancyCandidateInput {
+  if (!listing.title.trim()) throw new TypeError(`Source ${definition.id} returned an empty listing title.`);
+  const publishedAt = listing.publishedAt === undefined ? undefined : new Date(listing.publishedAt);
+  if (publishedAt && !Number.isFinite(publishedAt.getTime())) {
+    throw new TypeError(`Source ${definition.id} returned an invalid listing date.`);
+  }
+  return {
+    source: parseSourceKey(definition.id),
+    sourceId: parseSourceVacancyId(listing.sourceId),
+    url: context.http.sourceUrl(definition.id, listing.url),
+    searchName: definition.searchName(search),
+    title: listing.title.trim(),
+    ...(listing.summary === undefined ? {} : { summary: listing.summary }),
+    ...(publishedAt === undefined ? {} : { publishedAt }),
+    ...(listing.payload === undefined ? {} : { payload: listing.payload }),
+  };
+}
+
+async function discoverApi<S extends SourceSchema>(
+  definition: ApiSourceDefinition<S>, plan: SearchPlan<PlatformSearch<S>>, context: SourceContext, maximumPages: number,
+) {
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
+  const allocations = pageAllocations(plan.searches.length, context.limits.searchPageBudgetPerPlatform, maximumPages);
+  const users = new Set<string>();
+  for (const planned of plan.searches) for (const recipient of planned.recipients) users.add(recipient.userId);
+
+  for (let searchIndex = 0; searchIndex < plan.searches.length && !collector.complete; searchIndex += 1) {
+    const planned = plan.searches[searchIndex]!;
+    const cursorHistory = new Set<string>();
+    let cursor: string | undefined;
+    for (let page = 0; page < allocations[searchIndex]! && !collector.complete; page += 1) {
+      const payload = await context.http.fetchSourceJson(
+        definition.id,
+        definition.searchUrl(planned.search, cursor),
+        requestInit(definition, 'listing'),
+      );
+      const decoded = definition.listingPage(payload, planned.search, cursor);
+      if (!Array.isArray(decoded.listings)) throw new TypeError(`Source ${definition.id} returned an invalid listing page.`);
+      for (const listing of decoded.listings) {
+        if (collector.complete) break;
+        await collector.record(listingInput(definition, listing, planned.search, context), planned.recipients);
+      }
+      const next = decoded.nextCursor;
+      if (next === undefined || next === '' || cursorHistory.has(next)) break;
+      cursorHistory.add(next);
+      cursor = next;
+    }
+  }
+  return Object.freeze({ searches: plan.searches.length, users: users.size, ...collector.result() });
+}
+
+async function normalizeApi<S extends SourceSchema>(
+  definition: ApiSourceDefinition<S>, candidates: readonly VacancyCandidate[], context: SourceContext,
+): Promise<Map<string, VacancyInput | null | Error>> {
+  const output = new Map<string, VacancyInput | null | Error>();
+  await Promise.all(candidates.map(async (candidate) => {
+    try {
+      const payload = definition.detailUrl
+        ? await context.http.fetchSourceJson(definition.id, definition.detailUrl(candidate), requestInit(definition, 'detail', candidate))
+        : candidate.payload;
+      output.set(candidate.sourceId, await definition.vacancy(candidate, payload, context));
+    } catch (error) {
+      output.set(candidate.sourceId, error instanceof Error ? error : new Error(context.errorMessage(error)));
+    }
+  }));
+  return output;
+}
+
+export function createApiSource<S extends SourceSchema>(
   definition: ApiSourceDefinition<S>, options: ApiSourceOptions = {},
 ): SourceProvider<S> {
-  const { id, name, hosts, schema, template, enumerates, mergeText } = definition;
+  const maximumPages = options.maxPages ?? Number.MAX_SAFE_INTEGER;
+  positiveInteger(maximumPages, 'maximum pages');
   return createSourceProvider({
-    id, name, hosts, schema, template, enumerates, mergeText,
-    async discover(plan, context) {
-      const result = await discoverApi(definition, plan, context, options.maxPages ?? 1);
-      const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
-      return { searches: plan.searches.length, users: users.size, ...result };
-    },
-    async normalize(candidates, context) {
-      const results = new Map<string, VacancyInput | null | Error>();
-      for (const candidate of candidates) {
-        try {
-          const payload = definition.detailUrl
-            ? await context.http.fetchSourceJson(definition.id, definition.detailUrl(candidate),
-              requestInit(definition, 'detail', candidate))
-            : candidate.payload;
-          results.set(candidate.sourceId, await definition.vacancy(candidate, payload, context));
-        } catch (error) {
-          results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error)));
-        }
-      }
-      return results;
-    },
+    ...definition,
+    discover: (plan, context) => discoverApi(definition, plan, context, maximumPages),
+    normalize: (candidates, context) => normalizeApi(definition, candidates, context),
   });
 }
