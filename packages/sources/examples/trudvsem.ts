@@ -1,164 +1,33 @@
-/**
- * "Работа России" (trudvsem.ru) publishes the federal vacancy register as an open JSON API, so this adapter needs
- * neither HTML parsing nor a browser. One request returns complete postings, and normalization reuses the payload.
- */
 import * as v from 'valibot';
-import type { SourceContext } from '@jobseeker/sources';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import type { JsonObject, SearchPlan, SearchPlatform } from '@jobseeker/sources';
-import { asObject, createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, plainText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
+import { arrayAt, textAt, dateAt, stringArray } from './api-example.ts';
+import { apiVacancy } from './api-example.ts';
+import { assertToolkitInitialized, createApiSource, examplePages, initToolkit, type SourceExtensionApi } from './toolkit.ts';
+import { listing } from './json-api-example.ts';
+import { textSearchTemplate } from './profile.ts';
 
-/** Federal region code; defaults to Москва, matching the default HH area. */
 export function trudvsemRegion(raw?: string): string {
-  if (!raw) return '7700000000';
-  if (!/^\d{11,13}$/.test(raw)) throw new Error('TRUDVSEM_REGION must be a numeric federal region code.');
-  return raw;
+  const value = raw?.trim() || '7700000000';
+  if (!/^\d{10}$/u.test(value)) throw new TypeError('Invalid Работа России region code.');
+  return value;
 }
-
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
-export const trudvsemSearchProfileSchema = v.strictObject({
-  version: v.literal(1),
-  searches: v.pipe(v.array(v.strictObject({
-    name: label,
-    rationale: v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(300)),
-    query: label,
-  })), v.maxLength(8)),
-});
-export type TrudvsemSearchProfile = v.InferOutput<typeof trudvsemSearchProfileSchema>;
-export type TrudvsemSearch = TrudvsemSearchProfile['searches'][number];
-
-export const trudvsemPlatform: SearchPlatform<typeof trudvsemSearchProfileSchema> = {
-  id: 'trudvsem', name: 'Работа России', hosts: ['opendata.trudvsem.ru', 'trudvsem.ru', 'www.trudvsem.ru'],
-  schema: trudvsemSearchProfileSchema,
-  template: () => ({
-    platform: 'trudvsem', version: 1,
-    purpose: 'Open federal vacancy register published by trudvsem.ru.',
-    jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }] },
-    capabilities: { query: 'One concise Russian role title; the register is a Russian state service', maxSearches: 8 },
-    rules: [
-      'Use Russian role titles only, because the register indexes Russian job names.',
-      'Each query contains one role title without boolean syntax, slashes, or parentheses.',
-      'Do not add location, salary, or work-format terms.',
-    ],
-  }),
-};
-
-export function trudvsemSearchUrl(query: string, page: number, region = '7700000000'): string {
-  const url = new URL(`/api/v1/vacancies/region/${region}`, 'https://opendata.trudvsem.ru');
-  url.searchParams.set('text', query);
-  url.searchParams.set('limit', '50');
-  if (page > 1) url.searchParams.set('offset', String((page - 1) * 50));
-  return url.toString();
+export const trudvsemSearchProfileSchema = v.strictObject({ version: v.literal(1), searches: v.pipe(v.array(v.strictObject({
+  name: label, rationale: v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(300)), query: label,
+})), v.maxLength(8)) });
+export function trudvsemSource(options: { readonly maxPages?: number; readonly region?: string } = {}) {
+  assertToolkitInitialized(); const region = trudvsemRegion(options.region);
+  return createApiSource({ id: 'trudvsem', name: 'Работа России', hosts: ['opendata.trudvsem.ru', 'trudvsem.ru'], schema: trudvsemSearchProfileSchema,
+    template: () => textSearchTemplate('trudvsem', 'Работа России', 'Russian'), searchName: (search) => search.name,
+    searchUrl: (search, cursor) => `https://opendata.trudvsem.ru/api/v1/vacancies/region/${region}?text=${encodeURIComponent(search.query)}&offset=${cursor ?? '0'}`,
+    listingPage(payload, _search, cursor) { const items = arrayAt(payload, 'results', 'vacancies'); const offset = Number(cursor ?? 0);
+      return { listings: items.map((wrapper) => { const item = (wrapper.vacancy as Record<string, unknown>) ?? wrapper;
+        return listing(textAt(item, 'id'), `https://trudvsem.ru/vacancy/card/${textAt(item, 'id')}`, textAt(item, 'job-name'),
+          { summary: textAt(item, 'duty'), publishedAt: dateAt(item, 'creation-date'), payload: item }); }),
+        ...(items.length ? { nextCursor: String(offset + items.length) } : {}) }; },
+    vacancy(candidate, payload) { return apiVacancy(candidate, { name: textAt(payload, 'job-name') || candidate.title,
+      employer: textAt(payload, 'company', 'name'), area: textAt(payload, 'region', 'name'), description: textAt(payload, 'duty'),
+      skills: stringArray(textAt(payload, 'requirement', 'qualification')), remote: /remote|удален/iu.test(textAt(payload, 'work-place')),
+      closed: textAt(payload, 'vacancy-status') === 'closed', publishedAt: dateAt(payload, 'creation-date') }); }
+  }, { maxPages: options.maxPages });
 }
-
-export function trudvsemVacancies(payload: unknown): JsonObject[] {
-  const results = asObject(asObject(payload)?.results);
-  const list = Array.isArray(results?.vacancies) ? results.vacancies : [];
-  return list.flatMap((entry) => {
-    const vacancy = asObject(asObject(entry)?.vacancy);
-    return vacancy ? [vacancy] : [];
-  });
-}
-
-function salaryOf(vacancy: JsonObject): Pick<VacancyInput, 'salaryFrom' | 'salaryTo' | 'salaryCurrency' | 'salaryGross'> {
-  const from = Number(vacancy.salary_min);
-  const to = Number(vacancy.salary_max);
-  const salaryFrom = Number.isFinite(from) && from > 0 ? from : null;
-  const salaryTo = Number.isFinite(to) && to > 0 ? to : null;
-  return { salaryFrom, salaryTo, salaryCurrency: salaryFrom || salaryTo ? 'RUR' : null, salaryGross: null };
-}
-
-export function trudvsemVacancyInput(vacancy: JsonObject, sourceQuery: string,
-  validateUrl: (source: string, input: string) => string): VacancyInput | null {
-  const sourceId = plainText(vacancy.id);
-  const name = plainText(vacancy['job-name']);
-  const description = htmlText(plainText(vacancy.duty));
-  if (!sourceId || !name || description.length < 20) return null;
-  const requirement = asObject(vacancy.requirement);
-  const url = plainText(vacancy.vac_url);
-  return hashedVacancy({
-    source: 'trudvsem', sourceId, name,
-    employer: plainText(asObject(vacancy.company)?.name) || 'Не указано',
-    area: plainText(asObject(vacancy.region)?.name) || 'Не указано',
-    ...salaryOf(vacancy),
-    experience: (() => {
-      const years = Number(requirement?.experience);
-      return Number.isFinite(years) && years > 0 ? `${years} лет` : '';
-    })(),
-    employment: plainText(vacancy.employment), schedule: plainText(vacancy.schedule), workFormat: '',
-    description, keySkills: [],
-    url: url ? validateUrl('trudvsem', url) : `https://trudvsem.ru/vacancy/card/${sourceId}`,
-    publishedAt: plainText(vacancy['creation-date']) || plainText(vacancy.date_modify) || new Date().toISOString(),
-    sourceQuery,
-  });
-}
-
-export async function scrapeTrudvsem(plan: SearchPlan<TrudvsemSearch>, context: SourceContext,
-  maxPages: number, region?: string): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
-    context.recordListingCandidate);
-  const pagesPerSearch = Math.max(1, Math.min(maxPages,
-    Math.floor(context.limits.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
-  searches: for (const { search, recipients } of plan.searches) {
-    for (let page = 1; page <= pagesPerSearch; page++) {
-      const url = trudvsemSearchUrl(search.query, page, trudvsemRegion(region));
-      try {
-        context.trace('scrape.search.request', { platform: 'trudvsem', page });
-        const vacancies = trudvsemVacancies(await context.http.fetchSourceJson('trudvsem', url));
-        context.trace('scrape.search.result', { platform: 'trudvsem', page, found: vacancies.length });
-        for (const vacancy of vacancies) {
-          const sourceId = plainText(vacancy.id);
-          const name = plainText(vacancy['job-name']);
-          if (!sourceId || !name) continue;
-          const vacancyUrl = plainText(vacancy.vac_url);
-          await collector.record({ source: 'trudvsem', sourceId,
-            url: vacancyUrl ? context.http.safeVacancyUrl('trudvsem', vacancyUrl) : `https://trudvsem.ru/vacancy/card/${sourceId}`,
-            searchName: search.name, title: name,
-            summary: htmlText(plainText(vacancy.duty)).slice(0, 1_000),
-            publishedAt: plainText(vacancy['creation-date']), payload: vacancy }, recipients);
-          if (collector.complete) break;
-        }
-        if (collector.complete) break searches;
-        if (!vacancies.length) break;
-      } catch (error) {
-        console.error(`Failed to read Работа России search page ${page}: ${context.errorMessage(error)}`);
-        break;
-      }
-    }
-  }
-  return collector.result();
-}
-
-export async function normalizeTrudvsemCandidate(candidate: VacancyCandidate,
-  context: SourceContext): Promise<VacancyInput | null> {
-  // The register returns complete postings during discovery, so the stored payload needs no second request.
-  const vacancy = candidate.payload as JsonObject | null;
-  if (!vacancy) return null;
-  return trudvsemVacancyInput(vacancy, candidate.searchName, context.http.safeVacancyUrl);
-}
-
-/** Application-owned Работа России provider backed by the federal open register. */
-export function trudvsemSource(options: { maxPages?: number; region?: string } = {}) {
-  return createSourceProvider({
-    ...trudvsemPlatform,
-    async discover(plan, context) {
-      const result = await scrapeTrudvsem(plan, context, options.maxPages ?? 1, options.region);
-      const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
-      return { searches: plan.searches.length, users: users.size, ...result };
-    },
-    async normalize(candidates, context) {
-      const results = new Map<string, VacancyInput | null | Error>();
-      for (const candidate of candidates) {
-        try { results.set(candidate.sourceId, await normalizeTrudvsemCandidate(candidate, context)); }
-        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
-      }
-      return results;
-    },
-  });
-}
-
-/** Registers this example; the loader calls it once the file sits in an extensions directory. */
-export default function register(api: SourceExtensionApi): void {
-  initToolkit(api);
-  api.registerSourceProvider(trudvsemSource({ maxPages: examplePages(api), region: api.env.TRUDVSEM_REGION?.trim() || undefined }));
-}
+export default function register(api: SourceExtensionApi): void { initToolkit(api); api.registerSourceProvider(trudvsemSource({ maxPages: examplePages(api), region: api.env.TRUDVSEM_REGION })); }

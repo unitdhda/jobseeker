@@ -1,97 +1,190 @@
-/**
- * App-side CV handling. Mechanical extraction lives in @jobseeker/cv/extract; this file keeps what is coupled to the
- * deployment: the sandboxed parser subprocess (it knows the dist/ layout) and the database import path.
- */
-export {
-  canonicalDocumentText, detectCvLanguage, extractCvDocument, extractText, getDocumentProxy, maximumCvBytes,
-  type CanonicalCvDocument, type CvDocumentBlock, type CvLanguage, type CvSourceFormat, type ExtractedCvDocument,
-} from '@jobseeker/cv/extract';
-import type { ExtractedCvDocument } from '@jobseeker/cv/extract';
+import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import pLimit from 'p-limit';
+import type { CvExtractionWarning, ExtractedCvDocument } from '@jobseeker/cv/extract';
 
-import { fork, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-const parserTimeoutMs = 30_000;
-const parserMemoryMb = 256;
-const maximumConcurrentParsers = 2;
-let activeParsers = 0;
-interface CvWorkerResponse { ok: boolean; result?: ExtractedCvDocument; error?: string }
-
-/** The worker entry lives next to this module in both layouts: dist/ when built, the package src/ otherwise. */
-function command(): { modulePath: string; args: string[]; execArgv: string[] } {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const built = join(here, 'cv-worker.mjs');
-  if (existsSync(built)) {
-    return { modulePath: built, args: [], execArgv: [
-      `--max-old-space-size=${parserMemoryMb}`, '--permission',
-      `--allow-fs-read=${here}`, `--allow-fs-read=${resolve(process.cwd(), 'node_modules')}`,
-    ] };
-  }
-  const source = join(here, 'cv-worker.ts');
-  if (process.versions.bun && existsSync(source)) {
-    return { modulePath: source, args: [], execArgv: ['--no-env-file', `--max-old-space-size=${parserMemoryMb}`] };
-  }
-  throw new Error('Isolated CV parser entry was not found. Run bun run build.');
+export interface CvParserCommand {
+  readonly executable: string;
+  readonly args: readonly string[];
+  readonly env?: Readonly<Record<string, string>>;
 }
 
-export function extractCvDocumentIsolated(filename: string, mediaType: string | undefined,
-  bytes: Uint8Array): Promise<ExtractedCvDocument> {
-  const parser = command();
-  if (activeParsers >= maximumConcurrentParsers) return Promise.reject(new Error('CV parser is busy; retry later.'));
-  activeParsers++;
-  return new Promise((resolvePromise, rejectPromise) => {
-    let child: ChildProcess;
-    try {
-      child = fork(parser.modulePath, parser.args, {
-        env: { NODE_ENV: 'production', LANG: process.env.LANG ?? 'C.UTF-8', PATH: process.env.PATH ?? '' },
-        execArgv: parser.execArgv, serialization: 'advanced', stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-      });
-    } catch (error) {
-      activeParsers--;
-      rejectPromise(error); return;
-    }
+export interface CvParserOptions {
+  readonly command: CvParserCommand;
+  readonly timeoutMs?: number;
+  readonly concurrency?: number;
+}
+
+export interface CvImportPreview {
+  readonly filename: string;
+  readonly sha256: string;
+  readonly characterCount: number;
+  readonly blockCount: number;
+  readonly excerpt: string;
+  readonly warnings: readonly CvExtractionWarning[];
+}
+
+export interface ParsedCvUpload {
+  readonly extraction: ExtractedCvDocument;
+  readonly preview: CvImportPreview;
+}
+
+export interface CvParser {
+  parse(filename: string, mediaType: string | undefined, bytes: Uint8Array): Promise<ParsedCvUpload>;
+  readonly activeCount: number;
+  readonly pendingCount: number;
+}
+
+export class CvParserProcessError extends Error {
+  readonly code?: string;
+
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = 'CvParserProcessError';
+    this.code = code;
+  }
+}
+
+const maximumIpcBytes = 1024 * 1024;
+
+function assertPositiveSafeInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`Invalid CV parser ${name}: expected a positive safe integer, received ${value}.`);
+  }
+}
+
+function parserProcess(
+  command: CvParserCommand,
+  timeoutMs: number,
+  request: unknown,
+): Promise<ExtractedCvDocument> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command.executable, [...command.args], {
+      env: { ...(command.env ?? {}) },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     let settled = false;
-    const settle = (error?: Error, result?: ExtractedCvDocument): void => {
+    let stdout = '';
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+
+    // Every completion path funnels through settle, which clears timeout and force-kills a still-live parser.
+    const timer = setTimeout(() => {
+      settle(new CvParserProcessError(`CV parser exceeded ${timeoutMs} ms timeout.`, 'CV_PARSER_TIMEOUT'));
+    }, timeoutMs);
+    const settle = (error?: Error, extraction?: ExtractedCvDocument): void => {
       if (settled) return;
-      settled = true; activeParsers--; clearTimeout(timer);
-      if (child.connected) child.disconnect();
-      if (!child.killed) child.kill('SIGKILL');
-      if (error) rejectPromise(error); else resolvePromise(result!);
+      settled = true;
+      clearTimeout(timer);
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      if (error) reject(error);
+      else resolve(extraction!);
     };
-    const timer = setTimeout(() => settle(new Error('CV parsing exceeded the 30 second limit.')), parserTimeoutMs);
-    child.once('error', (error) => settle(error));
-    child.once('exit', (code, signal) => {
-      if (!settled) settle(new Error(`Isolated CV parser exited (${signal ?? code ?? 'unknown'}).`));
+
+    child.on('error', (error) => settle(new CvParserProcessError(`CV parser process failed to start: ${error.message}.`)));
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      if (settled) return;
+      stdout += chunk;
+      stdoutBytes += Buffer.byteLength(chunk);
+      if (stdoutBytes > maximumIpcBytes) settle(new CvParserProcessError('CV parser stdout exceeded 1 MiB.', 'CV_PARSER_OUTPUT_LIMIT'));
     });
-    child.once('message', (message: CvWorkerResponse) => {
-      if (message.ok && message.result) settle(undefined, message.result);
-      else settle(new Error(message.error || 'CV parser failed.'));
+    child.stderr.on('data', (chunk: string) => {
+      stderrBytes += Buffer.byteLength(chunk);
+      if (stderrBytes > maximumIpcBytes) settle(new CvParserProcessError('CV parser stderr exceeded 1 MiB.', 'CV_PARSER_OUTPUT_LIMIT'));
     });
-    child.send({ filename, mediaType, bytes: Buffer.from(bytes) }, (error) => { if (error) settle(error); });
+    child.on('close', () => {
+      if (settled) return;
+      try {
+        const lines = stdout.trim().split(/\r?\n/u).filter(Boolean);
+        if (lines.length !== 1) throw new CvParserProcessError('CV parser returned an invalid result count.');
+        const response = JSON.parse(lines[0]!) as {
+          ok?: boolean;
+          extraction?: ExtractedCvDocument;
+          error?: { message?: string; code?: string };
+        };
+        if (!response.ok || !response.extraction) {
+          throw new CvParserProcessError(
+            response.error?.message?.slice(0, 1_000) || 'CV parser returned an error.',
+            response.error?.code,
+          );
+        }
+        settle(undefined, response.extraction);
+      } catch (error) {
+        settle(error instanceof Error ? error : new CvParserProcessError('CV parser returned invalid JSON.'));
+      }
+    });
+
+    child.stdin.on('error', (error) => settle(new CvParserProcessError(`CV parser IPC write failed: ${error.message}.`)));
+    child.stdin.end(`${JSON.stringify(request)}\n`);
   });
 }
 
-import { createHash } from 'node:crypto';
-import { clearSearchProfile, confirmStagedCvSource, requireApprovedUser, stageCvSource } from './postgres.ts';
-import { searchPlatformIds } from './vacancies/registry.ts';
-import { careerProfilePlatformId } from '@jobseeker/engine';
+/** Creates a bounded process adapter; extraction never runs in the long-lived application process. */
+export function createCvParser(options: CvParserOptions): CvParser {
+  const timeoutMs = options.timeoutMs ?? 30_000;
+  const concurrency = options.concurrency ?? 2;
+  assertPositiveSafeInteger(timeoutMs, 'timeout');
+  assertPositiveSafeInteger(concurrency, 'concurrency');
+  if (!options.command.executable) throw new TypeError('Invalid CV parser command: executable is required.');
+  const limit = pLimit(concurrency);
 
-export interface CvImportPreview { filename:string; characters:number; blocks:number; excerpt:string;
-  warnings:NonNullable<ExtractedCvDocument['document']['warnings']> }
-export async function importCvSource(userId: string, filename: string,
-  mediaType: string | undefined, bytes: Uint8Array): Promise<CvImportPreview> {
-  const extracted = await extractCvDocumentIsolated(filename, mediaType, bytes);
-  await requireApprovedUser(userId);
-  const hash = createHash('sha256').update(bytes).digest('hex');
-  await stageCvSource(userId,filename,hash,extracted);
-  return {filename,characters:extracted.text.length,blocks:extracted.document.blocks.length,
-    excerpt:extracted.text.slice(0,700),warnings:extracted.document.warnings??[]};
+  return Object.freeze({
+    get activeCount(): number { return limit.activeCount; },
+    get pendingCount(): number { return limit.pendingCount; },
+    parse(filename: string, mediaType: string | undefined, bytes: Uint8Array): Promise<ParsedCvUpload> {
+      if (!(bytes instanceof Uint8Array)) return Promise.reject(new TypeError('Invalid CV upload bytes: expected Uint8Array.'));
+      return limit(async () => {
+        const extraction = await parserProcess(options.command, timeoutMs, {
+          filename,
+          ...(mediaType === undefined ? {} : { mediaType }),
+          bytesBase64: Buffer.from(bytes).toString('base64'),
+        });
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        return Object.freeze({
+          extraction,
+          preview: Object.freeze({
+            filename,
+            sha256,
+            characterCount: extraction.text.length,
+            blockCount: extraction.document.blocks.length,
+            excerpt: extraction.text.slice(0, 700),
+            warnings: Object.freeze([...(extraction.document.warnings ?? [])]),
+          }),
+        });
+      });
+    },
+  });
 }
-export async function confirmCvImport(userId:string):Promise<boolean>{
-  await requireApprovedUser(userId);
-  if(!await confirmStagedCvSource(userId))return false;
-  for(const platformId of [...searchPlatformIds,careerProfilePlatformId])await clearSearchProfile(userId,platformId);
-  return true;
+
+/** Production Node command with a bounded heap and filesystem reads restricted to the bundle/dependency roots. */
+export function nodeCvParserCommand(
+  workerPath: string,
+  readableRoots: readonly string[],
+  env: Readonly<Record<string, string>> = {},
+): CvParserCommand {
+  if (!workerPath || readableRoots.length === 0) {
+    throw new TypeError('Invalid Node CV parser command: worker path and readable roots are required.');
+  }
+  return Object.freeze({
+    executable: process.execPath,
+    args: Object.freeze([
+      '--max-old-space-size=256',
+      '--permission',
+      `--allow-fs-read=${readableRoots.join(',')}`,
+      workerPath,
+    ]),
+    env: Object.freeze({ ...env }),
+  });
+}
+
+/** Source checkout command is explicit so production never accidentally launches Bun without Node permissions. */
+export function bunCvParserCommand(
+  bunExecutable: string,
+  workerPath: string,
+  env: Readonly<Record<string, string>> = {},
+): CvParserCommand {
+  if (!bunExecutable || !workerPath) throw new TypeError('Invalid Bun CV parser command.');
+  return Object.freeze({ executable: bunExecutable, args: Object.freeze(['run', workerPath]), env: Object.freeze({ ...env }) });
 }

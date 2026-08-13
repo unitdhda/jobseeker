@@ -1,329 +1,426 @@
-/**
- * Repositories for the engine schema (search_units, unit_subscriptions, matches, accounts). They coexist with the
- * legacy repositories until cutover; only engine-runtime code reaches them. Match-state transitions are enforced in
- * the update's where-clause — a lost race means zero rows, never a corrupted state.
- */
-import {
-  assertTransition, type CompiledSubscription, type CompiledUnit, type MatchState, type RoleEquivalencePair,
+import type { PoolClient, QueryResultRow } from 'pg';
+import type {
+  CompiledSubscription,
+  CompiledUnit,
+  IdfVocabulary,
+  MatchCandidateInput,
+  RoleEquivalencePair,
+  RoleTrackTitles,
+  TickUnit,
 } from '@jobseeker/engine';
-import { postgresQuery as q, withPostgresTransaction } from './client.ts';
+import {
+  parseSourceKey,
+  parseUserId,
+  type SourceKey,
+  type UserId,
+} from '@jobseeker/engine/contracts';
+import { assertTransition, type MatchState } from '@jobseeker/engine/match-state';
+import { parseSourceKey as sourceKey, parseUserId as userId } from '@jobseeker/engine/contracts';
+import {
+  postgresQuery,
+  storeSettings,
+  withPostgresTransaction,
+} from './client.ts';
+import type { ScoreExplanation } from './repos.ts';
 
-export interface DueUnitRow {
-  unitId: string; platform: string; query: unknown; cadenceMinutes: number;
-  subscribers: { userId: string; searchName: string }[];
+function positiveInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) throw new RangeError(`Invalid ${name}: expected a positive safe integer.`);
+}
+function validDate(value: Date, name: string): void {
+  if (!(value instanceof Date) || !Number.isFinite(value.getTime())) throw new TypeError(`Invalid ${name}: expected a valid Date.`);
 }
 
-export async function dueUnits(now: Date): Promise<DueUnitRow[]> {
-  const rows = await q(`select u.unit_id, u.platform, u.query, u.cadence_minutes,
-      jsonb_agg(jsonb_build_object('userId', s.user_id, 'searchName', s.search_name)) as subscribers
-    from search_units u join unit_subscriptions s on s.unit_id = u.unit_id
-    join users usr on usr.user_id = s.user_id and usr.status = 'approved'
-    where u.retired_at is null and u.next_run_at <= $1
-    group by u.unit_id`, [now.toISOString()]);
-  return rows.map((row) => ({ unitId: String(row.unit_id), platform: String(row.platform), query: row.query,
-    cadenceMinutes: Number(row.cadence_minutes), subscribers: row.subscribers as DueUnitRow['subscribers'] }));
+interface DueRow extends QueryResultRow {
+  unit_id: string;
+  platform: string;
+  query_json: unknown;
+  cadence_minutes: number;
+  next_run_at: Date | string;
+  subscribers: Array<{ userId: string; searchName: string }>;
 }
 
-/** The loop's sleep horizon: when the earliest live unit wants to run. */
+export async function dueUnits(now: Date): Promise<readonly TickUnit[]> {
+  validDate(now, 'due-unit time');
+  const result = await postgresQuery<DueRow>(`select u.unit_id,u.platform,u.query_json,u.cadence_minutes,u.next_run_at,
+      jsonb_agg(jsonb_build_object('userId',s.user_id,'searchName',s.search_name) order by s.user_id) subscribers
+    from search_units u join unit_subscriptions s on s.unit_id=u.unit_id
+      join users usr on usr.user_id=s.user_id and usr.status='approved'
+    where u.retired_at is null and u.next_run_at<=$1 and u.platform=any($2::text[])
+    group by u.unit_id order by u.next_run_at,u.unit_id`, [now, storeSettings().searchPlatforms]);
+  return Object.freeze(result.rows.map((row) => Object.freeze({
+    unitId: row.unit_id as TickUnit['unitId'],
+    platform: parseSourceKey(row.platform),
+    query: row.query_json,
+    cadenceMinutes: Number(row.cadence_minutes),
+    nextRunAt: new Date(row.next_run_at),
+    subscribers: Object.freeze(row.subscribers.map((entry) => Object.freeze({
+      userId: parseUserId(entry.userId), searchName: String(entry.searchName),
+    }))),
+  })));
+}
+
 export async function nextUnitDueAt(): Promise<Date | null> {
-  const rows = await q(`select min(next_run_at) due from search_units where retired_at is null`);
-  return rows[0]?.due ? new Date(rows[0].due as string) : null;
+  const result = await postgresQuery<{ next_run_at: Date | string | null }>(
+    'select min(next_run_at) next_run_at from search_units where retired_at is null');
+  return result.rows[0]?.next_run_at ? new Date(result.rows[0].next_run_at) : null;
 }
 
-export async function recordUnitRun(unitId: string, cadenceMinutes: number, foundNovelty: boolean,
-  now: Date): Promise<void> {
-  await q(`update search_units set cadence_minutes = $2, last_run_at = $3,
-      last_novelty_at = case when $4 then $3 else last_novelty_at end,
-      next_run_at = $3::timestamptz + make_interval(mins => $2)
-    where unit_id = $1`, [unitId, cadenceMinutes, now.toISOString(), foundNovelty]);
+export async function recordUnitRun(
+  unitId: TickUnit['unitId'], cadenceMinutes: number, foundNovelty: boolean, now: Date,
+): Promise<void> {
+  positiveInteger(cadenceMinutes, 'cadence'); validDate(now, 'unit run time');
+  await postgresQuery(`update search_units set cadence_minutes=$2,last_run_at=$3,
+      last_novelty_at=case when $4 then $3 else last_novelty_at end,
+      next_run_at=$3+($2*interval '1 minute'),updated_at=$3
+    where unit_id=$1 and retired_at is null`, [unitId, cadenceMinutes, now, foundNovelty]);
 }
 
-/** The live unit population, as compile-time adoption needs it: a new search may join any of these. */
-export async function existingCompiledUnits(): Promise<CompiledUnit[]> {
-  const rows = await q(`select unit_id, platform, filter_signature, canonical_tokens, query
-    from search_units where retired_at is null`);
-  return rows.map((row) => ({ unitId: String(row.unit_id), platform: String(row.platform),
-    filterSignature: String(row.filter_signature), canonicalTokens: (row.canonical_tokens as string[]) ?? [],
-    query: row.query }));
+export async function existingCompiledUnits(): Promise<readonly CompiledUnit[]> {
+  const result = await postgresQuery<{
+    unit_id: string; platform: string; filter_signature: string; canonical_tokens: string[]; query_json: unknown;
+  }>('select unit_id,platform,filter_signature,canonical_tokens,query_json from search_units where retired_at is null order by unit_id');
+  return Object.freeze(result.rows.map((row) => Object.freeze({
+    unitId: row.unit_id as CompiledUnit['unitId'], platform: sourceKey(row.platform),
+    filterSignature: row.filter_signature as CompiledUnit['filterSignature'],
+    canonicalTokens: Object.freeze(row.canonical_tokens), query: row.query_json,
+  })));
 }
 
-/** Applies a demand compilation: new units and subscriptions land, vanished subscriptions retire their units. */
-export async function applyDemand(userId: string, units: readonly CompiledUnit[],
-  subscriptions: readonly CompiledSubscription[], initialCadenceMinutes: number): Promise<void> {
-  for (const unit of units) {
-    await q(`insert into search_units (unit_id, platform, filter_signature, canonical_tokens, query,
-        cadence_minutes, next_run_at)
-      values ($1, $2, $3, $4, $5::jsonb, $6, now())
-      on conflict (unit_id) do update set retired_at = null`,
-      [unit.unitId, unit.platform, unit.filterSignature, unit.canonicalTokens, JSON.stringify(unit.query),
-        initialCadenceMinutes]);
+export async function activeUnitQueries(platform: SourceKey): Promise<readonly unknown[]> {
+  const result = await postgresQuery<{ query_json: unknown }>(
+    'select query_json from search_units where platform=$1 and retired_at is null order by unit_id', [platform]);
+  return Object.freeze(result.rows.map((row) => row.query_json));
+}
+
+export async function applyDemand(
+  targetUserId: UserId,
+  units: readonly CompiledUnit[],
+  subscriptions: readonly CompiledSubscription[],
+  initialCadence: number,
+): Promise<void> {
+  positiveInteger(initialCadence, 'initial cadence');
+  if (subscriptions.some((subscription) => subscription.userId !== targetUserId)) {
+    throw new TypeError('Invalid demand application: subscription belongs to another user.');
   }
-  const kept = subscriptions.filter((subscription) => subscription.userId === userId);
-  for (const subscription of kept) {
-    await q(`insert into unit_subscriptions (unit_id, user_id, search_name, source_search)
-      values ($1, $2, $3, $4::jsonb) on conflict (unit_id, user_id) do update set
-        search_name = excluded.search_name, source_search = excluded.source_search`,
-      [subscription.unitId, subscription.userId, subscription.searchName || 'search',
-        JSON.stringify(subscription.sourceSearch)]);
-  }
-  await q(`delete from unit_subscriptions where user_id = $1 and unit_id <> all($2::text[])`,
-    [userId, kept.map((subscription) => subscription.unitId)]);
-  await q(`update search_units u set retired_at = coalesce(u.retired_at, now())
-    where not exists (select 1 from unit_subscriptions s where s.unit_id = u.unit_id)`);
+  await withPostgresTransaction(async (client) => {
+    for (const unit of units) {
+      await client.query(`insert into search_units(unit_id,platform,filter_signature,canonical_tokens,query_json,
+          cadence_minutes,next_run_at) values($1,$2,$3,$4::jsonb,$5::jsonb,$6,now())
+        on conflict(unit_id) do update set query_json=excluded.query_json,retired_at=null,updated_at=now()`, [
+        unit.unitId, unit.platform, unit.filterSignature, JSON.stringify(unit.canonicalTokens), JSON.stringify(unit.query), initialCadence,
+      ]);
+    }
+    for (const subscription of subscriptions) {
+      await client.query(`insert into unit_subscriptions(unit_id,user_id,search_name,source_search_json)
+          values($1,$2,$3,$4::jsonb)
+        on conflict(unit_id,user_id) do update set search_name=excluded.search_name,
+          source_search_json=excluded.source_search_json,updated_at=now()`, [
+        subscription.unitId, targetUserId, subscription.searchName, JSON.stringify(subscription.sourceSearch),
+      ]);
+    }
+    const retained = subscriptions.map((subscription) => subscription.unitId);
+    await client.query(`delete from unit_subscriptions where user_id=$1
+      and not(unit_id=any($2::text[]))`, [targetUserId, retained]);
+    await client.query(`update search_units set retired_at=now(),updated_at=now() where retired_at is null
+      and not exists(select 1 from unit_subscriptions s where s.unit_id=search_units.unit_id)`);
+  });
 }
 
-export async function activeUnitQueries(platform: string): Promise<unknown[]> {
-  return (await q(`select u.query from search_units u where u.platform = $1 and u.retired_at is null
-    order by (select count(*) from unit_subscriptions s where s.unit_id = u.unit_id) desc, u.unit_id`, [platform]))
-    .map((row) => row.query);
+export async function createMatches(candidates: readonly MatchCandidateInput[], now: Date): Promise<number> {
+  validDate(now, 'match time');
+  if (candidates.length === 0) return 0;
+  return withPostgresTransaction(async (client) => {
+    let inserted = 0;
+    for (const item of candidates) {
+      positiveInteger(item.vacancyId, 'vacancy ID');
+      const result = await client.query(`insert into matches(user_id,vacancy_id,state,matched_at,updated_at,
+          lexical_score,regex_score,lexical_cosine,title_similarity,skill_coverage,seniority_gap,specificity,lexical_cosine_idf)
+        values($1,$2,'matched',$3,$3,$4,$5,$6,$7,$8,$9,$10,$11) on conflict do nothing`, [
+        item.userId, item.vacancyId, now, item.score, item.regexScore, item.lexicalCosine,
+        item.titleSimilarity, item.skillCoverage, item.seniorityGap, item.specificity, item.lexicalCosineIdf,
+      ]);
+      inserted += result.rowCount ?? 0;
+    }
+    return inserted;
+  });
 }
 
-export interface MatchCandidate {
-  userId: string; vacancyId: number; lexicalScore: number;
-  /** Prefilter evidence frozen at match time — the future training row once the LLM judges this match. */
-  regexScore?: number; lexicalCosine?: number; titleSimilarity?: number; skillCoverage?: number;
-  /** Null is meaningful here: neither side named a grade, which is not the same as the grades agreeing. */
-  seniorityGap?: number | null;
-  /** Null means no rarity vocabulary existed when this was measured, which is not the same as zero rarity. */
-  specificity?: number | null;
-  lexicalCosineIdf?: number | null;
+export async function transitionMatch(
+  targetUserId: UserId, vacancyId: number, from: MatchState, to: MatchState, now: Date,
+): Promise<boolean> {
+  assertTransition(from, to); positiveInteger(vacancyId, 'vacancy ID'); validDate(now, 'transition time');
+  const result = await postgresQuery(`update matches set state=$4,updated_at=$5,
+      delivered_at=case when $4=any(array['alerted','digested','skipped','applying','applied'])
+        then coalesce(delivered_at,$5) else delivered_at end
+    where user_id=$1 and vacancy_id=$2 and state=$3`, [targetUserId, vacancyId, from, to, now]);
+  return (result.rowCount ?? 0) === 1;
 }
 
-/** Ingest: new matches appear as 'matched'; an existing row is never touched — delivery memory is append-only here. */
-export async function createMatches(candidates: readonly MatchCandidate[], now: Date): Promise<number> {
-  let created = 0;
-  for (const candidate of candidates) {
-    const rows = await q(`insert into matches (user_id, vacancy_id, state, lexical_score, lexical_regex_score,
-        lexical_cosine, lexical_title_similarity, lexical_skill_coverage, lexical_seniority_gap,
-        lexical_specificity, lexical_cosine_idf, matched_at, updated_at)
-      values ($1, $2, 'matched', $3, $4, $5, $6, $7, $8, $9, $10, $11, $11) on conflict (user_id, vacancy_id) do nothing returning vacancy_id`,
-      [candidate.userId, candidate.vacancyId, candidate.lexicalScore, candidate.regexScore ?? null,
-        candidate.lexicalCosine ?? null, candidate.titleSimilarity ?? null, candidate.skillCoverage ?? null,
-        candidate.seniorityGap ?? null, candidate.specificity ?? null, candidate.lexicalCosineIdf ?? null,
-        now.toISOString()]);
-    created += rows.length;
-  }
-  return created;
+export async function claimMatches(targetUserId: UserId, vacancyIds: readonly number[]): Promise<readonly number[]> {
+  const unique = [...new Set(vacancyIds)];
+  if (unique.length !== vacancyIds.length) throw new TypeError('Invalid match claims: duplicate vacancy ID.');
+  unique.forEach((id) => positiveInteger(id, 'vacancy ID'));
+  if (!unique.length) return Object.freeze([]);
+  // The source-state predicate makes concurrent claimers cleanly lose rather than sharing work.
+  const result = await postgresQuery<{ vacancy_id: string }>(`update matches set state='queued',queued_at=now(),updated_at=now()
+    where user_id=$1 and vacancy_id=any($2::bigint[]) and state='matched' returning vacancy_id`, [targetUserId, unique]);
+  return Object.freeze(result.rows.map((row) => Number(row.vacancy_id)).sort((a, b) => a - b));
 }
 
-export async function transitionMatch(userId: string, vacancyId: number, from: MatchState, to: MatchState,
-  patch: Record<string, unknown> = {}): Promise<boolean> {
-  assertTransition(from, to);
-  const columns = Object.keys(patch);
-  const sets = columns.map((column, index) => `${column} = $${index + 5}`).join(', ');
-  const rows = await q(`update matches set state = $4, updated_at = now()${columns.length ? `, ${sets}` : ''}
-    where user_id = $1 and vacancy_id = $2 and state = $3 returning vacancy_id`,
-    [userId, vacancyId, from, to, ...columns.map((column) => patch[column])]);
-  return rows.length > 0;
+export async function releaseMatchClaims(targetUserId: UserId, vacancyIds: readonly number[]): Promise<number> {
+  const unique = [...new Set(vacancyIds)];
+  if (unique.length !== vacancyIds.length) throw new TypeError('Invalid released match claims: duplicate vacancy ID.');
+  unique.forEach((id) => positiveInteger(id, 'vacancy ID'));
+  if (!unique.length) return 0;
+  const result = await postgresQuery(`update matches set state='matched',updated_at=now()
+    where user_id=$1 and vacancy_id=any($2::bigint[]) and state='queued' and llm_score is null`, [targetUserId, unique]);
+  return result.rowCount ?? 0;
 }
 
-/**
- * One match waiting on the budget, carrying the evidence frozen at match time.
- *
- * The store hands these back unranked. Application code orders by semantic score, with raw evidence as fallback.
- */
 export interface PendingMatch {
-  vacancyId: number;
-  matchedAt: string;
-  source: string;
-  publishedAt: string;
-  /** Null on rows written before the column existed; the caller reads that as no contribution. */
-  regexScore: number | null;
-  lexicalCosine: number | null;
-  titleSimilarity: number | null;
-  skillCoverage: number | null;
-  seniorityGap: number | null;
-  specificity: number | null;
-  lexicalCosineIdf: number | null;
-  /** Cheap semantic prescore. Null means the optional prescoring model has not judged this row yet. */
-  prescoreScore?: number | null;
-  /** A below-threshold row frozen into the exploration sample for independent shadow labels. */
-  prescoreExploration?: boolean;
+  readonly userId: UserId;
+  readonly vacancyId: number;
+  readonly source: SourceKey;
+  readonly publishedAt: Date;
+  readonly matchedAt: Date;
+  readonly lexicalScore: number;
+  readonly regexScore: number;
+  readonly lexicalCosine: number;
+  readonly titleSimilarity: number;
+  readonly skillCoverage: number;
+  readonly seniorityGap: number | null;
+  readonly specificity: number | null;
+  readonly lexicalCosineIdf: number | null;
+  readonly prescoreScore: number | null;
+  readonly prescoreModel: string | null;
+  readonly prescorePromptVersion: string | null;
+  readonly prescoreExploration: boolean;
 }
 
-/**
- * Everything this user has waiting, for the caller to rank.
- *
- * A row whose updated_at outruns matched_at came back from a failed scoring batch (or a content reset); it sits
- * out a cooldown before it is offered again, so a batch that fails persistently cannot monopolize the head of
- * the best-first queue — everything below it gets scored while it waits.
- *
- * `cap` bounds the fetch, not the claim. It is deliberately far above any real backlog: whatever it cuts off is
- * invisible to the ranking, so a cap that bites is a silent ordering error rather than a slow query.
- */
-export async function pendingMatchesForScoring(userId: string, cap: number,
-  requiredPrescoreModel: string | null = null, requiredPromptVersion = 1,
-  minimumPrescore = 0): Promise<PendingMatch[]> {
-  const rows = await q(`select m.vacancy_id, m.matched_at, m.lexical_regex_score, m.lexical_cosine,
-      m.lexical_title_similarity, m.lexical_skill_coverage, m.lexical_seniority_gap, m.lexical_specificity,
-      m.lexical_cosine_idf, m.prescore_score, m.prescore_exploration, v.source, v.published_at
-    from matches m join vacancies v on v.id = m.vacancy_id
-    where m.user_id = $1 and m.state = 'matched'
-      and ($3::text is null or (m.prescore_score is not null and m.prescore_model = $3
-        and m.prescore_prompt_version = $4
-        and (m.prescore_score >= $5 or m.prescore_exploration = true)))
-      and (m.updated_at <= m.matched_at or m.updated_at < now() - interval '6 hours')
-    order by m.matched_at desc limit $2`,
-    [userId, cap, requiredPrescoreModel, requiredPromptVersion, minimumPrescore]);
-  return rows.map((row) => ({
-    vacancyId: Number(row.vacancy_id),
-    matchedAt: new Date(row.matched_at as string).toISOString(),
-    source: String(row.source),
-    publishedAt: new Date(row.published_at as string).toISOString(),
-    regexScore: row.lexical_regex_score == null ? null : Number(row.lexical_regex_score),
-    lexicalCosine: row.lexical_cosine == null ? null : Number(row.lexical_cosine),
-    titleSimilarity: row.lexical_title_similarity == null ? null : Number(row.lexical_title_similarity),
-    skillCoverage: row.lexical_skill_coverage == null ? null : Number(row.lexical_skill_coverage),
-    seniorityGap: row.lexical_seniority_gap == null ? null : Number(row.lexical_seniority_gap),
-    specificity: row.lexical_specificity == null ? null : Number(row.lexical_specificity),
-    lexicalCosineIdf: row.lexical_cosine_idf == null ? null : Number(row.lexical_cosine_idf),
-    prescoreScore: row.prescore_score == null ? null : Number(row.prescore_score),
-    prescoreExploration: Boolean(row.prescore_exploration),
-  }));
+interface PendingRow extends QueryResultRow {
+  user_id: string; vacancy_id: string; source: string; published_at: Date | string; matched_at: Date | string;
+  lexical_score: number; regex_score: number; lexical_cosine: number; title_similarity: number; skill_coverage: number;
+  seniority_gap: number | null; specificity: number | null; lexical_cosine_idf: number | null;
+  prescore_score: number | null; prescore_model: string | null; prescore_prompt_version: string | null;
+  prescore_exploration: boolean;
 }
 
-/** Rows that need the optional cheap semantic pass before full-scoring admission. */
-export async function pendingMatchesForPrescoring(userId: string, cap: number, model: string,
-  promptVersion: number): Promise<number[]> {
-  const rows = await q(`select vacancy_id from matches where user_id = $1 and state = 'matched'
-      and llm_score is null
-      and (prescore_score is null or prescore_model is distinct from $3
-        or prescore_prompt_version is distinct from $4)
-      and (updated_at <= matched_at or updated_at < now() - interval '6 hours')
-    order by matched_at desc limit $2`, [userId, cap, model, promptVersion]);
-  return rows.map((row) => Number(row.vacancy_id));
+function pendingOf(row: PendingRow): PendingMatch {
+  return Object.freeze({
+    userId: userId(row.user_id), vacancyId: Number(row.vacancy_id), source: sourceKey(row.source),
+    publishedAt: new Date(row.published_at), matchedAt: new Date(row.matched_at), lexicalScore: row.lexical_score,
+    regexScore: row.regex_score, lexicalCosine: row.lexical_cosine, titleSimilarity: row.title_similarity,
+    skillCoverage: row.skill_coverage, seniorityGap: row.seniority_gap, specificity: row.specificity,
+    lexicalCosineIdf: row.lexical_cosine_idf, prescoreScore: row.prescore_score, prescoreModel: row.prescore_model,
+    prescorePromptVersion: row.prescore_prompt_version, prescoreExploration: row.prescore_exploration,
+  });
 }
 
-/** Lands a cheap semantic verdict and releases its temporary claim back to the full-scoring queue. */
-export async function savePrescore(userId: string, vacancyId: number, score: number, model: string,
-  promptVersion: number, exploration: boolean, now = new Date()): Promise<boolean> {
-  const rows = await q(`update matches set state = 'matched', updated_at = matched_at,
-      prescore_score = $3, prescore_model = $4,
-      prescore_prompt_version = $5, prescore_updated_at = $6, prescore_exploration = $7
-    where user_id = $1 and vacancy_id = $2 and state = 'queued' and llm_score is null
-    returning vacancy_id`, [userId, vacancyId, score, model, promptVersion, now.toISOString(), exploration]);
-  return rows.length > 0;
+const pendingSelect = `select m.*,v.source,v.published_at from matches m join vacancies v on v.id=m.vacancy_id`;
+
+export async function pendingMatchesForScoring(
+  targetUserId: UserId, cap: number, model: string | null, promptVersion: string | null, minimumPrescore: number,
+  allowExploration: boolean,
+): Promise<readonly PendingMatch[]> {
+  positiveInteger(cap, 'scoring cap');
+  if ((model === null) !== (promptVersion === null)) throw new TypeError('Prescore model and prompt version must both be set or both be null.');
+  const result = await postgresQuery<PendingRow>(`${pendingSelect} where m.user_id=$1 and m.state='matched'
+    and (m.updated_at=m.matched_at or m.updated_at<=now()-interval '6 hours')
+    and (($3::text is null and m.prescore_score is null)
+      or (m.prescore_model=$3 and m.prescore_prompt_version=$4 and (m.prescore_score>=$5 or ($6 and m.prescore_exploration))))
+    order by coalesce(m.prescore_score,m.lexical_score) desc,m.matched_at,m.vacancy_id limit $2`,
+  [targetUserId, cap, model, promptVersion, minimumPrescore, allowExploration]);
+  return Object.freeze(result.rows.map(pendingOf));
 }
 
-/**
- * Takes the named matches for scoring, and reports which were actually taken.
- *
- * `state = 'matched'` in the predicate is the whole concurrency story: a row another claim already moved is not
- * matched any more, so it cannot be taken twice. A caller that asked for ten and got eight raced someone and
- * lost two, which is correct and needs no lock.
- */
-export async function claimMatches(userId: string, vacancyIds: readonly number[]): Promise<number[]> {
-  if (!vacancyIds.length) return [];
-  const rows = await q(`update matches set state = 'queued', updated_at = now()
-    where user_id = $1 and vacancy_id = any($2::bigint[]) and state = 'matched'
-    returning vacancy_id`, [userId, [...vacancyIds]]);
-  return rows.map((row) => Number(row.vacancy_id));
+export async function pendingMatchesForPrescoring(
+  targetUserId: UserId, cap: number, model: string, promptVersion: string,
+): Promise<readonly PendingMatch[]> {
+  positiveInteger(cap, 'prescoring cap');
+  const result = await postgresQuery<PendingRow>(`${pendingSelect} where m.user_id=$1 and m.state='matched'
+    and (m.prescore_model is distinct from $3 or m.prescore_prompt_version is distinct from $4 or m.prescore_score is null)
+    order by m.lexical_score desc,m.matched_at,m.vacancy_id limit $2`, [targetUserId, cap, model, promptVersion]);
+  return Object.freeze(result.rows.map(pendingOf));
 }
 
-/** How many verdicts this user has of their own — the evidence any ordering for them is founded on. */
-export async function scoredMatchCount(userId: string): Promise<number> {
-  const rows = await q(`select count(*) n from matches where user_id = $1 and llm_score is not null`, [userId]);
-  return Number(rows[0]?.n ?? 0);
+export async function savePrescore(
+  targetUserId: UserId, vacancyId: number, score: number, model: string, promptVersion: string,
+  exploration: boolean,
+): Promise<boolean> {
+  const result = await postgresQuery(`update matches set prescore_score=$3,prescore_model=$4,prescore_prompt_version=$5,
+      prescored_at=now(),prescore_exploration=$6,state='matched',updated_at=now()
+    where user_id=$1 and vacancy_id=$2 and state='queued' and llm_score is null`,
+  [targetUserId, vacancyId, score, model, promptVersion, exploration]);
+  return (result.rowCount ?? 0) === 1;
 }
 
-/**
- * Retires matches whose advert outlived the prefilter's age limit before anyone judged them.
- *
- * Only 'matched' rows are touched: 'queued' means a scorer holds a claim, and racing it would lose a verdict
- * already paid for. The prefilter refuses to admit an advert this old in the first place, so a match still
- * waiting past the limit is one the budget never reached — the state machine already allows matched -> expired,
- * nothing was writing it, and the difference between "passed over" and "still pending" was invisible.
- */
+export async function saveScore(
+  targetUserId: UserId, vacancyId: number, score: number, primaryTrack: string, summary: string,
+  reasons: readonly string[], gaps: readonly string[], hardRejection: boolean, model: string,
+  explanation: ScoreExplanation,
+): Promise<boolean> {
+  const result = await postgresQuery(`update matches set state='scored',llm_score=$3,primary_track=$4,short_summary=$5,
+      short_reasons=$6::jsonb,short_gaps=$7::jsonb,hard_rejection=$8,score_model=$9,
+      score_explanation=$10::jsonb,score_updated_at=now(),updated_at=now()
+    where user_id=$1 and vacancy_id=$2 and state='queued'`, [
+    targetUserId, vacancyId, score, primaryTrack, summary, JSON.stringify(reasons), JSON.stringify(gaps),
+    hardRejection, model, JSON.stringify(explanation),
+  ]);
+  return (result.rowCount ?? 0) === 1;
+}
+
+export async function savedScoreVacancyIds(targetUserId: UserId, vacancyIds: readonly number[]): Promise<readonly number[]> {
+  const unique = [...new Set(vacancyIds)];
+  if (unique.length !== vacancyIds.length) throw new TypeError('Invalid saved-score lookup: duplicate vacancy ID.');
+  unique.forEach((id) => positiveInteger(id, 'vacancy ID'));
+  if (!unique.length) return Object.freeze([]);
+  const result = await postgresQuery<{ vacancy_id: string }>(`select vacancy_id from matches
+    where user_id=$1 and vacancy_id=any($2::bigint[]) and llm_score is not null order by vacancy_id`, [targetUserId, unique]);
+  return Object.freeze(result.rows.map((row) => Number(row.vacancy_id)));
+}
+
 export async function expireStaleMatches(maxAgeDays: number, now: Date): Promise<number> {
-  const rows = await q(`update matches m set state = 'expired', updated_at = $2
-    from vacancies v
-    where v.id = m.vacancy_id and m.state = 'matched' and m.llm_score is null
-      and v.published_at < $2::timestamptz - make_interval(days => $1::int)
-    returning m.vacancy_id`, [maxAgeDays, now.toISOString()]);
-  return rows.length;
+  positiveInteger(maxAgeDays, 'match maximum age'); validDate(now, 'expiry time');
+  const result = await postgresQuery(`update matches m set state='expired',updated_at=$2
+    from vacancies v where v.id=m.vacancy_id and m.state='matched' and m.llm_score is null
+      and v.published_at<$2-($1*interval '1 day')`, [maxAgeDays, now]);
+  return result.rowCount ?? 0;
 }
 
-export async function addSpend(userId: string, day: string, costUsd: number, kind: 'scores' | 'applications' | 'search_profiles'): Promise<void> {
-  await q(`insert into accounts (user_id, day, llm_cost_usd, ${kind})
-    values ($1, $2, $3, 1)
-    on conflict (user_id, day) do update set llm_cost_usd = accounts.llm_cost_usd + $3,
-      ${kind} = accounts.${kind} + 1, updated_at = now()`, [userId, day, costUsd]);
+export type AccountCounter = 'scores' | 'applications' | 'search_profiles';
+
+export async function addSpend(
+  targetUserId: UserId, day: string, costUsd: number, counter: AccountCounter,
+): Promise<void> {
+  if (!/^\d{4}-\d{2}-\d{2}$/u.test(day) || !Number.isFinite(costUsd) || costUsd < 0) {
+    throw new TypeError('Invalid account spend input.');
+  }
+  const column = { scores: 'scores', applications: 'applications', search_profiles: 'search_profiles' }[counter];
+  if (!column) throw new TypeError('Invalid account counter.');
+  await postgresQuery(`insert into accounts(user_id,day,spent_usd,${column}) values($1,$2,$3,1)
+    on conflict(user_id,day) do update set spent_usd=accounts.spent_usd+excluded.spent_usd,
+      ${column}=accounts.${column}+1,updated_at=now()`, [targetUserId, day, costUsd]);
 }
 
-export async function spentToday(userId: string, day: string): Promise<number> {
-  const rows = await q(`select llm_cost_usd from accounts where user_id = $1 and day = $2`, [userId, day]);
-  return Number(rows[0]?.llm_cost_usd ?? 0);
+export async function spentToday(targetUserId: UserId, day: string): Promise<number> {
+  const result = await postgresQuery<{ spent_usd: string | number }>(
+    'select spent_usd from accounts where user_id=$1 and day=$2', [targetUserId, day]);
+  return Number(result.rows[0]?.spent_usd ?? 0);
 }
 
-/** Mining recomputes from all profiles, so the table is replaced wholesale — derived data has no history. */
 export async function replaceRoleEquivalences(pairs: readonly RoleEquivalencePair[]): Promise<void> {
   await withPostgresTransaction(async (client) => {
     await client.query('delete from role_equivalences');
-    for (const pair of pairs) {
-      await client.query(`insert into role_equivalences (token_a, token_b, support, updated_at)
-        values ($1, $2, $3, now())`, [pair.tokenA, pair.tokenB, pair.support]);
-    }
+    for (const pair of pairs) await client.query(
+      'insert into role_equivalences(token_a,token_b,support) values($1,$2,$3)',
+      [pair.tokenA, pair.tokenB, pair.support]);
   });
 }
 
-export async function loadRoleEquivalences(minimumSupport = 1): Promise<RoleEquivalencePair[]> {
-  const rows = await q(`select token_a, token_b, support from role_equivalences where support >= $1
-    order by token_a, token_b`, [minimumSupport]);
-  return rows.map((row) => ({ tokenA: String(row.token_a), tokenB: String(row.token_b),
-    support: Number(row.support) }));
+export async function loadRoleEquivalences(minimumSupport = 1): Promise<readonly RoleEquivalencePair[]> {
+  positiveInteger(minimumSupport, 'minimum equivalence support');
+  const result = await postgresQuery<RoleEquivalencePair & QueryResultRow>(`select token_a "tokenA",token_b "tokenB",support
+    from role_equivalences where support>=$1 order by token_a,token_b`, [minimumSupport]);
+  return Object.freeze(result.rows.map((row) => Object.freeze({ tokenA: row.tokenA, tokenB: row.tokenB, support: row.support })));
+}
+
+export async function roleTrackTitles(): Promise<readonly RoleTrackTitles[]> {
+  const result = await postgresQuery<{ career_profile: unknown }>(`select c.career_profile from cv_documents c
+    join users u on u.user_id=c.user_id and u.status='approved' where c.career_profile is not null order by c.user_id`);
+  const tracks: RoleTrackTitles[] = [];
+  for (const row of result.rows) {
+    const root = typeof row.career_profile === 'object' && row.career_profile !== null && !Array.isArray(row.career_profile)
+      ? row.career_profile as Record<string, unknown> : null;
+    const profile = root && typeof root.profile === 'object' && root.profile !== null && !Array.isArray(root.profile)
+      ? root.profile as Record<string, unknown> : root;
+    if (!profile || !Array.isArray(profile.tracks)) continue;
+    for (const value of profile.tracks) {
+      if (typeof value !== 'object' || value === null || Array.isArray(value)) continue;
+      const variants = (value as Record<string, unknown>).titleVariants;
+      if (!Array.isArray(variants) || variants.some((title) => typeof title !== 'string')) continue;
+      tracks.push(Object.freeze({ titleVariants: Object.freeze([...variants] as string[]) }));
+    }
+  }
+  return Object.freeze(tracks);
 }
 
 export type IdfScope = 'title' | 'body';
-export interface StoredIdfVocabulary {
-  entries: { token: string; idf: number }[];
-  documents: number;
-  unknownIdf: number;
-}
 
-/**
- * Swaps in a freshly built vocabulary.
- *
- * One transaction, and the rows go in through `unnest` rather than a statement each: the body scope is tens of
- * thousands of tokens, and a per-row insert loop turns a rebuild into minutes of round trips on a hosted
- * database. Chunked so a single statement never carries an unbounded parameter array.
- */
-export async function replaceIdfVocabulary(scope: IdfScope, vocabulary: StoredIdfVocabulary): Promise<void> {
-  const chunk = 5_000;
+export async function replaceIdfVocabulary(scope: IdfScope, vocabulary: IdfVocabulary): Promise<void> {
   await withPostgresTransaction(async (client) => {
-    await client.query('delete from idf_vocabulary where scope = $1', [scope]);
-    for (let offset = 0; offset < vocabulary.entries.length; offset += chunk) {
-      const slice = vocabulary.entries.slice(offset, offset + chunk);
-      await client.query(`insert into idf_vocabulary (scope, token, idf)
-        select $1, * from unnest($2::text[], $3::float8[])`,
-      [scope, slice.map((entry) => entry.token), slice.map((entry) => entry.idf)]);
+    await client.query(`insert into idf_corpora(scope,documents,unknown_idf) values($1,$2,$3)
+      on conflict(scope) do update set documents=excluded.documents,unknown_idf=excluded.unknown_idf,rebuilt_at=now()`,
+    [scope, vocabulary.documents, vocabulary.unknownIdf]);
+    await client.query('delete from idf_vocabulary where scope=$1', [scope]);
+    for (let offset = 0; offset < vocabulary.entries.length; offset += 1_000) {
+      const chunk = vocabulary.entries.slice(offset, offset + 1_000);
+      await client.query(`insert into idf_vocabulary(scope,token,idf)
+        select $1,entry.token,entry.idf from unnest($2::text[],$3::double precision[]) entry(token,idf)`, [
+        scope, chunk.map((entry) => entry.token), chunk.map((entry) => entry.idf),
+      ]);
     }
-    await client.query(`insert into idf_corpora (scope, documents, tokens, unknown_idf, updated_at)
-      values ($1, $2, $3, $4, now())
-      on conflict (scope) do update set documents = excluded.documents, tokens = excluded.tokens,
-        unknown_idf = excluded.unknown_idf, updated_at = excluded.updated_at`,
-    [scope, vocabulary.documents, vocabulary.entries.length, vocabulary.unknownIdf]);
   });
 }
 
-/** Null when this scope has never been built — which the caller must not confuse with an empty corpus. */
-export async function loadIdfVocabulary(scope: IdfScope): Promise<StoredIdfVocabulary | null> {
-  const corpus = await q(`select documents, unknown_idf from idf_corpora where scope = $1`, [scope]);
-  if (!corpus.length) return null;
-  const rows = await q(`select token, idf from idf_vocabulary where scope = $1`, [scope]);
-  return {
-    entries: rows.map((row) => ({ token: String(row.token), idf: Number(row.idf) })),
-    documents: Number(corpus[0]!.documents),
-    unknownIdf: Number(corpus[0]!.unknown_idf),
-  };
+export async function loadIdfVocabulary(scope: IdfScope): Promise<IdfVocabulary | null> {
+  const corpus = await postgresQuery<{ documents: string; unknown_idf: number }>(
+    'select documents,unknown_idf from idf_corpora where scope=$1', [scope]);
+  if (!corpus.rows[0]) return null;
+  const entries = await postgresQuery<{ token: string; idf: number }>(
+    'select token,idf from idf_vocabulary where scope=$1 order by token', [scope]);
+  return Object.freeze({
+    documents: Number(corpus.rows[0].documents), unknownIdf: corpus.rows[0].unknown_idf,
+    entries: Object.freeze(entries.rows.map((entry) => Object.freeze(entry))),
+  });
 }
 
-/** Advert text for a vocabulary rebuild, in batches, so a rebuild never holds the whole corpus in memory. */
-export async function vacancyTextBatch(afterId: number, limit: number):
-Promise<{ id: number; name: string; description: string; keySkills: string[] }[]> {
-  const rows = await q(`select id, name, description, key_skills_json from vacancies
-    where id > $1 order by id limit $2`, [afterId, limit]);
-  return rows.map((row) => ({
-    id: Number(row.id), name: String(row.name ?? ''), description: String(row.description ?? ''),
-    keySkills: Array.isArray(row.key_skills_json) ? (row.key_skills_json as unknown[]).map(String) : [],
-  }));
+/** Replaces one complete derived matching generation so persisted readers never observe mixed old/new scopes. */
+export async function replaceMatchingVocabularies(input: {
+  readonly equivalences: readonly RoleEquivalencePair[];
+  readonly title: IdfVocabulary;
+  readonly body: IdfVocabulary;
+}): Promise<void> {
+  await withPostgresTransaction(async (client) => {
+    await client.query('delete from role_equivalences');
+    for (const pair of input.equivalences) await client.query(
+      'insert into role_equivalences(token_a,token_b,support) values($1,$2,$3)',
+      [pair.tokenA, pair.tokenB, pair.support]);
+    for (const [scope, vocabulary] of [['title', input.title], ['body', input.body]] as const) {
+      await client.query(`insert into idf_corpora(scope,documents,unknown_idf) values($1,$2,$3)
+        on conflict(scope) do update set documents=excluded.documents,unknown_idf=excluded.unknown_idf,rebuilt_at=now()`,
+      [scope, vocabulary.documents, vocabulary.unknownIdf]);
+      await client.query('delete from idf_vocabulary where scope=$1', [scope]);
+      for (let offset = 0; offset < vocabulary.entries.length; offset += 1_000) {
+        const chunk = vocabulary.entries.slice(offset, offset + 1_000);
+        await client.query(`insert into idf_vocabulary(scope,token,idf)
+          select $1,entry.token,entry.idf from unnest($2::text[],$3::double precision[]) entry(token,idf)`, [
+          scope, chunk.map((entry) => entry.token), chunk.map((entry) => entry.idf),
+        ]);
+      }
+    }
+  });
+}
+
+export async function recentNormalizedVacancyIds(
+  afterId: number, limit: number, maximumAgeDays: number,
+): Promise<readonly number[]> {
+  if (!Number.isSafeInteger(afterId) || afterId < 0) throw new RangeError('Invalid recent-vacancy cursor.');
+  positiveInteger(limit, 'recent-vacancy batch limit'); positiveInteger(maximumAgeDays, 'recent-vacancy maximum age');
+  const result = await postgresQuery<{ id: string }>(`select id from vacancies where id>$1
+    and lifecycle_status='normalized' and published_at>=now()-($3*interval '1 day') order by id limit $2`,
+  [afterId, limit, maximumAgeDays]);
+  return Object.freeze(result.rows.map((row) => Number(row.id)));
+}
+
+export async function vacancyTextBatch(
+  afterId: number, limit: number,
+): Promise<readonly { readonly id: number; readonly title: string; readonly body: string }[]> {
+  if (!Number.isSafeInteger(afterId) || afterId < 0) throw new RangeError('Invalid corpus cursor.');
+  positiveInteger(limit, 'corpus batch limit');
+  const result = await postgresQuery<{ id: string; name: string; description: string; key_skills_json: string[] }>(
+    `select id,name,description,key_skills_json from vacancies where id>$1 and lifecycle_status='normalized'
+      order by id limit $2`, [afterId, limit]);
+  return Object.freeze(result.rows.map((row) => Object.freeze({
+    id: Number(row.id), title: row.name, body: `${row.description}\n${row.key_skills_json.join(' ')}`,
+  })));
 }

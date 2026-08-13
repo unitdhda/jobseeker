@@ -1,21 +1,39 @@
-import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { defineConfig } from 'vite';
+import { fileURLToPath } from 'node:url';
 
-// Dependencies are hoisted to the workspace root, so the worker asset is resolved rather than path-joined.
+const root = fileURLToPath(new URL('.', import.meta.url));
 const require = createRequire(import.meta.url);
+const packageJson = JSON.parse(await readFile(resolve(root, 'package.json'), 'utf8')) as { dependencies: Record<string, string> };
+const thirdParty = Object.keys(packageJson.dependencies);
+const external = (id: string): boolean => thirdParty.some((dependency) => id === dependency || id.startsWith(`${dependency}/`));
 
-export default defineConfig({
-  // Workspace packages are bundled so dist/ stays a self-contained deploy artifact.
-  ssr:{noExternal:[/^@jobseeker\//]},
-  build:{ssr:true,rolldownOptions:{input:{
-    server:resolve('src/web.ts'),cli:resolve('src/cli.ts'),worker:resolve('src/worker.ts'),'cv-worker':resolve('src/cv-worker.ts'),
-    'refresh-profiles':resolve('src/profile-refresh.ts'),
-  },output:{entryFileNames:'[name].mjs',chunkFileNames:'[name]-[hash].mjs'}}},
-  plugins:[{
-    name:'bundle-pdfjs-worker',
-    generateBundle(){this.emitFile({type:'asset',fileName:'pdf.worker.mjs',
-      source:readFileSync(require.resolve('pdfjs-dist/legacy/build/pdf.worker.mjs'))});},
+export default {
+  build: {
+    target: 'node23',
+    ssr: true,
+    ssrEmitAssets: true,
+    outDir: 'dist',
+    emptyOutDir: true,
+    sourcemap: true,
+    rollupOptions: {
+      input: {
+        server: resolve(root, 'src/web.ts'),
+        cli: resolve(root, 'src/cli.ts'),
+        worker: resolve(root, 'src/worker.ts'),
+        'cv-worker': resolve(root, 'src/cv-worker.ts'),
+        'refresh-profiles': resolve(root, 'src/profile-refresh.ts'),
+      },
+      external,
+      output: { format: 'es', entryFileNames: '[name].js', chunkFileNames: 'chunks/[name]-[hash].js', assetFileNames: 'assets/[name]-[hash][extname]' },
+    },
+  },
+  plugins: [{
+    name: 'jobseeker-pdfjs-worker',
+    async buildStart(this: { emitFile(input: { type: 'asset'; fileName: string; source: Uint8Array }): void }) {
+      const path = require.resolve('pdfjs-dist/build/pdf.worker.min.mjs');
+      this.emitFile({ type: 'asset', fileName: 'assets/pdf.worker.min.mjs', source: Uint8Array.from(await readFile(path)) });
+    },
   }],
-});
+};

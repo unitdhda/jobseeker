@@ -1,79 +1,165 @@
-/**
- * How unusual a word is, measured over the adverts this deployment has actually seen.
- *
- * The prefilter's title evidence used to ask only "do these titles share words", which cannot tell a match on
- * "designer" — a word half the board uses — from a match on "communication designer". Measured on production,
- * that is not a nuance: a token-set ratio saturates at 1.0 for 49% of all matches, and that half converts worse
- * (40%) than the band just below it (62%). The top of the scale carried no information at all.
- *
- * Rarity fixes that, and it has to come from the corpus rather than a word list, because which words are common
- * is a property of the boards and occupations a given deployment actually searches.
- *
- * Vocabularies are derived data, rebuilt from `vacancies` on the same daily cadence as role equivalences.
- * Truncating one only flattens the evidence until the next rebuild.
- */
+export interface IdfEntry {
+  readonly token: string;
+  readonly idf: number;
+}
 
-/** A token's weight, and what an unseen token is worth. */
+export interface IdfVocabulary {
+  readonly entries: readonly IdfEntry[];
+  readonly documents: number;
+  readonly unknownIdf: number;
+}
+
 export interface IdfLookup {
-  of(token: string): number;
-  /** What a token absent from the vocabulary scores — by construction, what a token seen once would score. */
   readonly unknownIdf: number;
   readonly documents: number;
   readonly size: number;
+  of(token: string): number;
 }
 
-export interface IdfEntry { token: string; idf: number }
-
-export interface IdfVocabulary {
-  entries: IdfEntry[];
-  documents: number;
-  unknownIdf: number;
+export interface IdfLookups {
+  readonly title: IdfLookup;
+  readonly body: IdfLookup;
 }
 
-/** Smoothed inverse document frequency. The +1/+0.5 keep it finite and positive for every count. */
-const idfFor = (documents: number, seenIn: number): number => Math.log((documents + 1) / (seenIn + 0.5));
+const floatingTolerance = 1e-12;
 
-/**
- * Builds a vocabulary from tokenized documents, keeping only what is worth storing.
- *
- * A token seen in exactly one advert scores the same as a token never seen at all, so the single-document tail
- * is dropped and `unknownIdf` carries its value instead. That is not an approximation: measured over the
- * production corpus the kept and full vocabularies correlate at 1.000000 for title evidence and 0.999951 for
- * the body cosine, and it turns 61,518 body tokens into 36,145 rows.
- */
+function normalizeToken(token: string): string {
+  return token.normalize('NFKC').toLowerCase().trim();
+}
+
+function idfFor(documents: number, seenIn: number): number {
+  return Math.log((documents + 1) / (seenIn + 0.5));
+}
+
+export const uniformIdfLookup: IdfLookup = Object.freeze({
+  of: (_token: string) => 1,
+  unknownIdf: 1,
+  documents: 0,
+  size: 0,
+});
+
+export const uniformIdfLookups: IdfLookups = Object.freeze({
+  title: uniformIdfLookup,
+  body: uniformIdfLookup,
+});
+
+/** Builds compact, deterministic derived vocabulary data from tokenized corpus documents. */
 export function buildIdfVocabulary(documents: Iterable<Iterable<string>>): IdfVocabulary {
   const seenIn = new Map<string, number>();
-  let count = 0;
+  let documentCount = 0;
+
   for (const document of documents) {
-    count += 1;
-    for (const token of new Set(document)) seenIn.set(token, (seenIn.get(token) ?? 0) + 1);
+    documentCount += 1;
+    if (!Number.isSafeInteger(documentCount)) {
+      throw new RangeError('Invalid IDF corpus: document count exceeds the maximum safe integer.');
+    }
+
+    const uniqueTokens = new Set<string>();
+    for (const rawToken of document) {
+      if (typeof rawToken !== 'string') {
+        throw new TypeError('Invalid IDF corpus token: expected a string.');
+      }
+      const token = normalizeToken(rawToken);
+      if (!token) throw new TypeError('Invalid IDF corpus token: tokens must not be empty.');
+      uniqueTokens.add(token);
+    }
+    for (const token of uniqueTokens) seenIn.set(token, (seenIn.get(token) ?? 0) + 1);
   }
-  const unknownIdf = idfFor(count, 1);
+
+  if (documentCount === 0) {
+    return Object.freeze({ entries: Object.freeze([]), documents: 0, unknownIdf: 1 });
+  }
+
+  const unknownIdf = idfFor(documentCount, 1);
   const entries: IdfEntry[] = [];
-  for (const [token, documentCount] of seenIn) {
-    if (documentCount < 2) continue;
-    entries.push({ token, idf: idfFor(count, documentCount) });
+  for (const [token, count] of seenIn) {
+    if (count === 1) continue;
+    entries.push(Object.freeze({ token, idf: idfFor(documentCount, count) }));
   }
-  entries.sort((left, right) => (left.token < right.token ? -1 : left.token > right.token ? 1 : 0));
-  return { entries, documents: count, unknownIdf };
+  entries.sort((left, right) => left.token < right.token ? -1 : left.token > right.token ? 1 : 0);
+  return Object.freeze({ entries: Object.freeze(entries), documents: documentCount, unknownIdf });
 }
 
-/** The empty vocabulary: every token equally unusual, so rarity contributes nothing until one is built. */
-export const uniformIdfLookup: IdfLookup = { of: () => 1, unknownIdf: 1, documents: 0, size: 0 };
-
+/** Validates persisted vocabulary data before turning it into executable lookup behavior. */
 export function createIdfLookup(vocabulary: IdfVocabulary): IdfLookup {
-  if (!vocabulary.documents || !vocabulary.entries.length) return uniformIdfLookup;
-  const weights = new Map(vocabulary.entries.map((entry) => [entry.token, entry.idf]));
+  if (!Number.isSafeInteger(vocabulary.documents) || vocabulary.documents < 0) {
+    throw new RangeError(
+      `Invalid IDF vocabulary: documents must be a nonnegative safe integer, received ${vocabulary.documents}.`,
+    );
+  }
+  if (vocabulary.documents === 0) return uniformIdfLookup;
+  if (!Number.isFinite(vocabulary.unknownIdf) || vocabulary.unknownIdf <= 0) {
+    throw new RangeError('Invalid IDF vocabulary: unknownIdf must be a finite positive number.');
+  }
+
+  const weights = new Map<string, number>();
+  for (const entry of vocabulary.entries) {
+    if (typeof entry.token !== 'string' || !entry.token) {
+      throw new TypeError('Invalid IDF vocabulary entry: token must be a nonempty string.');
+    }
+    const token = normalizeToken(entry.token);
+    if (token !== entry.token) {
+      throw new TypeError('Invalid IDF vocabulary entry: token must already be NFKC-normalized and lowercase.');
+    }
+    if (weights.has(token)) throw new TypeError('Invalid IDF vocabulary: duplicate token encountered.');
+    if (!Number.isFinite(entry.idf) || entry.idf <= 0) {
+      throw new RangeError('Invalid IDF vocabulary entry: idf must be a finite positive number.');
+    }
+    if (entry.idf > vocabulary.unknownIdf + floatingTolerance) {
+      throw new RangeError('Invalid IDF vocabulary entry: stored idf must not exceed unknownIdf.');
+    }
+    weights.set(token, entry.idf);
+  }
+
   const unknownIdf = vocabulary.unknownIdf;
-  return {
-    of: (token) => weights.get(token) ?? unknownIdf,
+  return Object.freeze({
+    of: (token: string) => weights.get(normalizeToken(token)) ?? unknownIdf,
     unknownIdf,
     documents: vocabulary.documents,
     size: weights.size,
-  };
+  });
 }
 
-/** The two vocabularies the prefilter consults: role tokens from advert titles, and words from advert bodies. */
-export interface IdfLookups { title: IdfLookup; body: IdfLookup }
+function termCounts(tokens: Iterable<string>): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const rawToken of tokens) {
+    const token = normalizeToken(rawToken);
+    if (!token) continue;
+    counts.set(token, (counts.get(token) ?? 0) + 1);
+  }
+  return counts;
+}
 
-export const uniformIdfLookups: IdfLookups = { title: uniformIdfLookup, body: uniformIdfLookup };
+export function idfWeightedCosine(
+  leftTokens: Iterable<string>,
+  rightTokens: Iterable<string>,
+  lookup: IdfLookup,
+): number {
+  const left = termCounts(leftTokens);
+  const right = termCounts(rightTokens);
+  if (left.size === 0 || right.size === 0) return 0;
+
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (const [token, count] of left) {
+    const weighted = count * lookup.of(token);
+    leftMagnitude += weighted * weighted;
+    const rightCount = right.get(token);
+    if (rightCount !== undefined) dot += weighted * rightCount * lookup.of(token);
+  }
+  for (const [token, count] of right) {
+    const weighted = count * lookup.of(token);
+    rightMagnitude += weighted * weighted;
+  }
+  return dot / Math.sqrt(leftMagnitude * rightMagnitude);
+}
+
+export function titleSpecificity(matchedTokens: Iterable<string>, lookup: IdfLookup): number {
+  const tokens = new Set([...matchedTokens].map(normalizeToken).filter(Boolean));
+  if (tokens.size === 0) return 0;
+
+  let total = 0;
+  for (const token of tokens) total += lookup.of(token);
+  return Math.min(1, Math.max(0, total / tokens.size / lookup.unknownIdf));
+}

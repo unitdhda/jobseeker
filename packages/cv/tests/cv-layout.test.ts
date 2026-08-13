@@ -1,68 +1,82 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { extractText, getDocumentProxy } from '../src/extract.ts';
-import { createCvPdf, type CvDocument } from '../src/pdf.ts';
+import type { CvDocument } from '../src/document.ts';
+import {
+  createCvPdf,
+  createCvPdfWithCompiler,
+  cvSource,
+  type CvCompilerAdapter,
+} from '../src/render.ts';
+import { extractText } from 'unpdf';
 
-const renderer = createCvPdf();
+const document: CvDocument = {
+  name: 'Ada #Lovelace [Engineer]',
+  headline: 'Built **analytical** and *deterministic* systems',
+  contacts: ['ada@example.test'],
+  sections: [{
+    title: 'Experience',
+    blocks: [
+      { kind: 'entry', title: 'Analytical Engines', meta: '2020–2024', text: 'Designed $safe {systems}.', bullets: ['One item'] },
+      { kind: 'facts', items: [{ term: 'Skill', detail: 'TypeScript' }] },
+    ],
+  }],
+};
 
-const document = (...sections: CvDocument['sections']): CvDocument =>
-  ({ name: 'Ivan Petrov', headline: 'Backend Engineer', contacts: ['Remote', 'first.last@example.com'], sections });
-
-async function render(cv: CvDocument): Promise<{ text: string; pages: number }> {
-  const pdf = renderer.compileCvDocument(cv);
-  assert.equal(pdf.subarray(0, 4).toString(), '%PDF');
-  const proxy = await getDocumentProxy(Uint8Array.from(pdf));
-  const { text } = await extractText(proxy, { mergePages: true });
-  return { text: String(text).replace(/\s+/g, ' '), pages: proxy.numPages };
-}
-
-const filler = (count: number): string[] => Array.from({ length: count }, (_, index) =>
-  `Delivered workstream ${index} with measured impact on latency, cost and reliability.`);
-
-test('every part of the document reaches the page', async () => {
-  const { text } = await render(document(
-    { title: 'SUMMARY', blocks: [{ kind: 'text', text: 'Eight years of backend work.' }] },
-    { title: 'EXPERIENCE', blocks: [{ kind: 'entry', title: 'Acme Corp', subtitle: 'Senior Engineer',
-      meta: '2020-2024', bullets: ['Reduced p99 latency by 40%'] }] },
-    { title: 'SKILLS', blocks: [{ kind: 'facts', items: [{ term: 'Stack', detail: 'Go, Rust' }] }] },
-  ));
-  for (const fragment of ['Ivan Petrov', 'Backend Engineer', 'first.last@example.com', 'SUMMARY',
-    'Eight years of backend work.', 'Acme Corp', 'Senior Engineer', '2020-2024', 'Reduced p99 latency by 40%',
-    'Stack', 'Go, Rust']) {
-    assert.ok(text.includes(fragment), `missing from the PDF: ${fragment}`);
-  }
+test('Typst source escapes punctuation and emits only fixed component calls', () => {
+  const source = cvSource(document, 1);
+  assert.match(source, /#cv-header\(/u);
+  assert.match(source, /#cv-section\(/u);
+  assert.match(source, /#text\(weight: "bold"/u);
+  assert.match(source, /#emph\(/u);
+  assert.match(source, /\(\[#"One item"\],\)/u); // one-element content tuples retain a trailing comma
+  assert.doesNotMatch(source, /#(?:import|include|read)\s*\(/iu);
+  assert.match(source, /Ada #Lovelace \[Engineer\]/u);
 });
 
-test('punctuation Typst would rewrite survives verbatim', async () => {
-  // `--` used to become an en dash and `~` a non-breaking space, silently editing the candidate's own words.
-  const { text } = await render(document({ title: 'NOTES', blocks: [{ kind: 'bullets',
-    items: ['Migrated CI --- from Jenkins ~ two quarters', 'Range 10-20 and C++ / C#'] }] }));
-  assert.ok(text.includes('CI --- from Jenkins ~ two quarters'), text);
-  assert.ok(text.includes('10-20 and C++ / C#'), text);
+test('native PDF compilation preserves every representative content fragment', async () => {
+  const pdf = createCvPdf().compileCvDocument(document);
+  assert.equal(pdf.subarray(0, 4).toString('ascii'), '%PDF');
+  const extracted = await extractText(new Uint8Array(pdf), { mergePages: true });
+  const text = extracted.text.replace(/\s+/gu, ' ');
+  for (const fragment of [
+    'Ada #Lovelace [Engineer]', 'analytical', 'deterministic', 'Analytical Engines',
+    '2020–2024', 'Designed $safe {systems}.', 'One item', 'TypeScript',
+  ]) assert.ok(text.includes(fragment), `missing PDF text fragment: ${fragment}`);
 });
 
-test('markup in the content cannot reach the compiler as markup', async () => {
-  const hostile = '#let x = 1 [bracket] $math$ *star* _under_ `code` @ref <label>';
-  const { text } = await render(document({ title: 'NOTES', blocks: [{ kind: 'text', text: hostile }] }));
-  assert.ok(text.includes('#let x = 1 [bracket] $math$'), text);
-  assert.ok(text.includes('`code` @ref <label>'), text);
+test('density fitting accepts the first candidate that reduces page count', () => {
+  const densities: number[] = [];
+  const compiler: CvCompilerAdapter = {
+    compile(source) {
+      const density = Number(/#set text\(font: "Spectral", size: (\d+\.\d+) \*/u.exec(source)?.[1]);
+      densities.push(density);
+      const pages = density >= 0.93 ? 3 : 2;
+      return { pdf: Buffer.from(`%PDF-${density}`), pages };
+    },
+  };
+  const pdf = createCvPdfWithCompiler(compiler).compileCvDocument(document);
+  assert.deepEqual(densities, [1, 0.96, 0.93, 0.9]);
+  assert.equal(pdf.toString(), '%PDF-0.9');
 });
 
-test('emphasis markers are consumed rather than printed', async () => {
-  const { text } = await render(document({ title: 'NOTES',
-    blocks: [{ kind: 'text', text: 'A **bold** and *italic* claim.' }] }));
-  assert.equal(text.includes('*'), false, text);
-  assert.ok(text.includes('A bold and italic claim.'), text);
+test('natural layout is retained when compression does not reduce page count', () => {
+  const compiler: CvCompilerAdapter = {
+    compile(source) {
+      const density = Number(/#set text\(font: "Spectral", size: (\d+\.\d+) \*/u.exec(source)?.[1]);
+      return { pdf: Buffer.from(`%PDF-${density}`), pages: 2 };
+    },
+  };
+  assert.equal(createCvPdfWithCompiler(compiler).compileCvDocument(document).toString(), '%PDF-1');
 });
 
-test('a CV that just overflows is tightened onto one page instead of stranding a few lines', async () => {
-  const { pages } = await render(document({ title: 'EXPERIENCE',
-    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(42) }] }));
-  assert.equal(pages, 1);
-});
-
-test('a CV with genuinely two pages of content is not squeezed into one', async () => {
-  const { pages } = await render(document({ title: 'EXPERIENCE',
-    blocks: [{ kind: 'entry', title: 'Acme Corp', meta: '2020-2024', bullets: filler(130) }] }));
-  assert.ok(pages >= 2, `expected the content to keep its pages, got ${pages}`);
+test('plain-text rendering uses the structured salvage path', () => {
+  let compiled = '';
+  const compiler: CvCompilerAdapter = {
+    compile(source) { compiled = source; return { pdf: Buffer.from('%PDF-plain'), pages: 1 }; },
+  };
+  const prose = `Ada Lovelace\nSoftware Engineer\n\nEXPERIENCE\nAnalytical Engines 2020–2024\nBuilt deterministic analytical systems and documented reusable engineering evidence for teams.\n`;
+  const pdf = createCvPdfWithCompiler(compiler).compilePlainTextCv(prose);
+  assert.equal(pdf.toString(), '%PDF-plain');
+  assert.match(compiled, /Ada Lovelace/u);
+  assert.match(compiled, /Analytical Engines/u);
 });

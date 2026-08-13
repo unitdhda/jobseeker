@@ -1,185 +1,342 @@
-/**
- * The engine's main loop as two independent lanes sharing one store. Discovery (tick → normalize → match) is slow
- * and IO-bound — a polite hh normalization pass legitimately takes many minutes. Judgment (score → deliver) is
- * fast and budget-bound. Coupling them meant every alert waited for the slowest scrape; each lane now runs on its
- * own clock, and the store's guarantees (skip-locked claims, append-only ingest, state-guarded transitions) make
- * that safe. Stages stay failure-isolated within a lane, and like engine-runtime everything is expressed over
- * ports.
- */
 import type { TickReport } from './runtime.ts';
+import type { UserId } from './contracts.ts';
 
 export interface NormalizeReport {
-  vacancyIds: number[]; failed: number; closed: number;
-  expired: number; selected: number; refreshed: number; normalized: number; bySource: Record<string, number>;
+  readonly vacancyIds: readonly number[];
+  readonly failed: number;
+  readonly closed: number;
+  readonly expired: number;
+  readonly selected: number;
+  readonly refreshed: number;
+  readonly normalized: number;
+  readonly bySource: Readonly<Record<string, number>>;
 }
-export interface ScoreDueReport { users: number; drained: number; skippedOverBudget: number; failures: number }
+
+export interface ScoreDueReport {
+  readonly users: number;
+  readonly drained: number;
+  readonly skippedOverBudget: number;
+  readonly failures: number;
+}
 
 export interface DiscoveryPorts {
   tick(now: Date): Promise<TickReport>;
-  /** Normalizes queued listings; returns the ids of vacancies that became visible this round. */
   normalize(now: Date): Promise<NormalizeReport>;
-  matchVacancies(vacancyIds: number[], now: Date): Promise<{ matched: number; failures: number }>;
+  matchVacancies(vacancyIds: readonly number[], now: Date): Promise<{ readonly matched: number; readonly failures: number }>;
 }
+
 export interface JudgmentPorts {
   scoreDue(now: Date): Promise<ScoreDueReport>;
   deliver(now: Date): Promise<void>;
-  /** Optional periodic maintenance; the port owns its own cadence gating and must be cheap when not due. */
-  maintain?(now: Date): Promise<void>;
-  /**
-   * Optional retirement of matches whose advert aged out before anyone judged them. The queue is drained in
-   * score order against a bounded budget, so its tail is never reached; without this those matches stay
-   * "waiting" forever and the count of what was passed over cannot be told from what is still pending. Owns its
-   * own cadence gating, like `maintain`.
-   */
   retire?(now: Date): Promise<number>;
+  maintain?(now: Date): Promise<void>;
 }
+
 export interface LoopPorts extends DiscoveryPorts, JudgmentPorts {}
 
 export interface DiscoveryReport {
-  tick?: TickReport;
-  normalize?: NormalizeReport;
-  matched: number;
-  stageFailures: string[];
+  readonly tick?: TickReport;
+  readonly normalize?: NormalizeReport;
+  readonly matched: number;
+  readonly stageFailures: readonly string[];
 }
-export interface JudgmentReport { scoring?: ScoreDueReport; retired?: number; stageFailures: string[] }
 
-async function stage<T>(failures: string[], name: string, run: () => Promise<T>): Promise<T | null> {
+export interface JudgmentReport {
+  readonly scoring?: ScoreDueReport;
+  readonly retired?: number;
+  readonly stageFailures: readonly string[];
+}
+
+/** Engine stages report stable names only; application adapters own sanitized error logging and tracing. */
+async function runStage<TResult>(
+  failures: string[],
+  name: string,
+  run: () => Promise<TResult>,
+): Promise<TResult | undefined> {
   try {
     return await run();
-  } catch (error) {
+  } catch {
     failures.push(name);
-    console.error(`Engine ${name} stage failed: ${error instanceof Error ? error.message : String(error)}`);
-    return null;
+    return undefined;
   }
+}
+
+function validVacancyIds(ids: readonly number[]): readonly number[] {
+  const unique = new Set<number>();
+  for (const id of ids) {
+    if (!Number.isSafeInteger(id) || id < 1) {
+      throw new TypeError('Invalid normalization report: vacancy IDs must be positive safe integers.');
+    }
+    if (unique.has(id)) throw new TypeError('Invalid normalization report: duplicate vacancy ID encountered.');
+    unique.add(id);
+  }
+  return Object.freeze([...ids]);
 }
 
 export async function runDiscoveryIteration(ports: DiscoveryPorts, now: Date): Promise<DiscoveryReport> {
-  const report: DiscoveryReport = { matched: 0, stageFailures: [] };
-  report.tick = await stage(report.stageFailures, 'tick', () => ports.tick(now)) ?? undefined;
-  report.normalize = await stage(report.stageFailures, 'normalize', () => ports.normalize(now)) ?? undefined;
-  if (report.normalize?.vacancyIds.length) {
-    const matched = await stage(report.stageFailures, 'match',
-      () => ports.matchVacancies(report.normalize!.vacancyIds, now));
-    report.matched = matched?.matched ?? 0;
+  const failures: string[] = [];
+  const tick = await runStage(failures, 'tick', () => ports.tick(now));
+  const normalize = await runStage(failures, 'normalize', () => ports.normalize(now));
+  let matched = 0;
+
+  if (normalize?.vacancyIds.length) {
+    const result = await runStage(failures, 'match', async () =>
+      ports.matchVacancies(validVacancyIds(normalize.vacancyIds), now));
+    matched = result?.matched ?? 0;
   }
-  return report;
+
+  return Object.freeze({
+    ...(tick === undefined ? {} : { tick }),
+    ...(normalize === undefined ? {} : { normalize }),
+    matched,
+    stageFailures: Object.freeze(failures),
+  });
 }
 
 export async function runJudgmentIteration(ports: JudgmentPorts, now: Date): Promise<JudgmentReport> {
-  const report: JudgmentReport = { stageFailures: [] };
-  report.scoring = await stage(report.stageFailures, 'score', () => ports.scoreDue(now)) ?? undefined;
-  await stage(report.stageFailures, 'deliver', () => ports.deliver(now));
-  if (ports.retire) report.retired = await stage(report.stageFailures, 'retire', () => ports.retire!(now)) ?? undefined;
-  if (ports.maintain) await stage(report.stageFailures, 'maintain', () => ports.maintain!(now));
-  return report;
+  const failures: string[] = [];
+  const scoring = await runStage(failures, 'score', () => ports.scoreDue(now));
+  await runStage(failures, 'deliver', () => ports.deliver(now));
+  const retired = ports.retire
+    ? await runStage(failures, 'retire', () => ports.retire!(now))
+    : undefined;
+  if (ports.maintain) await runStage(failures, 'maintain', () => ports.maintain!(now));
+
+  return Object.freeze({
+    ...(scoring === undefined ? {} : { scoring }),
+    ...(retired === undefined ? {} : { retired }),
+    stageFailures: Object.freeze(failures),
+  });
 }
 
 export interface ScoringPorts {
-  scoringUserIds(): Promise<string[]>;
-  spentTodayUsd(userId: string, now: Date): Promise<number>;
-  drainUser(userId: string, claimLimit: number, now: Date): Promise<{ attempted: number; completed: number }>;
-}
-export interface ScoringPolicy {
-  dailyBudgetUsd: number;
-  claimLimit: number;
-  /** The share of the day's budget available from the first minute, so early UTC hours are never starved. */
-  paceFloorFraction?: number;
+  scoringUserIds(): Promise<readonly UserId[]>;
+  spentTodayUsd(userId: UserId, now: Date): Promise<number>;
+  drainUser(
+    userId: UserId,
+    claimLimit: number,
+    now: Date,
+  ): Promise<{ readonly attempted: number; readonly completed: number }>;
 }
 
-/**
- * Per-user scoring under a paced ceiling: the daily budget accrues with the UTC day (a leaky bucket), so what one
- * noisy morning cannot spend stays available for the evening's discoveries, and best-first claiming hands each
- * hour's slice to the best matches available then. Users never pay for each other's failures.
- */
-export async function drainScoring(ports: ScoringPorts, policy: ScoringPolicy, now: Date): Promise<ScoreDueReport> {
-  const dayFraction = (now.getTime() - Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())) / 86_400_000;
-  const ceiling = policy.dailyBudgetUsd * Math.max(policy.paceFloorFraction ?? 1 / 12, dayFraction);
+export interface ScoringPolicy {
+  readonly dailyBudgetUsd: number;
+  readonly claimLimit: number;
+  /** Share of the daily budget available at midnight; defaults to 1/12. */
+  readonly paceFloorFraction?: number;
+}
+
+function assertScoringPolicy(policy: ScoringPolicy): number {
+  if (!Number.isFinite(policy.dailyBudgetUsd) || policy.dailyBudgetUsd < 0) {
+    throw new RangeError(
+      `Invalid daily scoring budget: expected a finite nonnegative USD amount, received ${policy.dailyBudgetUsd}.`,
+    );
+  }
+  if (!Number.isSafeInteger(policy.claimLimit) || policy.claimLimit < 1) {
+    throw new RangeError(`Invalid scoring claim limit: expected a positive safe integer, received ${policy.claimLimit}.`);
+  }
+  const floor = policy.paceFloorFraction ?? 1 / 12;
+  if (!Number.isFinite(floor) || floor < 0 || floor > 1) {
+    throw new RangeError(`Invalid scoring pace floor: expected a finite number from 0 through 1, received ${floor}.`);
+  }
+  return floor;
+}
+
+function validDate(date: Date, name: string): number {
+  if (!(date instanceof Date)) throw new TypeError(`Invalid engine loop input: ${name} must be a Date.`);
+  const timestamp = date.getTime();
+  if (!Number.isFinite(timestamp)) throw new TypeError(`Invalid engine loop input: ${name} must be a valid Date.`);
+  return timestamp;
+}
+
+/** Drains each user's queue against that user's own UTC-day-paced budget; no global budget can cause starvation. */
+export async function drainScoring(
+  ports: ScoringPorts,
+  policy: ScoringPolicy,
+  now: Date,
+): Promise<ScoreDueReport> {
+  const floor = assertScoringPolicy(policy);
+  const nowMs = validDate(now, 'now');
+  const dayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  const dayFraction = Math.min(1, Math.max(0, (nowMs - dayStart) / 86_400_000));
+  const ceiling = policy.dailyBudgetUsd * Math.max(floor, dayFraction);
   const users = await ports.scoringUserIds();
-  const report: ScoreDueReport = { users: users.length, drained: 0, skippedOverBudget: 0, failures: 0 };
+  if (new Set(users).size !== users.length) {
+    throw new TypeError('Invalid scoring input: duplicate user ID encountered.');
+  }
+
+  let drained = 0;
+  let skippedOverBudget = 0;
+  let failures = 0;
   for (const userId of users) {
+    if (ceiling === 0) {
+      skippedOverBudget += 1;
+      continue;
+    }
     try {
-      if (await ports.spentTodayUsd(userId, now) >= ceiling) {
-        report.skippedOverBudget += 1;
+      const spent = await ports.spentTodayUsd(userId, now);
+      if (!Number.isFinite(spent) || spent < 0) {
+        throw new RangeError('Invalid scoring usage: spent-today amount must be finite and nonnegative.');
+      }
+      if (spent >= ceiling) {
+        skippedOverBudget += 1;
         continue;
       }
       await ports.drainUser(userId, policy.claimLimit, now);
-      report.drained += 1;
-    } catch (error) {
-      report.failures += 1;
-      console.error(`Scoring drain failed for user ${userId}: ${error instanceof Error ? error.message : String(error)}`);
+      drained += 1;
+    } catch {
+      failures += 1;
     }
   }
-  return report;
+
+  return Object.freeze({ users: users.length, drained, skippedOverBudget, failures });
 }
 
 export interface LaneClock {
   nextWakeMs(now: Date): Promise<number>;
   sleep(ms: number): Promise<void>;
 }
-export interface EngineLoop { run(): Promise<void>; stop(): void }
 
 export interface LaneStatus {
-  iterations: number; lastIterationAt: string | null; lastStageFailures: string[]; lastWakeMs: number | null;
+  readonly iterations: number;
+  readonly lastIterationAt: string | null;
+  readonly lastStageFailures: readonly string[];
+  readonly lastWakeMs: number | null;
 }
-export interface EngineLoopStatus {
-  running: boolean;
-  discovery: LaneStatus & { lastDue: number; lastUnitsRun: number };
-  judgment: LaneStatus;
-}
-const emptyLane = (): LaneStatus => ({ iterations: 0, lastIterationAt: null, lastStageFailures: [], lastWakeMs: null });
-let status: EngineLoopStatus = { running: false, discovery: { ...emptyLane(), lastDue: 0, lastUnitsRun: 0 }, judgment: emptyLane() };
 
-/** What /status reports about the scheduler: observability only, never control flow. */
-export function engineLoopStatus(): EngineLoopStatus {
-  return { running: status.running,
-    discovery: { ...status.discovery, lastStageFailures: [...status.discovery.lastStageFailures] },
-    judgment: { ...status.judgment, lastStageFailures: [...status.judgment.lastStageFailures] } };
+export interface EngineLoopStatus {
+  readonly running: boolean;
+  readonly discovery: LaneStatus & { readonly lastDue: number; readonly lastUnitsRun: number };
+  readonly judgment: LaneStatus;
+}
+
+export interface EngineLoop {
+  run(): Promise<void>;
+  stop(): void;
+  status(): EngineLoopStatus;
 }
 
 const fallbackWakeMs = 60_000;
 
-export function createEngineLoop(ports: LoopPorts, clocks: { discovery: LaneClock; judgment: LaneClock }): EngineLoop {
-  let running = true;
-  let signalStop: () => void = () => undefined;
-  const stopped = new Promise<void>((resolve) => { signalStop = resolve; });
+function emptyLane(): LaneStatus {
+  return { iterations: 0, lastIterationAt: null, lastStageFailures: Object.freeze([]), lastWakeMs: null };
+}
 
-  function patchLane(name: 'discovery' | 'judgment', patch: Partial<LaneStatus>): void {
-    if (name === 'discovery') status.discovery = { ...status.discovery, ...patch };
-    else status.judgment = { ...status.judgment, ...patch };
+function nativeSleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function validWakeMs(value: number): number {
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(`Invalid lane wake delay: expected a finite nonnegative number, received ${value}.`);
   }
+  return value;
+}
 
-  async function lane(name: 'discovery' | 'judgment', clock: LaneClock,
-    iterate: (now: Date) => Promise<{ stageFailures: string[] }>): Promise<void> {
-    while (running) {
-      try {
-        const report = await iterate(new Date());
-        if (report.stageFailures.length) console.warn(`Engine ${name} degraded: ${report.stageFailures.join(', ')}`);
-        patchLane(name, { iterations: status[name].iterations + 1,
-          lastIterationAt: new Date().toISOString(), lastStageFailures: report.stageFailures });
-      } catch (error) {
-        console.error(`Engine ${name} iteration failed outright: ${error instanceof Error ? error.message : String(error)}`);
-      }
-      const wake = await clock.nextWakeMs(new Date()).catch(() => fallbackWakeMs);
-      patchLane(name, { lastWakeMs: wake });
-      // Racing the clock against stop keeps shutdown prompt whatever sleep the clock implements.
-      if (running) await Promise.race([clock.sleep(wake), stopped]);
+/** Runs discovery and judgment on independent clocks; stop races every sleep so shutdown never waits a full cadence. */
+export function createEngineLoop(
+  ports: LoopPorts,
+  clocks: { readonly discovery: LaneClock; readonly judgment: LaneClock },
+): EngineLoop {
+  let running = false;
+  let stopped = false;
+  let runPromise: Promise<void> | null = null;
+  let releaseStop!: () => void;
+  const stopSignal = new Promise<void>((resolve) => { releaseStop = resolve; });
+  let discoveryStatus = { ...emptyLane(), lastDue: 0, lastUnitsRun: 0 };
+  let judgmentStatus = emptyLane();
+
+  const sleepOrStop = async (clock: LaneClock, milliseconds: number): Promise<boolean> => {
+    try {
+      await Promise.race([clock.sleep(milliseconds), stopSignal]);
+      return false;
+    } catch {
+      // A broken injected sleep must not create a hot retry loop or kill the other lane.
+      await Promise.race([nativeSleep(fallbackWakeMs), stopSignal]);
+      return true;
     }
-  }
-
-  return {
-    stop() { running = false; status = { ...status, running: false }; signalStop(); },
-    async run() {
-      status = { ...status, running: true };
-      await Promise.all([
-        lane('discovery', clocks.discovery, async (now) => {
-          const report = await runDiscoveryIteration(ports, now);
-          status.discovery = { ...status.discovery, lastDue: report.tick?.due ?? 0,
-            lastUnitsRun: report.tick?.unitsRun ?? 0 };
-          return report;
-        }),
-        lane('judgment', clocks.judgment, (now) => runJudgmentIteration(ports, now)),
-      ]);
-      status = { ...status, running: false };
-    },
   };
+
+  const discoveryLane = async (): Promise<void> => {
+    while (!stopped) {
+      const now = new Date();
+      const report = await runDiscoveryIteration(ports, now);
+      const failures = [...report.stageFailures];
+      let wakeMs = fallbackWakeMs;
+      try {
+        wakeMs = validWakeMs(await clocks.discovery.nextWakeMs(new Date()));
+      } catch {
+        failures.push('clock');
+      }
+      discoveryStatus = {
+        iterations: discoveryStatus.iterations + 1,
+        lastIterationAt: now.toISOString(),
+        lastStageFailures: Object.freeze([...failures]),
+        lastWakeMs: wakeMs,
+        lastDue: report.tick?.due ?? 0,
+        lastUnitsRun: report.tick?.unitsRun ?? 0,
+      };
+      const sleepFailed = !stopped && await sleepOrStop(clocks.discovery, wakeMs);
+      if (sleepFailed) {
+        failures.push('sleep');
+        discoveryStatus = { ...discoveryStatus, lastStageFailures: Object.freeze([...failures]) };
+      }
+    }
+  };
+
+  const judgmentLane = async (): Promise<void> => {
+    while (!stopped) {
+      const now = new Date();
+      const report = await runJudgmentIteration(ports, now);
+      const failures = [...report.stageFailures];
+      let wakeMs = fallbackWakeMs;
+      try {
+        wakeMs = validWakeMs(await clocks.judgment.nextWakeMs(new Date()));
+      } catch {
+        failures.push('clock');
+      }
+      judgmentStatus = {
+        iterations: judgmentStatus.iterations + 1,
+        lastIterationAt: now.toISOString(),
+        lastStageFailures: Object.freeze([...failures]),
+        lastWakeMs: wakeMs,
+      };
+      const sleepFailed = !stopped && await sleepOrStop(clocks.judgment, wakeMs);
+      if (sleepFailed) {
+        failures.push('sleep');
+        judgmentStatus = { ...judgmentStatus, lastStageFailures: Object.freeze([...failures]) };
+      }
+    }
+  };
+
+  return Object.freeze({
+    run(): Promise<void> {
+      if (runPromise) return runPromise;
+      running = true;
+      runPromise = Promise.all([discoveryLane(), judgmentLane()])
+        .then(() => undefined)
+        .finally(() => { running = false; });
+      return runPromise;
+    },
+
+    stop(): void {
+      if (stopped) return;
+      stopped = true;
+      releaseStop();
+    },
+
+    status(): EngineLoopStatus {
+      return Object.freeze({
+        running,
+        discovery: Object.freeze({
+          ...discoveryStatus,
+          lastStageFailures: Object.freeze([...discoveryStatus.lastStageFailures]),
+        }),
+        judgment: Object.freeze({
+          ...judgmentStatus,
+          lastStageFailures: Object.freeze([...judgmentStatus.lastStageFailures]),
+        }),
+      });
+    },
+  });
 }

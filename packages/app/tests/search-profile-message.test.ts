@@ -1,44 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { searchProfileMessage } from '../src/telegram/format.ts';
+import { profileSearchTerms, searchProfileMessage } from '../src/telegram/profile-message.ts';
 
-const view = {
-  filename: 'cv.pdf',
-  tracks: ['Fullstack-разработка', 'Backend'],
-  platforms: [
-    { label: 'HH', terms: ['fullstack разработчик', 'backend разработчик'] },
-    { label: 'HireHi', terms: [] },
-  ],
-};
-
-test('search profile lists tracks, queries and platforms without searches', () => {
-  const text = searchProfileMessage(view, 'ru');
-  assert.match(text, /Резюме: cv\.pdf/u);
-  assert.match(text, /Направления: Fullstack-разработка · Backend/u);
-  assert.match(text, /Запросы: 2 на 1 площадках/u);
-  assert.match(text, /• HH: «fullstack разработчик», «backend разработчик»/u);
-  assert.match(text, /Без запросов: HireHi\./u);
+test('profile terms extract bounded recognizable search wording and ignore rationales/private debris', () => {
+  const terms = profileSearchTerms({ version: 1, searches: [
+    { name: 'Backend', query: 'Backend Engineer', rationale: 'private CV rationale' },
+    { name: 'backend', query: 'backend engineer', extra: { title: '<Platform Engineer>' } },
+  ] });
+  assert.deepEqual(terms, ['Backend', 'Backend Engineer', '<Platform Engineer>']);
+  assert.equal(terms.includes('private CV rationale'), false);
 });
 
-test('long lists are summarised instead of printed in full', () => {
-  const terms = Array.from({ length: 8 }, (_unused, index) => `запрос ${index}`);
-  const text = searchProfileMessage({ ...view, tracks: Array.from({ length: 9 }, (_u, index) => `трек ${index}`),
-    platforms: [{ label: 'HH', terms }] }, 'ru');
-  assert.match(text, /трек 5 и ещё 3/u);
-  assert.match(text, /«запрос 3» и ещё 4/u);
-  assert.ok(!text.includes('запрос 4'));
-});
-
-test('an empty profile reports that no searches exist yet', () => {
-  const text = searchProfileMessage({ filename: 'cv.pdf', tracks: [], platforms: [{ label: 'HH', terms: [] }] }, 'ru');
-  assert.match(text, /Поисковые запросы пока не созданы\./u);
-  assert.ok(!text.includes('Запросы:'));
-});
-
-test('user-controlled values are HTML-escaped', () => {
-  const text = searchProfileMessage({ filename: '<b>cv</b>.pdf', tracks: ['a & b'],
-    platforms: [{ label: 'HH', terms: ['<script>'] }] }, 'ru');
-  assert.match(text, /&lt;b&gt;cv&lt;\/b&gt;\.pdf/u);
-  assert.match(text, /a &amp; b/u);
-  assert.match(text, /«&lt;script&gt;»/u);
+test('search profile message includes every configured source, empty profiles, and escaped terms', () => {
+  const output = searchProfileMessage({ one: { searches: [{ name: 'Track', query: '<Backend & API>' }] } }, ['one', 'two'], 'en').join('\n');
+  assert.match(output, /<b>one<\/b>/u); assert.match(output, /&lt;Backend &amp; API&gt;/u);
+  assert.match(output, /<b>two<\/b>/u); assert.match(output, /no searches/u);
 });

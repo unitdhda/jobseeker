@@ -1,78 +1,163 @@
-import type { CvDocument } from './document.ts';
+import type { CvBlock, CvDocument } from './document.ts';
 
 export interface CvEvidenceIssue {
-  kind: 'new-number' | 'unknown-entry' | 'unknown-contact' | 'unsupported-skill';
-  value: string;
+  readonly kind: 'new-number' | 'unknown-entry' | 'unknown-contact' | 'unsupported-skill';
+  readonly value: string;
 }
 
-const aliases: Record<string,string> = {
-  js:'javascript',javascript:'javascript',ts:'typescript',typescript:'typescript',
-  postgres:'postgresql',postgresql:'postgresql',k8s:'kubernetes',kubernetes:'kubernetes',
-  genai:'generativeai','generative-ai':'generativeai',llm:'largelanguagemodel',
-  'large-language-model':'largelanguagemodel',rag:'retrievalaugmentedgeneration',
-  'retrieval-augmented-generation':'retrievalaugmentedgeneration',
-};
-const ignoredSkillWords=new Set(['and','or','with','using','tools','tooling','platforms','technologies','frameworks',
-  'skills','other','including','development','engineering','management']);
+const skillTerms = new Set([
+  'skill', 'skills', 'technology', 'technologies', 'tool', 'tools', 'language', 'languages',
+  'навык', 'навыки', 'технология', 'технологии', 'инструмент', 'инструменты', 'язык', 'языки',
+]);
 
-function plain(value:string):string {
-  return value.normalize('NFKC').toLowerCase().replace(/[*_`]/g,'').replace(/[^\p{L}\p{N}+#.%@/:_-]+/gu,' ')
-    .replace(/\s+/g,' ').trim();
-}
-function compact(value:string):string { return plain(value).replace(/[^\p{L}\p{N}]+/gu,''); }
-function words(value:string):string[] {
-  const canonical=plain(value)
-    .replace(/\bretrieval augmented generation\b/g,' retrievalaugmentedgeneration ')
-    .replace(/\blarge language models?\b/g,' largelanguagemodel ')
-    .replace(/\bgenerative ai\b/g,' generativeai ');
-  return canonical.split(/\s+/).map((word)=>aliases[word]??word)
-    .filter((word)=>word.length>1&&!ignoredSkillWords.has(word));
-}
-function numberClaims(value:string):string[] {
-  return value.match(/(?<![\p{L}\p{N}])(?:[$€£₽]\s*)?\d[\d\s,.]*(?:%|\+|[kKmMbB])?(?![\p{L}\p{N}])/gu)
-    ?.map((claim)=>claim.replace(/[\s,]/g,'').toLowerCase()).filter((claim)=>/\d/.test(claim))??[];
-}
-function allText(document:CvDocument):string[] {
-  return [document.name,document.headline??'',...document.contacts,...document.sections.flatMap((section)=>[
-    section.title,...section.blocks.flatMap((block)=>block.kind==='text'?[block.text]
-      :block.kind==='bullets'?block.items
-      :block.kind==='facts'?block.items.flatMap((item)=>[item.term,item.detail])
-      :[block.title,block.subtitle??'',block.meta??'',block.text??'',...(block.bullets??[])])])];
+const aliasClasses = [
+  ['js', 'javascript'],
+  ['ts', 'typescript'],
+  ['postgres', 'postgresql'],
+  ['k8s', 'kubernetes'],
+  ['rag', 'retrieval augmented generation'],
+  ['llm', 'large language model', 'large language models'],
+  ['genai', 'generative ai'],
+] as const;
+
+function normalizedText(value: string): string {
+  return value.normalize('NFKC')
+    .toLowerCase()
+    .replace(/^mailto:|^tel:/u, '')
+    .replace(/[‐‑‒–—―]/gu, '-')
+    .replace(/[^\p{L}\p{N}+#@._:/% -]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
 }
 
-/**
- * Checks claims that can be proved mechanically without asking another model. It intentionally validates identities,
- * contacts, numeric claims, and named skills only; prose paraphrases remain the tailoring model's responsibility.
- */
-export function tailoredCvEvidenceIssues(document:CvDocument,authoritativeText:string):CvEvidenceIssue[] {
-  const issues:CvEvidenceIssue[]=[];
-  const sourcePlain=plain(authoritativeText),sourceCompact=compact(authoritativeText);
-  const sourceNumbers=new Set(numberClaims(authoritativeText));
-  const sourceWords=new Set(words(authoritativeText));
-  const seen=new Set<string>();
-  const add=(issue:CvEvidenceIssue)=>{const key=`${issue.kind}:${plain(issue.value)}`;if(!seen.has(key)){seen.add(key);issues.push(issue);}};
+function searchableText(value: string): string {
+  return ` ${normalizedText(value).replace(/[^\p{L}\p{N}+#]+/gu, ' ').replace(/\s+/gu, ' ').trim()} `;
+}
 
-  for(const claim of new Set(allText(document).flatMap(numberClaims))) {
-    if(!sourceNumbers.has(claim))add({kind:'new-number',value:claim});
+function hasPhrase(source: string, phrase: string): boolean {
+  const needle = searchableText(phrase).trim();
+  return needle.length > 0 && searchableText(source).includes(` ${needle} `);
+}
+
+function aliasCandidates(value: string): readonly string[] {
+  const normalized = normalizedText(value);
+  const aliases = aliasClasses.find((group) => group.some((alias) => normalized === alias));
+  return aliases ?? [normalized];
+}
+
+function hasEvidence(source: string, value: string): boolean {
+  return aliasCandidates(value).some((candidate) => hasPhrase(source, candidate));
+}
+
+function canonicalNumber(raw: string): string {
+  const compact = raw.toLowerCase().replace(/[\s_']/gu, '');
+  const suffix = /(?:%|[kmкм])$/u.exec(compact)?.[0] ?? '';
+  const numeric = suffix ? compact.slice(0, -suffix.length) : compact;
+  const sign = numeric.startsWith('-') || numeric.startsWith('+') ? numeric[0]! : '';
+  const unsigned = sign ? numeric.slice(1) : numeric;
+  const lastComma = unsigned.lastIndexOf(',');
+  const lastDot = unsigned.lastIndexOf('.');
+  const separator = Math.max(lastComma, lastDot);
+  let normalized: string;
+  if (separator >= 0 && unsigned.length - separator - 1 <= 2) {
+    normalized = `${unsigned.slice(0, separator).replace(/[.,]/gu, '')}.${unsigned.slice(separator + 1)}`;
+  } else {
+    normalized = unsigned.replace(/[.,]/gu, '');
   }
-  for(const contact of document.contacts) {
-    if(contact&&sourceCompact&&!sourceCompact.includes(compact(contact)))add({kind:'unknown-contact',value:contact});
+  return `${sign}${normalized.replace(/^0+(?=\d)/u, '') || '0'}${suffix}`;
+}
+
+function numberClaims(value: string): string[] {
+  // Digits inside identifiers such as K8s, ISO27001, or Invented0 are names, not standalone numeric claims.
+  const matches = value.normalize('NFKC')
+    .match(/(?<![\p{L}\p{N}])[+-]?\d(?:[\d\s_']*\d)?(?:[.,]\d+)?\s*(?:%|[kKmMкКмМ])?(?![\p{L}\p{N}])/gu) ?? [];
+  return matches.map(canonicalNumber);
+}
+
+function blockText(block: CvBlock): string[] {
+  switch (block.kind) {
+    case 'text': return [block.text];
+    case 'bullets': return block.items;
+    case 'entry': return [
+      block.title,
+      ...(block.subtitle ? [block.subtitle] : []),
+      ...(block.meta ? [block.meta] : []),
+      ...(block.text ? [block.text] : []),
+      ...(block.bullets ?? []),
+    ];
+    case 'facts': return block.items.flatMap((fact) => [fact.term, fact.detail]);
   }
-  for(const section of document.sections)for(const block of section.blocks) {
-    if(block.kind==='entry'&&block.title&&sourcePlain&&!sourcePlain.includes(plain(block.title)))
-      add({kind:'unknown-entry',value:block.title});
-    if(block.kind==='facts')for(const fact of block.items)for(const skill of fact.detail.split(/[,;|]/)) {
-      const tokens=words(skill);
-      if(tokens.length&&tokens.some((token)=>!sourceWords.has(token)))add({kind:'unsupported-skill',value:skill.trim()});
+}
+
+function documentText(document: CvDocument): string[] {
+  return [
+    document.name,
+    ...(document.headline ? [document.headline] : []),
+    ...document.contacts,
+    ...document.sections.flatMap((section) => [section.title, ...section.blocks.flatMap(blockText)]),
+  ];
+}
+
+function contactEvidence(source: string, contact: string): boolean {
+  const normalizedSource = normalizedText(source).replace(/\/$/u, '');
+  const normalizedContact = normalizedText(contact).replace(/\/$/u, '');
+  return normalizedContact.length > 0 && normalizedSource.includes(normalizedContact);
+}
+
+function skillValues(detail: string): string[] {
+  return detail.split(/\s*(?:[,;|•]|\s\/\s)\s*/u).map((value) => value.trim()).filter(Boolean);
+}
+
+/** Returns deterministic factual deviations from the authoritative CV without invoking another model. */
+export function tailoredCvEvidenceIssues(document: CvDocument, authoritativeText: string): CvEvidenceIssue[] {
+  const issues: CvEvidenceIssue[] = [];
+  const seen = new Set<string>();
+  const add = (kind: CvEvidenceIssue['kind'], value: string): void => {
+    const cleaned = value.trim();
+    const key = `${kind}\0${normalizedText(cleaned)}`;
+    if (!cleaned || seen.has(key)) return;
+    seen.add(key);
+    issues.push(Object.freeze({ kind, value: cleaned }));
+  };
+
+  const sourceNumbers = new Set(numberClaims(authoritativeText));
+  for (const value of documentText(document)) {
+    for (const number of numberClaims(value)) if (!sourceNumbers.has(number)) add('new-number', number);
+  }
+  for (const contact of document.contacts) {
+    if (!contactEvidence(authoritativeText, contact)) add('unknown-contact', contact);
+  }
+  for (const section of document.sections) {
+    for (const block of section.blocks) {
+      if (block.kind === 'entry' && !hasEvidence(authoritativeText, block.title)) {
+        add('unknown-entry', block.title);
+      }
+      if (block.kind === 'facts' && skillTerms.has(normalizedText(block.items[0]?.term ?? ''))) {
+        for (const fact of block.items) {
+          if (!skillTerms.has(normalizedText(fact.term))) continue;
+          for (const skill of skillValues(fact.detail)) {
+            if (!hasEvidence(authoritativeText, skill)) add('unsupported-skill', skill);
+          }
+        }
+      }
     }
   }
   return issues;
 }
 
-export function assertTailoredCvEvidence(document:CvDocument,authoritativeText:string):void {
-  const issues=tailoredCvEvidenceIssues(document,authoritativeText);
-  if(!issues.length)return;
-  const shown=issues.slice(0,8).map((issue)=>`${issue.kind}: ${issue.value}`).join('; ');
-  const omitted=issues.length-8;
-  throw new Error(`Tailored CV introduced unsupported evidence: ${shown}${omitted>0?`; and ${omitted} more`:''}`);
+export class CvEvidenceError extends Error {
+  readonly issues: readonly CvEvidenceIssue[];
+
+  constructor(issues: readonly CvEvidenceIssue[]) {
+    const summary = issues.slice(0, 8).map((issue) => `${issue.kind}: ${issue.value}`).join('; ');
+    const remaining = Math.max(0, issues.length - 8);
+    super(`Tailored CV contains unsupported evidence: ${summary}${remaining ? `; and ${remaining} more` : ''}.`);
+    this.name = 'CvEvidenceError';
+    this.issues = Object.freeze([...issues]);
+  }
+}
+
+export function assertTailoredCvEvidence(document: CvDocument, authoritativeText: string): void {
+  const issues = tailoredCvEvidenceIssues(document, authoritativeText);
+  if (issues.length > 0) throw new CvEvidenceError(issues);
 }

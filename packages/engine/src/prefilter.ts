@@ -1,384 +1,459 @@
 import * as v from 'valibot';
+import { searchTokens } from './canon.ts';
+import {
+  parseCvContentHash,
+  type CvContentHash,
+  type ExperienceRequirement,
+  type VacancyContent,
+} from './contracts.ts';
+import { identityRoleResolver, type RoleTokenResolver } from './equivalence.ts';
+import { tokenSimilarity } from './identity.ts';
+import {
+  idfWeightedCosine,
+  titleSpecificity,
+  type IdfLookups,
+} from './idf.ts';
 
-const evidenceText = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(300));
-const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
-const title = v.pipe(label,v.check((value) => !/\s[\/|]\s/.test(value),
-  'Each title variant must contain one title in one language; put translations in separate array items.'));
+export const careerProfileLimits = {
+  tracks: 10,
+  titleVariants: 16,
+  coreSkills: 30,
+  evidence: 8,
+} as const;
 
-/**
- * The one place these caps are written down. The schema enforces them, the repair below clips to them, and the
- * agent prompt quotes them — a track carrying thirteen evidence lines failed a user's whole profile refresh in
- * production because the prompt named no limit at all.
- */
-export const careerProfileLimits = { tracks: 10, titleVariants: 16, coreSkills: 30, evidence: 8 } as const;
+const labelSchema = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
+const titleVariantSchema = v.pipe(
+  labelSchema,
+  v.check(
+    (value) => !/\s[\/|]\s/.test(value),
+    'Each title variant must contain one title in one language; put translations in separate array items.',
+  ),
+);
+const evidenceSchema = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(300));
 
 export const careerTrackSchema = v.strictObject({
-  name: label,
-  titleVariants: v.pipe(v.array(title), v.minLength(1), v.maxLength(careerProfileLimits.titleVariants)),
-  coreSkills: v.pipe(v.array(label), v.maxLength(careerProfileLimits.coreSkills)),
-  evidence: v.pipe(v.array(evidenceText), v.minLength(1), v.maxLength(careerProfileLimits.evidence)),
+  name: labelSchema,
+  titleVariants: v.pipe(
+    v.array(titleVariantSchema),
+    v.minLength(1),
+    v.maxLength(careerProfileLimits.titleVariants),
+  ),
+  coreSkills: v.pipe(v.array(labelSchema), v.maxLength(careerProfileLimits.coreSkills)),
+  evidence: v.pipe(
+    v.array(evidenceSchema),
+    v.minLength(1),
+    v.maxLength(careerProfileLimits.evidence),
+  ),
 });
 
 export const careerProfileSchema = v.strictObject({
   version: v.literal(1),
-  tracks: v.pipe(v.array(careerTrackSchema), v.minLength(1), v.maxLength(careerProfileLimits.tracks)),
+  tracks: v.pipe(
+    v.array(careerTrackSchema),
+    v.minLength(1),
+    v.maxLength(careerProfileLimits.tracks),
+  ),
 });
 
 export type CareerTrack = v.InferOutput<typeof careerTrackSchema>;
 export type CareerProfile = v.InferOutput<typeof careerProfileSchema>;
 
-/** Storage key for the CV-derived career profile shared by matching and profile workflows. */
-export const careerProfilePlatformId = '__career-profile-v1';
-
 export interface StoredCareerProfile {
-  cvHash: string;
-  profile: CareerProfile;
+  readonly cvHash: CvContentHash;
+  readonly profile: CareerProfile;
 }
 
-/**
- * Repairs the mistakes the career-profile agent repeats, on the raw JSON after the model has failed to correct
- * itself. Packed titles — several titles in one variant, usually a role and its translation joined by " / " — are
- * split on exactly the separator the schema rejects, so a title that already validates is never rewritten.
- * Advisory arrays that overrun their schema caps (13 evidence lines where 8 are allowed cost a whole refresh in
- * production) are clipped: dropping excess advisory lines is strictly better than failing the profile.
- */
 const packedTitleSeparator = /\s+[\/|]\s+/;
+
+function deduplicateStrings(values: readonly unknown[]): unknown[] {
+  const seen = new Set<string>();
+  const result: unknown[] = [];
+
+  for (const value of values) {
+    if (typeof value !== 'string') {
+      result.push(value);
+      continue;
+    }
+
+    const trimmed = value.trim();
+    const key = trimmed.normalize('NFKC').toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function normalizeTrack(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+
+  const track = value as Record<string, unknown>;
+  const normalized: Record<string, unknown> = { ...track };
+
+  if (Array.isArray(track.titleVariants)) {
+    const split = track.titleVariants.flatMap((title): unknown[] =>
+      typeof title === 'string' ? title.split(packedTitleSeparator) : [title]);
+    normalized.titleVariants = deduplicateStrings(split).slice(0, careerProfileLimits.titleVariants);
+  }
+  if (Array.isArray(track.coreSkills)) {
+    normalized.coreSkills = deduplicateStrings(track.coreSkills).slice(0, careerProfileLimits.coreSkills);
+  }
+  if (Array.isArray(track.evidence)) {
+    normalized.evidence = deduplicateStrings(track.evidence).slice(0, careerProfileLimits.evidence);
+  }
+
+  return normalized;
+}
+
+/** Repairs bounded, repeated model-output mistakes without inventing missing profile evidence. */
 export function normalizeCareerProfileJson(value: unknown): unknown {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+
   const root = value as Record<string, unknown>;
   if (!Array.isArray(root.tracks)) return value;
-  return { ...root, tracks: root.tracks.slice(0, careerProfileLimits.tracks).map((track) => {
-    if (!track || typeof track !== 'object' || Array.isArray(track)) return track;
-    const entry = { ...(track as Record<string, unknown>) };
-    const clip = (key: 'evidence' | 'coreSkills'): void => {
-      const value = entry[key];
-      if (Array.isArray(value) && value.length > careerProfileLimits[key]) {
-        entry[key] = value.slice(0, careerProfileLimits[key]);
-      }
-    };
-    clip('evidence');
-    clip('coreSkills');
-    if (!Array.isArray(entry.titleVariants)) return entry;
-    const seen = new Set<string>();
-    const titleVariants: unknown[] = [];
-    for (const variant of entry.titleVariants) {
-      if (typeof variant !== 'string') { titleVariants.push(variant); continue; }
-      for (const part of variant.split(packedTitleSeparator)) {
-        const title = part.trim();
-        if (title.length < 2 || seen.has(title.toLowerCase())) continue;
-        seen.add(title.toLowerCase());
-        titleVariants.push(title);
-      }
-    }
-    return { ...entry, titleVariants: titleVariants.slice(0, careerProfileLimits.titleVariants) };
-  }) };
+
+  const tracks = root.tracks.map(normalizeTrack).slice(0, careerProfileLimits.tracks);
+  return { ...root, tracks };
 }
 
-export function parseStoredCareerProfile(value: unknown, expectedCvHash: string): CareerProfile | null {
-  if (!value || typeof value !== 'object') return null;
-  const stored = value as Partial<StoredCareerProfile>;
-  if (stored.cvHash !== expectedCvHash) return null;
-  const parsed = v.safeParse(careerProfileSchema, stored.profile);
-  return parsed.success ? parsed.output : null;
-}
+const storedCareerProfileSchema = v.strictObject({
+  cvHash: v.string(),
+  profile: careerProfileSchema,
+});
 
-import type { VacancyContent } from './contracts.ts';
-import { canonicalRoleToken } from './canon.ts';
-import { identityRoleResolver, type RoleTokenResolver } from './equivalence.ts';
-import { uniformIdfLookups, type IdfLookup, type IdfLookups } from './idf.ts';
-
-const stop = new Set([
-  'and','the','with','for','from','that','this','into','или','для','как','что','при','это','его','она','они',
-  'работа','опыт','года','лет','years','year','experience','work','team','команда','задачи','требования',
-]);
-const seniority = new Set([
-  'intern','internship','junior','middle','senior','lead','head','principal','chief','стажер','стажёр','младший',
-  'средний','старший','ведущий','главный','руководитель',
-]);
-
-/**
- * The same words, ranked. Grade is deliberately stripped from role tokens so that a senior and a junior backend
- * developer still meet on one marker — but the LLM scorer's rubric penalizes underqualification and substantial
- * overqualification, so the difference the role gate throws away is exactly a thing the verdict turns on.
- */
-const seniorityRanks = new Map<string, number>([
-  ['intern', 0], ['internship', 0], ['стажер', 0], ['стажёр', 0],
-  ['junior', 1], ['младший', 1],
-  ['middle', 2], ['средний', 2],
-  ['senior', 3], ['старший', 3],
-  ['lead', 4], ['ведущий', 4],
-  ['head', 5], ['principal', 5], ['chief', 5], ['главный', 5], ['руководитель', 5],
-]);
-const seniorityRankSpan = 5;
-
-/** The highest grade claimed anywhere in the text, or null when it names none — which most titles do not. */
-function seniorityRank(input: string): number | null {
-  let rank: number | null = null;
-  for (const token of input.normalize('NFKC').toLowerCase().match(/[\p{L}]{2,}/gu) ?? []) {
-    const found = seniorityRanks.get(token);
-    if (found != null && (rank == null || found > rank)) rank = found;
+/** Validates persisted profile data and rejects data derived from a superseded CV. */
+export function parseStoredCareerProfile(value: unknown, expectedCvHash: CvContentHash): StoredCareerProfile {
+  const parsed = v.parse(storedCareerProfileSchema, value);
+  const cvHash = parseCvContentHash(parsed.cvHash);
+  if (cvHash !== expectedCvHash) {
+    throw new TypeError('Invalid stored career profile: CV hash does not match the authoritative CV.');
   }
-  return rank;
-}
-
-function normalizedTokens(input: string): string[] {
-  return input.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}+#.]{2,}/gu)
-    ?.map((token) => token.replace(/^\.+|\.+$/g, ''))
-    .filter((token) => token.length > 1 && !stop.has(token)) ?? [];
-}
-
-function comparableToken(left: string, right: string): boolean {
-  if (left === right) return true;
-  if (left.length < 5 || right.length < 5) return false;
-  let common = 0;
-  while (common < left.length && common < right.length && left[common] === right[common]) common++;
-  return common >= 5 && common / Math.min(left.length, right.length) >= 0.72;
-}
-
-/**
- * Role/skill evidence compares canonical role tokens, not raw spellings: разработчик and developer meet on the
- * same marker, so a track the profile agent left untranslated still sees the vacancy the LLM scorer would accept.
- * The lexical embedding stays raw — markers aid the role gate, they are too coarse to shape the cosine.
- */
-function roleTokens(input: string, resolve: RoleTokenResolver): string[] {
-  return normalizedTokens(input).filter((token) => !seniority.has(token))
-    .map((token) => resolve(canonicalRoleToken(token)));
-}
-
-function phrasePresent(phrase: string, textTokens: string[], resolve: RoleTokenResolver): boolean {
-  const phraseTokens = roleTokens(phrase, resolve);
-  return phraseTokens.length > 0 && phraseTokens.every((token) => textTokens.some((candidate) => comparableToken(token, candidate)));
-}
-
-function titleSimilarity(left: string, right: string, resolve: RoleTokenResolver): number {
-  const a = [...new Set(roleTokens(left, resolve))];
-  const b = [...new Set(roleTokens(right, resolve))];
-  if (!a.length || !b.length) return 0;
-  const matchedA = a.filter((token) => b.some((candidate) => comparableToken(token, candidate))).length;
-  const matchedB = b.filter((token) => a.some((candidate) => comparableToken(token, candidate))).length;
-  const intersection = Math.min(matchedA, matchedB);
-  return intersection / (a.length + b.length - intersection);
-}
-
-function fallbackCareerProfile(cvText: string): CareerProfile {
-  const titleVariants = cvText.split(/\r?\n/).map((line) => line.trim()).filter((line) => {
-    const count = normalizedTokens(line).length;
-    return line.length >= 3 && line.length <= 100 && count >= 1 && count <= 10;
-  }).slice(0, 24);
-  return { version: 1, tracks: [{
-    name: 'CV-derived role evidence', titleVariants: titleVariants.length ? titleVariants : [cvText.slice(0, 100)],
-    coreSkills: [], evidence: [cvText.slice(0, 300)],
-  }] };
-}
-
-/**
- * How unusual the words that matched were, in [0, 1].
- *
- * The companion to `titleSimilarity`, and the reason it is a separate number rather than a weighting of it:
- * weighting a *ratio* by rarity leaves a full match at 1.0 however common its words are, which was measured and
- * changed nothing (the same 1,200-row pile, the same 40% conversion). What separates "Designer" meeting
- * "Designer" from "Communication Designer" meeting "Communication Designer" is the absolute rarity of what
- * matched, so that is what this reports.
- *
- * Normalized by `unknownIdf`, the value a token seen once carries, so the scale does not move when the corpus
- * grows.
- */
-function matchedSpecificity(variant: string, vacancyName: string, resolve: RoleTokenResolver,
-  idf: IdfLookup): number {
-  const track = [...new Set(roleTokens(variant, resolve))];
-  const advert = [...new Set(roleTokens(vacancyName, resolve))];
-  const matched = advert.filter((token) => track.some((candidate) => comparableToken(token, candidate)));
-  if (!matched.length || !idf.unknownIdf) return 0;
-  const mean = matched.reduce((sum, token) => sum + idf.of(token), 0) / matched.length;
-  return Math.max(0, Math.min(1, mean / idf.unknownIdf));
-}
-
-function trackEvidence(track: CareerTrack, vacancy: VacancyContent,
-  resolve: RoleTokenResolver, idf: IdfLookup): { role: number; skills: number; similarity: number;
-    matchedSkills: string[]; skillCoverage: number; specificity: number } {
-  const titleVariants = track.titleVariants.flatMap((variant) => variant.split(/\s+\/\s+/).map((title) => title.trim()).filter(Boolean));
-  const similarity = Math.max(0, ...titleVariants.map((variant) => titleSimilarity(variant, vacancy.name, resolve)));
-  const specificity = Math.max(0, ...titleVariants.map((variant) =>
-    matchedSpecificity(variant, vacancy.name, resolve, idf)));
-  const role = Math.round(similarity ** 2 * 75);
-  const vacancyTokens = roleTokens(`${vacancy.name}\n${vacancy.description}\n${vacancy.keySkills.join('\n')}`, resolve);
-  const matchedSkills = track.coreSkills.filter((skill) => phrasePresent(skill, vacancyTokens, resolve));
-  // Scale-free on purpose: a track listing three skills and one listing thirty are both reported as the share of
-  // the evidence that landed, so the number means the same thing across profiles and stays comparable over time.
-  const skillCoverage = track.coreSkills.length
-    ? Math.min(1, matchedSkills.length / Math.min(5, track.coreSkills.length)) : 0;
-  const skills = Math.round(skillCoverage * 25);
-  return { role, skills, similarity, matchedSkills, skillCoverage, specificity };
-}
-
-function lexicalEmbedding(input: string): Map<string, number> {
-  const tokens = normalizedTokens(input);
-  const counts = new Map<string, number>();
-  const add = (feature: string, weight: number) => counts.set(feature, (counts.get(feature) ?? 0) + weight);
-  for (let index = 0; index < tokens.length; index++) {
-    add(`w:${tokens[index]}`, 1);
-    if (index + 1 < tokens.length) add(`b:${tokens[index]}_${tokens[index + 1]}`, 1.4);
-    const compact = tokens[index].replace(/[^\p{L}\p{N}]/gu, '');
-    if (compact.length >= 5) for (let offset = 0; offset <= compact.length - 3; offset++) add(`c:${compact.slice(offset, offset + 3)}`, 0.12);
-  }
-  for (const [feature, count] of counts) counts.set(feature, Math.log1p(count));
-  return counts;
-}
-
-/**
- * Plain words weighted by how unusual they are — no bigrams, no character trigrams.
- *
- * `lexicalEmbedding` above is largely a length meter. Measured across the production corpus its cosine rises
- * monotonically with advert length (0.078 under a thousand characters to 0.127 over six thousand) while the
- * share of adverts worth delivering *falls* over the same range (35% to 13%), so it pushes verbose adverts up
- * the queue. Rarity weighting removes almost all of it: rank correlation with advert length drops from 0.178 to
- * 0.017, and correlation with the LLM's verdict rises from 0.292 to 0.402.
- *
- * The character trigrams go because they measured spelling, not meaning, and could never cross ru/en — which
- * the role-token vocabulary already handles properly.
- */
-function rarityEmbedding(input: string, idf: IdfLookup): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const token of normalizedTokens(input)) counts.set(token, (counts.get(token) ?? 0) + 1);
-  const weighted = new Map<string, number>();
-  for (const [token, count] of counts) weighted.set(token, Math.log1p(count) * idf.of(token));
-  return weighted;
-}
-
-function cosine(left: Map<string, number>, right: Map<string, number>): number {
-  let dot = 0; let leftNorm = 0; let rightNorm = 0;
-  for (const value of left.values()) leftNorm += value * value;
-  for (const value of right.values()) rightNorm += value * value;
-  const [small, large] = left.size <= right.size ? [left, right] : [right, left];
-  for (const [feature, value] of small) dot += value * (large.get(feature) ?? 0);
-  return leftNorm && rightNorm ? dot / Math.sqrt(leftNorm * rightNorm) : 0;
-}
-
-function relevanceCvText(input: string): string {
-  return input.split(/\r?\n/).filter((line) => !/\b(?:contacts?|email|e-mail|phone|telegram|whatsapp)\b|контакт|почт|телефон/i.test(line))
-    .join('\n').replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, ' ').replace(/https?:\/\/\S+/gi, ' ')
-    .replace(/(?:\+?\d[\s().-]*){7,}/g, ' ');
+  return Object.freeze({ cvHash, profile: parsed.profile });
 }
 
 export type RecencyBand = 'today' | 'week' | 'fortnight' | 'month' | 'stale';
-/**
- * Age bands rather than a raw timestamp: a day's difference does not change how worth reading a vacancy is, but
- * the difference between this week and last month does. The weight discounts an ageing match without letting
- * recency outrank fit — a strong match a fortnight old still beats a weak one posted today. Past
- * `PREFILTER_MAX_AGE_DAYS` the gradient stops and the vacancy is rejected outright.
- *
- * `publishedAt` is the advert's own date, taken from the source by each adapter, never the time we first saw it.
- */
-const recencyBands: readonly { band: RecencyBand; withinDays: number; weight: number; label: string }[] = [
-  { band: 'today', withinDays: 1, weight: 1, label: 'today' },
-  { band: 'week', withinDays: 7, weight: 1, label: '1-7 days ago' },
-  { band: 'fortnight', withinDays: 14, weight: 0.92, label: '8-14 days ago' },
-  { band: 'month', withinDays: 30, weight: 0.8, label: '15-30 days ago' },
-  { band: 'stale', withinDays: Number.POSITIVE_INFINITY, weight: 0.6, label: 'over 30 days ago' },
-];
 
-export interface VacancyRecency { band: RecencyBand; days: number; weight: number; expired: boolean; label: string }
-
-export function vacancyRecency(vacancy: Pick<VacancyContent, 'publishedAt'>, now = Date.now(), maxAgeDays = 30): VacancyRecency {
-  const published = Date.parse(vacancy.publishedAt);
-  // An unparseable or future date says nothing, so it is treated as current rather than rejected on a guess.
-  const days = Number.isFinite(published) ? Math.max(0, (now - published) / 86_400_000) : 0;
-  const band = recencyBands.find((entry) => days < entry.withinDays) ?? recencyBands.at(-1)!;
-  return { band: band.band, days: Math.floor(days), weight: band.weight,
-    expired: days >= maxAgeDays, label: `published ${band.label}` };
+export interface VacancyRecency {
+  readonly band: RecencyBand;
+  readonly days: number;
+  readonly weight: number;
+  readonly expired: boolean;
+  readonly label: string;
 }
 
 export interface PrefilterResult {
-  regexScore: number;
-  lexicalCosine: number;
-  lexicalScore: number;
-  combinedScore: number;
-  /**
-   * The two signals `regexScore` collapses into one number, retained separately for diagnostics.
-   */
-  titleSimilarity: number;
-  skillCoverage: number;
-  /**
-   * How far the advert's grade sits from the CV's, as (vacancy - cv) / 5 in [-1, 1]: positive means the advert
-   * asks for more seniority than the CV claims, negative means it asks for less. Null when either side names no
-   * grade at all, which is the common case and must not be confused with "the grades match".
-   *
-   * Recorded for diagnostics. The lexical gate does not weigh it.
-   */
-  seniorityGap: number | null;
-  /**
-   * The rarity-aware pair, both 0..1, and **null when no vocabulary was available** rather than 0.
-   *
-   * Null and zero are different claims: zero means maximally common words; null means no vocabulary existed.
-   */
-  specificity: number | null;
-  lexicalCosineIdf: number | null;
-  filtered: boolean;
-  /** True when the advert's age alone rejected it; no evidence score can admit an expired advert. */
-  expired: boolean;
-  reasons: string[];
+  readonly regexScore: number;
+  readonly lexicalCosine: number;
+  readonly lexicalScore: number;
+  readonly combinedScore: number;
+  readonly titleSimilarity: number;
+  readonly skillCoverage: number;
+  readonly seniorityGap: number | null;
+  readonly specificity: number | null;
+  readonly lexicalCosineIdf: number | null;
+  readonly filtered: boolean;
+  readonly expired: boolean;
+  readonly reasons: readonly string[];
 }
 
+const recencyBands: readonly {
+  readonly band: RecencyBand;
+  readonly withinDays: number;
+  readonly weight: number;
+  readonly label: string;
+}[] = [
+  { band: 'today', withinDays: 1, weight: 1, label: 'published today' },
+  { band: 'week', withinDays: 7, weight: 1, label: 'published 1–7 days ago' },
+  { band: 'fortnight', withinDays: 14, weight: 0.92, label: 'published 8–14 days ago' },
+  { band: 'month', withinDays: 30, weight: 0.8, label: 'published 15–30 days ago' },
+  { band: 'stale', withinDays: Number.POSITIVE_INFINITY, weight: 0.6, label: 'published over 30 days ago' },
+];
+
+function validTimestamp(date: Date, name: string): number {
+  if (!(date instanceof Date)) throw new TypeError(`Invalid prefilter input: ${name} must be a Date.`);
+  const timestamp = date.getTime();
+  if (!Number.isFinite(timestamp)) throw new TypeError(`Invalid prefilter input: ${name} must be a valid Date.`);
+  return timestamp;
+}
+
+export function vacancyRecency(
+  vacancy: Pick<VacancyContent, 'publishedAt'>,
+  now: Date = new Date(),
+  maxAgeDays = 30,
+): VacancyRecency {
+  const nowMs = validTimestamp(now, 'now');
+  if (!Number.isSafeInteger(maxAgeDays) || maxAgeDays < 1) {
+    throw new RangeError(
+      `Invalid prefilter maximum age: expected a positive safe integer number of days, received ${maxAgeDays}.`,
+    );
+  }
+
+  const publishedMs = vacancy.publishedAt instanceof Date ? vacancy.publishedAt.getTime() : Number.NaN;
+  const elapsedDays = Number.isFinite(publishedMs) && publishedMs <= nowMs
+    ? (nowMs - publishedMs) / 86_400_000
+    : 0;
+  const selected = recencyBands.find((entry) => elapsedDays < entry.withinDays) ?? recencyBands.at(-1)!;
+  return Object.freeze({
+    band: selected.band,
+    days: Math.floor(elapsedDays),
+    weight: selected.weight,
+    expired: elapsedDays >= maxAgeDays,
+    label: selected.label,
+  });
+}
+
+function normalizedEvidence(value: string): string {
+  return value.normalize('NFKC').replace(/\s+/gu, ' ').trim();
+}
+
+function experienceEvidence(experience: ExperienceRequirement): string {
+  if (experience.kind === 'unspecified') return 'experience unspecified';
+  if (experience.kind === 'other') return `experience ${normalizedEvidence(experience.label)}`;
+  const maximum = experience.maximumYears === null ? 'or more' : `to ${experience.maximumYears}`;
+  return `experience ${experience.minimumYears} ${maximum} years`;
+}
+
+/** Concatenates only normalized vacancy evidence; identifiers, provenance, URLs, hashes, and dates are excluded. */
 export function vacancySemanticText(vacancy: VacancyContent): string {
-  return `${vacancy.name}\n${vacancy.employer}\n${vacancy.description}\n${vacancy.keySkills.join(' ')}`;
+  return [
+    vacancy.name,
+    vacancy.employer,
+    vacancy.area,
+    experienceEvidence(vacancy.experience),
+    vacancy.employment,
+    vacancy.schedule,
+    vacancy.workFormat,
+    vacancy.description,
+    ...vacancy.keySkills,
+  ].map(normalizedEvidence).filter(Boolean).join('\n');
 }
 
-/**
- * The raw evidence score, derived from frozen evidence alone.
- *
- * Extracted so the scoring queue can recompute it from a stored `matches` row without the CV that produced it.
- * `prefilterVacancy` below is the only other caller, which is the point: the ordering fallback and the score
- * written at match time cannot drift apart, because there is one definition of the arithmetic.
- */
-export function combinedEvidenceScore(regexScore: number, lexicalCosine: number, recencyWeight: number): number {
-  const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
-  const combined = Math.round(regexScore * 0.75 + lexicalScore * 0.25);
-  return Math.max(0, recencyWeight < 1 ? Math.round(combined * recencyWeight) : combined);
+function lexicalScoreOf(cosine: number): number {
+  return Math.min(100, Math.round(cosine * 300));
 }
 
-export function prefilterVacancy(cvText: string, vacancy: VacancyContent, minimumScore: number,
-  careerProfile?: CareerProfile, maxAgeDays = 30, resolve: RoleTokenResolver = identityRoleResolver,
-  idf: IdfLookups = uniformIdfLookups): PrefilterResult {
-  const profile = careerProfile ?? fallbackCareerProfile(cvText);
-  const ranked = profile.tracks.map((track) => ({ track, ...trackEvidence(track, vacancy, resolve, idf.title) }))
-    .sort((left, right) => right.role + right.skills - left.role - left.skills);
-  const best = ranked[0]!;
-  const regexScore = Math.min(100, best.role + best.skills);
-  const reasons: string[] = [`CV-derived track: ${best.track.name}`];
-  if (best.similarity > 0) reasons.push(`title-variant similarity: ${best.similarity.toFixed(3)}`);
-  if (best.matchedSkills.length) reasons.push(`evidenced skills: ${best.matchedSkills.slice(0, 8).join(', ')}`);
+/** Implements the fixed admission arithmetic; recency and IDF remain diagnostics rather than hidden multipliers. */
+export function combinedEvidenceScore(regexScore: number, lexicalCosine: number): number {
+  if (!Number.isFinite(regexScore) || regexScore < 0 || regexScore > 100) {
+    throw new RangeError(`Invalid regex score: expected a finite number from 0 through 100, received ${regexScore}.`);
+  }
+  if (!Number.isFinite(lexicalCosine) || lexicalCosine < 0 || lexicalCosine > 1) {
+    throw new RangeError(`Invalid lexical cosine: expected a finite number from 0 through 1, received ${lexicalCosine}.`);
+  }
+  return Math.round(regexScore * 0.75 + lexicalScoreOf(lexicalCosine) * 0.25);
+}
 
-  const cvRank = seniorityRank(best.track.titleVariants.join('\n'));
-  const vacancyRank = seniorityRank(vacancy.name);
-  const seniorityGap = cvRank == null || vacancyRank == null ? null
-    : Math.max(-1, Math.min(1, (vacancyRank - cvRank) / seniorityRankSpan));
-  if (seniorityGap != null && seniorityGap !== 0) {
-    reasons.push(`seniority gap: ${seniorityGap > 0 ? 'advert asks above' : 'advert asks below'} the CV's grade`);
+function relevanceText(value: string): string {
+  return value
+    .split(/\r?\n/u)
+    .filter((line) => !/\b(?:contacts?|e-?mail|phone|telegram|whatsapp)\b|контакт|почт|телефон/iu.test(line))
+    .join('\n')
+    .replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/gu, ' ')
+    .replace(/\b(?:https?:\/\/|www\.)\S+/giu, ' ')
+    .replace(/(?:\+?\d[\s().-]*){7,}/gu, ' ');
+}
+
+function plainWords(value: string): string[] {
+  return relevanceText(value).normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+}
+
+function plainWordCounts(value: string): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const token of plainWords(value)) counts.set(token, (counts.get(token) ?? 0) + 1);
+  return counts;
+}
+
+export function lexicalCosineSimilarity(leftText: string, rightText: string): number {
+  const left = plainWordCounts(leftText);
+  const right = plainWordCounts(rightText);
+  if (left.size === 0 || right.size === 0) return 0;
+
+  let dot = 0;
+  let leftMagnitude = 0;
+  let rightMagnitude = 0;
+  for (const count of left.values()) leftMagnitude += count * count;
+  for (const count of right.values()) rightMagnitude += count * count;
+  for (const [token, count] of left) dot += count * (right.get(token) ?? 0);
+  return dot / Math.sqrt(leftMagnitude * rightMagnitude);
+}
+
+export interface PrefilterOptions {
+  readonly profile: CareerProfile;
+  readonly minimumScore: number;
+  readonly maxAgeDays: number;
+  readonly now?: Date;
+  readonly roleResolver?: RoleTokenResolver;
+  readonly idfLookups?: IdfLookups;
+}
+
+const minimumTitleEvidence = 0.35;
+const minimumSkillEvidence = 0.2;
+
+const seniorityRanks = new Map<string, number>([
+  ['intern', 0], ['internship', 0], ['стажер', 0], ['стажёр', 0],
+  ['junior', 1], ['jr', 1], ['младший', 1],
+  ['middle', 2], ['mid', 2], ['средний', 2],
+  ['senior', 3], ['sr', 3], ['старший', 3],
+  ['staff', 4], ['lead', 4], ['ведущий', 4],
+  ['principal', 5], ['head', 5], ['chief', 5], ['главный', 5],
+]);
+
+function lexicalWords(value: string): string[] {
+  return (value.normalize('NFKC').toLowerCase().match(/[\p{L}\p{N}+#.]+/gu) ?? [])
+    .map((token) => token.replace(/\.+$/u, ''))
+    .filter(Boolean);
+}
+
+function containsSequence(haystack: readonly string[], needle: readonly string[]): boolean {
+  if (needle.length === 0 || needle.length > haystack.length) return false;
+  outer: for (let start = 0; start <= haystack.length - needle.length; start += 1) {
+    for (let offset = 0; offset < needle.length; offset += 1) {
+      if (haystack[start + offset] !== needle[offset]) continue outer;
+    }
+    return true;
+  }
+  return false;
+}
+
+function skillCoverageOf(track: CareerTrack, vacancy: VacancyContent): number {
+  const uniqueSkills = new Map<string, readonly string[]>();
+  for (const skill of track.coreSkills) {
+    const words = lexicalWords(skill);
+    if (words.length > 0) uniqueSkills.set(words.join('\0'), words);
+  }
+  if (uniqueSkills.size === 0) return 0;
+
+  const titleAndDescription = lexicalWords(`${vacancy.name}\n${vacancy.description}`);
+  const keySkills = vacancy.keySkills.map(lexicalWords);
+  let matched = 0;
+  for (const words of uniqueSkills.values()) {
+    if (containsSequence(titleAndDescription, words)
+      || keySkills.some((keySkill) => containsSequence(keySkill, words))) matched += 1;
+  }
+  return matched / uniqueSkills.size;
+}
+
+function titleSimilarityOf(
+  track: CareerTrack,
+  vacancyTitleTokens: readonly string[],
+  resolver: RoleTokenResolver,
+): number {
+  let best = 0;
+  for (const title of track.titleVariants) {
+    const similarity = tokenSimilarity([...searchTokens(title)], vacancyTitleTokens, resolver);
+    if (similarity > best) best = similarity;
+  }
+  return best;
+}
+
+function matchedTitleTokens(
+  track: CareerTrack,
+  vacancyTokens: readonly string[],
+  resolver: RoleTokenResolver,
+): string[] {
+  const profileTokens = new Set(
+    track.titleVariants.flatMap((title) => [...searchTokens(title)]).map(resolver),
+  );
+  return vacancyTokens.filter((token) => profileTokens.has(resolver(token)));
+}
+
+function seniorityRank(value: string): number | null {
+  let highest: number | null = null;
+  for (const token of lexicalWords(value)) {
+    const rank = seniorityRanks.get(token);
+    if (rank !== undefined && (highest === null || rank > highest)) highest = rank;
+  }
+  return highest;
+}
+
+function seniorityGapOf(track: CareerTrack, vacancyName: string): number | null {
+  const vacancyRank = seniorityRank(vacancyName);
+  if (vacancyRank === null) return null;
+
+  let profileRank: number | null = null;
+  for (const title of track.titleVariants) {
+    const rank = seniorityRank(title);
+    if (rank !== null && (profileRank === null || rank > profileRank)) profileRank = rank;
+  }
+  return profileRank === null ? null : (vacancyRank - profileRank) / 5;
+}
+
+function assertPrefilterOptions(options: PrefilterOptions): void {
+  if (!Number.isFinite(options.minimumScore) || options.minimumScore < 0 || options.minimumScore > 100) {
+    throw new RangeError(
+      `Invalid prefilter minimum score: expected a finite number from 0 through 100, received ${options.minimumScore}.`,
+    );
+  }
+  if (!Number.isSafeInteger(options.maxAgeDays) || options.maxAgeDays < 1) {
+    throw new RangeError(
+      `Invalid prefilter maximum age: expected a positive safe integer number of days, received ${options.maxAgeDays}.`,
+    );
+  }
+}
+
+/** Evaluates one normalized vacancy through one immutable career lens without storage, network, or model calls. */
+export function prefilterVacancy(
+  cvText: string,
+  vacancy: VacancyContent,
+  options: PrefilterOptions,
+): PrefilterResult {
+  assertPrefilterOptions(options);
+  const resolver = options.roleResolver ?? identityRoleResolver;
+  const vacancyTitleTokens = [...searchTokens(vacancy.name)];
+
+  let selectedTrack: CareerTrack | undefined;
+  let titleSimilarity = 0;
+  let skillCoverage = 0;
+  let regexScore = 0;
+
+  for (const track of options.profile.tracks) {
+    const trackTitleSimilarity = titleSimilarityOf(track, vacancyTitleTokens, resolver);
+    const trackSkillCoverage = skillCoverageOf(track, vacancy);
+    const trackRegexScore = Math.round((trackTitleSimilarity * 0.75 + trackSkillCoverage * 0.25) * 100);
+    if (trackRegexScore > regexScore) {
+      selectedTrack = track;
+      titleSimilarity = trackTitleSimilarity;
+      skillCoverage = trackSkillCoverage;
+      regexScore = trackRegexScore;
+    }
   }
 
-  const cleanCv = relevanceCvText(cvText);
-  const weightedVacancyText = `${vacancy.name}\n${vacancy.name}\n${vacancySemanticText(vacancy)}`;
-  const lexicalCosine = cosine(lexicalEmbedding(cleanCv), lexicalEmbedding(weightedVacancyText));
-  // Each rarity feature answers for its own vocabulary. They are rebuilt together in practice, but they are
-  // separate signals in separate columns, and one being unavailable is no reason to discard the other.
-  const specificity = idf.title.documents > 0 ? best.specificity : null;
-  const lexicalCosineIdf = idf.body.documents > 0
-    ? cosine(rarityEmbedding(cleanCv, idf.body), rarityEmbedding(weightedVacancyText, idf.body)) : null;
-  const lexicalScore = Math.min(100, Math.round(lexicalCosine * 300));
-  const recency = vacancyRecency(vacancy, Date.now(), maxAgeDays);
-  let combinedScore = combinedEvidenceScore(regexScore, lexicalCosine, recency.weight);
-  if (recency.weight < 1) reasons.push(`age discount: ${recency.label}`);
-  if (lexicalCosine > 0) reasons.push(`lexical cosine: ${lexicalCosine.toFixed(3)}`);
-  if (regexScore < 15 && combinedScore >= minimumScore) {
-    combinedScore = Math.max(0, minimumScore - 1);
-    reasons.push('semantic similarity lacked CV-derived role or skill evidence');
-  }
-  // An advert this old is treated as filled whatever it matches; evidence remains available for diagnostics.
-  const filtered = recency.expired || combinedScore < minimumScore;
-  if (recency.expired) reasons.push(`rejected: ${recency.label}, over the ${maxAgeDays}-day limit`);
-  else if (filtered) reasons.push(`combined score below ${minimumScore}`);
-  return { regexScore, lexicalCosine, lexicalScore, combinedScore,
-    titleSimilarity: best.similarity, skillCoverage: best.skillCoverage, seniorityGap,
-    specificity, lexicalCosineIdf,
-    filtered, expired: recency.expired, reasons };
+  const lexicalCosine = lexicalCosineSimilarity(cvText, vacancySemanticText(vacancy));
+  const lexicalScore = lexicalScoreOf(lexicalCosine);
+  const combinedScore = combinedEvidenceScore(regexScore, lexicalCosine);
+  const recency = vacancyRecency(vacancy, options.now ?? new Date(), options.maxAgeDays);
+  const hasSkillEvidence = selectedTrack !== undefined
+    && selectedTrack.coreSkills.length > 0
+    && skillCoverage >= minimumSkillEvidence;
+  const hasRoleOrSkillEvidence = titleSimilarity >= minimumTitleEvidence || hasSkillEvidence;
+  const measuredIdf = options.idfLookups !== undefined
+    && options.idfLookups.title.documents > 0
+    && options.idfLookups.body.documents > 0;
+  const specificity = measuredIdf && selectedTrack
+    ? titleSpecificity(matchedTitleTokens(selectedTrack, vacancyTitleTokens, resolver), options.idfLookups!.title)
+    : null;
+  const lexicalCosineIdf = measuredIdf
+    ? idfWeightedCosine(plainWords(cvText), plainWords(vacancySemanticText(vacancy)), options.idfLookups!.body)
+    : null;
+  const reasons: string[] = [`recency:${recency.band}`];
+  if (titleSimilarity >= minimumTitleEvidence) reasons.push('title-evidence');
+  if (hasSkillEvidence) reasons.push('skill-evidence');
+  if (recency.expired) reasons.push('expired');
+  if (!hasRoleOrSkillEvidence) reasons.push('insufficient-role-or-skill-evidence');
+  if (combinedScore < options.minimumScore) reasons.push('below-minimum-score');
+
+  return Object.freeze({
+    regexScore,
+    lexicalCosine,
+    lexicalScore,
+    combinedScore,
+    titleSimilarity,
+    skillCoverage,
+    seniorityGap: selectedTrack ? seniorityGapOf(selectedTrack, vacancy.name) : null,
+    specificity,
+    lexicalCosineIdf,
+    filtered: recency.expired || !hasRoleOrSkillEvidence || combinedScore < options.minimumScore,
+    expired: recency.expired,
+    reasons: Object.freeze(reasons),
+  });
 }

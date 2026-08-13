@@ -1,253 +1,481 @@
-import {
-  definePDFJSModule,
-  extractText as extractTextBase,
-  getDocumentProxy as getDocumentProxyBase,
-} from 'unpdf';
-
-let configured: Promise<void> | undefined;
-function configurePdf(): Promise<void> {
-  return configured ??= definePDFJSModule(() => import('pdfjs-dist/legacy/build/pdf.mjs'));
-}
-
-export async function getDocumentProxy(...args: Parameters<typeof getDocumentProxyBase>) {
-  await configurePdf();
-  return getDocumentProxyBase(...args);
-}
-
-export async function extractText(...args: Parameters<typeof extractTextBase>) {
-  await configurePdf();
-  return extractTextBase(...args);
-}
+import type { HTMLElement } from 'node-html-parser';
 
 export const maximumCvBytes = 20 * 1024 * 1024;
-
-import { extname } from 'node:path';
-import mammoth from 'mammoth';
-import { parse } from 'node-html-parser';
+export const maximumCvTextCharacters = 500_000;
+const minimumCvTextCharacters = 100;
 
 export type CvSourceFormat = 'pdf' | 'md' | 'txt' | 'docx';
-export interface CvBlockProvenance { start: number; end: number; page?: number }
+
+export interface CvBlockProvenance {
+  /** Half-open offsets into canonicalDocumentText(document). */
+  readonly start: number;
+  readonly end: number;
+  readonly page?: number;
+}
+
 export type CvDocumentBlock =
-  | { type: 'heading'; text: string; level: number; source?: CvBlockProvenance }
-  | { type: 'paragraph'; text: string; source?: CvBlockProvenance }
-  | { type: 'list-item'; text: string; source?: CvBlockProvenance }
-  | { type: 'table'; rows: string[][]; source?: CvBlockProvenance };
-export type CvExtractionWarningCode = 'no-headings'|'no-dates'|'duplicate-content'|'possible-column-order';
-export interface CvExtractionWarning { code:CvExtractionWarningCode; detail:string }
-export interface CanonicalCvDocument { version: 1; blocks: CvDocumentBlock[]; warnings?:CvExtractionWarning[] }
+  | { readonly type: 'heading'; readonly text: string; readonly level: number; readonly source?: CvBlockProvenance }
+  | { readonly type: 'paragraph'; readonly text: string; readonly source?: CvBlockProvenance }
+  | { readonly type: 'list-item'; readonly text: string; readonly source?: CvBlockProvenance }
+  | { readonly type: 'table'; readonly rows: readonly (readonly string[])[]; readonly source?: CvBlockProvenance };
+
+export type CvExtractionWarningCode =
+  | 'no-headings'
+  | 'no-dates'
+  | 'duplicate-content'
+  | 'possible-column-order';
+
+export interface CvExtractionWarning {
+  readonly code: CvExtractionWarningCode;
+  readonly detail: string;
+}
+
+export interface CanonicalCvDocument {
+  readonly version: 1;
+  readonly blocks: readonly CvDocumentBlock[];
+  readonly warnings?: readonly CvExtractionWarning[];
+}
+
 export interface ExtractedCvDocument {
-  text: string;
-  document: CanonicalCvDocument;
-  sourceFormat: CvSourceFormat;
-  mediaType: string;
-  parserName: string;
-  parserVersion: string;
+  readonly text: string;
+  readonly document: CanonicalCvDocument;
+  readonly sourceFormat: CvSourceFormat;
+  readonly mediaType: string;
+  readonly parserName: string;
+  readonly parserVersion: string;
 }
 
-const mediaTypes: Record<CvSourceFormat, string> = {
-  pdf: 'application/pdf', md: 'text/markdown', txt: 'text/plain',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+export type CvExtractionErrorCode =
+  | 'CV_TOO_LARGE'
+  | 'CV_UNSUPPORTED_FORMAT'
+  | 'CV_FORMAT_MISMATCH'
+  | 'CV_INVALID_ENCODING'
+  | 'CV_INVALID_DOCX'
+  | 'CV_UNSAFE_DOCX'
+  | 'CV_TEXT_TOO_SHORT'
+  | 'CV_TEXT_TOO_LONG'
+  | 'CV_OCR_REQUIRED'
+  | 'CV_PARSE_FAILED';
+
+export class CvExtractionError extends Error {
+  readonly code: CvExtractionErrorCode;
+
+  constructor(code: CvExtractionErrorCode, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'CvExtractionError';
+    this.code = code;
+  }
+}
+
+const extensionFormats: Readonly<Record<string, CvSourceFormat>> = {
+  pdf: 'pdf', docx: 'docx', md: 'md', markdown: 'md', txt: 'txt',
 };
-const maximumExtractedCharacters = 500_000;
-const maximumDocxEntries = 2_000;
-const maximumDocxUncompressedBytes = 50 * 1024 * 1024;
-const maximumDocxCompressionRatio = 100;
+const mediaFormats: Readonly<Record<string, CvSourceFormat>> = {
+  'application/pdf': 'pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'text/markdown': 'md',
+  'text/x-markdown': 'md',
+  'text/plain': 'txt',
+};
+const genericMediaTypes = new Set(['application/octet-stream', 'binary/octet-stream', '']);
 
-function blockText(block:CvDocumentBlock):string {
-  return block.type==='table'?block.rows.map((row)=>row.join(' | ')).join('\n'):block.text;
-}
-function annotateDocument(document:CanonicalCvDocument,text:string):CanonicalCvDocument {
-  let cursor=0;
-  const blocks=document.blocks.map((block)=>{
-    const value=blockText(block).replace(/^•\s+/,'').trim();
-    let start=text.indexOf(value,cursor);
-    if(start<0)start=text.indexOf(value);
-    if(start<0)return block;
-    const end=start+value.length;cursor=end;return{...block,source:{start,end}};
-  });
-  const warnings:CvExtractionWarning[]=[];
-  if(!blocks.some((block)=>block.type==='heading'))warnings.push({code:'no-headings',detail:'No section headings were detected.'});
-  if(!/\b(?:19|20)\d{2}\b/.test(text))warnings.push({code:'no-dates',detail:'No four-digit dates were detected.'});
-  const counts=new Map<string,number>();
-  for(const block of blocks){const key=blockText(block).toLowerCase().replace(/\s+/g,' ').trim();if(key.length>=30)counts.set(key,(counts.get(key)??0)+1);}
-  if([...counts.values()].some((count)=>count>1))warnings.push({code:'duplicate-content',detail:'Repeated extracted paragraphs were detected.'});
-  const shortRuns=blocks.filter((block)=>block.type==='paragraph'&&block.text.length<24).length;
-  if(blocks.length>=20&&shortRuns/blocks.length>0.6)warnings.push({code:'possible-column-order',detail:'Many short lines may indicate interleaved columns.'});
-  return {version:1,blocks,warnings};
+function beginsWith(bytes: Uint8Array, prefix: readonly number[]): boolean {
+  return prefix.every((value, index) => bytes[index] === value);
 }
 
-function normalizeText(value: string): string {
-  const normalized = value.normalize('NFC').replaceAll('\u0000', '').replaceAll('\u00a0', ' ')
-    .replace(/\r\n?/g, '\n').replace(/[\t\v\f]+/g, ' ')
-    .split('\n').map((line) => line.replace(/[ ]+$/g, '')).join('\n')
-    .replace(/\n{3,}/g, '\n\n').trim();
-  if (normalized.length < 100) throw new Error('The CV contains too little extractable text.');
-  if (normalized.length > maximumExtractedCharacters) throw new Error('The extracted CV text is too large.');
-  return normalized;
+function magicFormat(bytes: Uint8Array): CvSourceFormat | null {
+  if (beginsWith(bytes, [0x25, 0x50, 0x44, 0x46])) return 'pdf';
+  if (beginsWith(bytes, [0x50, 0x4b, 0x03, 0x04])
+    || beginsWith(bytes, [0x50, 0x4b, 0x05, 0x06])
+    || beginsWith(bytes, [0x50, 0x4b, 0x07, 0x08])) return 'docx';
+  return null;
 }
 
-function cleanInlineMarkdown(value: string): string {
-  return value.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
-    .replace(/(?:\*\*|__|~~|`)(.*?)(?:\*\*|__|~~|`)/g, '$1').replace(/\\([#*_`[\]()])/g, '$1').trim();
-}
-
-function plainBlocks(text: string): CanonicalCvDocument {
-  const blocks: CvDocumentBlock[] = [];
-  for (const paragraph of text.split(/\n\s*\n/)) {
-    const lines = paragraph.split('\n').map((line) => line.trim()).filter(Boolean);
-    for (const line of lines) {
-      const bullet = /^[•\-–—*]\s+(.+)$/.exec(line);
-      if (bullet) { blocks.push({ type: 'list-item', text: bullet[1].trim() }); continue; }
-      const letters = line.match(/[\p{L}]/gu)?.length ?? 0;
-      const uppercase = line.match(/[\p{Lu}]/gu)?.length ?? 0;
-      if (letters >= 4 && uppercase / letters > 0.8 && line.length < 100) {
-        blocks.push({ type: 'heading', text: line, level: 2 });
-      } else blocks.push({ type: 'paragraph', text: line });
-    }
+/** Resolves extension, explicit media type, and binary signature without trusting any signal in isolation. */
+export function detectCvSourceFormat(
+  filename: string,
+  mediaType: string | undefined,
+  bytes: Uint8Array,
+): CvSourceFormat {
+  const extension = /\.([^.\/\\]+)$/u.exec(filename)?.[1]?.toLowerCase();
+  const format = extension ? extensionFormats[extension] : undefined;
+  if (!format) {
+    throw new CvExtractionError('CV_UNSUPPORTED_FORMAT', 'Unsupported CV filename extension.');
   }
-  return { version: 1, blocks };
-}
 
-function htmlDocument(source: string): CanonicalCvDocument {
-  const root = parse(source);
-  const blocks: CvDocumentBlock[] = [];
-  for (const element of root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,li,table')) {
-    const tag = element.rawTagName.toLowerCase();
-    if (tag !== 'table' && element.closest('table')) continue;
-    if (tag === 'p' && element.closest('li')) continue;
-    if (tag === 'table') {
-      const rows = element.querySelectorAll('tr').map((row) => row.querySelectorAll('th,td')
-        .map((cell) => cell.text.replace(/\s+/g, ' ').trim())).filter((row) => row.some(Boolean));
-      if (rows.length) blocks.push({ type: 'table', rows });
-      continue;
-    }
-    const text = element.text.replace(/\s+/g, ' ').trim();
-    if (!text) continue;
-    if (/^h[1-6]$/.test(tag)) blocks.push({ type: 'heading', text, level: Number(tag[1]) });
-    else if (tag === 'li') blocks.push({ type: 'list-item', text });
-    else blocks.push({ type: 'paragraph', text });
+  const normalizedMedia = (mediaType ?? '').split(';', 1)[0]!.trim().toLowerCase();
+  const mediaFormat = mediaFormats[normalizedMedia];
+  if (!mediaFormat && !genericMediaTypes.has(normalizedMedia)) {
+    throw new CvExtractionError('CV_UNSUPPORTED_FORMAT', 'Unsupported CV media type.');
   }
-  return { version: 1, blocks };
-}
-
-function markdownDocument(source: string): CanonicalCvDocument {
-  const blocks: CvDocumentBlock[] = [];
-  const lines = source.replace(/\r\n?/g, '\n').split('\n');
-  let inFence = false;
-  for (let index = 0; index < lines.length; index++) {
-    const raw = lines[index].trim();
-    if (/^```|^~~~/.test(raw)) { inFence = !inFence; continue; }
-    if (!raw) continue;
-    if (inFence) { blocks.push({ type: 'paragraph', text: raw }); continue; }
-    const heading = /^(#{1,6})\s+(.+)$/.exec(raw);
-    if (heading) { blocks.push({ type: 'heading', text: cleanInlineMarkdown(heading[2]), level: heading[1].length }); continue; }
-    const bullet = /^(?:[-+*]|\d+[.)])\s+(.+)$/.exec(raw);
-    if (bullet) { blocks.push({ type: 'list-item', text: cleanInlineMarkdown(bullet[1]) }); continue; }
-    if (raw.includes('|') && index + 1 < lines.length && /^\s*\|?\s*:?-{3,}/.test(lines[index + 1])) {
-      const rows: string[][] = [];
-      const row = (value: string) => value.replace(/^\||\|$/g, '').split('|').map((cell) => cleanInlineMarkdown(cell));
-      rows.push(row(raw)); index++;
-      while (index + 1 < lines.length && lines[index + 1].includes('|') && lines[index + 1].trim()) rows.push(row(lines[++index]));
-      blocks.push({ type: 'table', rows }); continue;
-    }
-    blocks.push({ type: 'paragraph', text: cleanInlineMarkdown(raw.replace(/^>\s*/, '')) });
+  if (mediaFormat && mediaFormat !== format) {
+    throw new CvExtractionError('CV_FORMAT_MISMATCH', 'CV filename extension and media type disagree.');
   }
-  return { version: 1, blocks };
+
+  const magic = magicFormat(bytes);
+  if ((format === 'pdf' || format === 'docx') && magic !== format) {
+    throw new CvExtractionError('CV_FORMAT_MISMATCH', 'CV filename extension and binary signature disagree.');
+  }
+  if ((format === 'md' || format === 'txt') && magic !== null) {
+    throw new CvExtractionError('CV_FORMAT_MISMATCH', 'Text CV has a binary PDF or ZIP signature.');
+  }
+  return format;
 }
 
-export function canonicalDocumentText(document: CanonicalCvDocument): string {
-  return document.blocks.map((block) => {
-    if (block.type === 'list-item') return `• ${block.text}`;
-    if (block.type === 'table') return block.rows.map((row) => row.join(' | ')).join('\n');
-    return block.text;
-  }).filter(Boolean).join('\n');
+const windows1251Extended = [
+  'Ђ', 'Ѓ', '‚', 'ѓ', '„', '…', '†', '‡', '€', '‰', 'Љ', '‹', 'Њ', 'Ќ', 'Ћ', 'Џ',
+  'ђ', '‘', '’', '“', '”', '•', '–', '—', null, '™', 'љ', '›', 'њ', 'ќ', 'ћ', 'џ',
+  '\u00a0', 'Ў', 'ў', 'Ј', '¤', 'Ґ', '¦', '§', 'Ё', '©', 'Є', '«', '¬', '\u00ad', '®', 'Ї',
+  '°', '±', 'І', 'і', 'ґ', 'µ', '¶', '·', 'ё', '№', 'є', '»', 'ј', 'Ѕ', 'ѕ', 'ї',
+] as const;
+
+/** Bun does not expose every legacy TextDecoder label, so the small fallback table is kept runtime-independent. */
+function decodeWindows1251(bytes: Uint8Array): string {
+  let result = '';
+  for (const byte of bytes) {
+    if (byte < 0x80) result += String.fromCharCode(byte);
+    else if (byte < 0xc0) {
+      const character = windows1251Extended[byte - 0x80];
+      if (character === null) throw new TypeError('Windows-1251 input contains undefined byte 0x98.');
+      result += character;
+    } else result += String.fromCharCode(0x0410 + byte - 0xc0);
+  }
+  return result;
 }
 
 function decodeText(bytes: Uint8Array): string {
-  try { return new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
-  catch { return new TextDecoder('windows-1251').decode(bytes); }
-}
-
-function detectFormat(filename: string, mediaType: string | undefined, bytes: Uint8Array): CvSourceFormat {
-  if (!bytes.length || bytes.length > maximumCvBytes) throw new Error(`CV document size is invalid (${bytes.length} bytes).`);
-  const extension = extname(filename).toLowerCase();
-  if (extension && !['.pdf', '.docx', '.md', '.markdown', '.txt'].includes(extension)) {
-    throw new Error('Unsupported CV filename extension.');
-  }
-  const pdfMagic = Buffer.from(bytes.subarray(0, 4)).toString() === '%PDF';
-  const zipMagic = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b
-    && ((bytes[2] === 3 && bytes[3] === 4) || (bytes[2] === 5 && bytes[3] === 6));
-  if (extension === '.pdf' || mediaType === mediaTypes.pdf) {
-    if (!pdfMagic) throw new Error('The uploaded PDF has invalid file content.');
-    return 'pdf';
-  }
-  if (extension === '.docx' || mediaType === mediaTypes.docx) {
-    if (!zipMagic) throw new Error('The uploaded DOCX has invalid file content.');
-    return 'docx';
-  }
-  if (pdfMagic || zipMagic) throw new Error('CV filename, media type, and file content do not agree.');
-  if (extension === '.md' || extension === '.markdown' || mediaType === mediaTypes.md) return 'md';
-  if (extension === '.txt' || mediaType?.startsWith('text/plain')) return 'txt';
-  throw new Error('Unsupported CV format. Send PDF, Markdown, TXT, or DOCX.');
-}
-
-function validateDocxArchive(bytes: Uint8Array): void {
-  const buffer = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let offset = 0; let entries = 0; let compressedTotal = 0; let uncompressedTotal = 0;
-  while ((offset = buffer.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]), offset)) !== -1) {
-    if (offset + 46 > buffer.length) throw new Error('DOCX archive directory is truncated.');
-    const compressed = buffer.readUInt32LE(offset + 20); const uncompressed = buffer.readUInt32LE(offset + 24);
-    const nameLength = buffer.readUInt16LE(offset + 28); const extraLength = buffer.readUInt16LE(offset + 30);
-    const commentLength = buffer.readUInt16LE(offset + 32);
-    if (compressed === 0xffff_ffff || uncompressed === 0xffff_ffff) throw new Error('ZIP64 DOCX files are not supported.');
-    entries++; compressedTotal += compressed; uncompressedTotal += uncompressed;
-    if (entries > maximumDocxEntries || uncompressedTotal > maximumDocxUncompressedBytes
-      || (compressedTotal > 0 && uncompressedTotal / compressedTotal > maximumDocxCompressionRatio)) {
-      throw new Error('DOCX archive exceeds safe expansion limits.');
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    try {
+      return decodeWindows1251(bytes);
+    } catch (error) {
+      throw new CvExtractionError('CV_INVALID_ENCODING', 'CV text is neither valid UTF-8 nor Windows-1251.', { cause: error });
     }
+  }
+}
+
+function normalizeText(value: string): string {
+  return value.normalize('NFC')
+    .replace(/\u0000/gu, '')
+    .replace(/\u00a0/gu, ' ')
+    .replace(/\r\n?/gu, '\n')
+    .replace(/\t/gu, ' ')
+    .split('\n').map((line) => line.replace(/[ \f\v]+$/gu, '')).join('\n')
+    .replace(/\n{3,}/gu, '\n\n')
+    .trim();
+}
+
+function blockValue(block: CvDocumentBlock): string {
+  return block.type === 'table'
+    ? block.rows.map((row) => row.join(' | ')).join('\n')
+    : block.text;
+}
+
+export function canonicalDocumentText(document: CanonicalCvDocument): string {
+  return document.blocks.map(blockValue).join('\n\n');
+}
+
+function annotateBlocks(blocks: readonly CvDocumentBlock[]): CvDocumentBlock[] {
+  let offset = 0;
+  return blocks.map((block) => {
+    const value = blockValue(block);
+    const source = { start: offset, end: offset + value.length, ...(block.source?.page ? { page: block.source.page } : {}) };
+    offset = source.end + 2;
+    return { ...block, source } as CvDocumentBlock;
+  });
+}
+
+function warningsFor(blocks: readonly CvDocumentBlock[], possibleColumns = false): CvExtractionWarning[] {
+  const warnings: CvExtractionWarning[] = [];
+  const text = blocks.map(blockValue).join('\n');
+  if (!blocks.some((block) => block.type === 'heading')) {
+    warnings.push({ code: 'no-headings', detail: 'No recoverable heading structure was detected.' });
+  }
+  if (!/\b(?:19|20)\d{2}\b/u.test(text)) {
+    warnings.push({ code: 'no-dates', detail: 'No four-digit year was detected.' });
+  }
+  const seen = new Set<string>();
+  if (blocks.some((block) => {
+    const value = normalizeText(blockValue(block)).toLowerCase();
+    if (value.length < 80) return false;
+    if (seen.has(value)) return true;
+    seen.add(value);
+    return false;
+  })) warnings.push({ code: 'duplicate-content', detail: 'Repeated long content was detected.' });
+  if (possibleColumns) warnings.push({
+    code: 'possible-column-order',
+    detail: 'PDF coordinates suggest interleaved columns; verify reading order.',
+  });
+  return warnings;
+}
+
+function finishDocument(blocks: readonly CvDocumentBlock[], possibleColumns = false): CanonicalCvDocument {
+  const cleaned = blocks.flatMap((block): CvDocumentBlock[] => {
+    if (block.type === 'table') {
+      const rows = block.rows.map((row) => row.map(normalizeText).filter(Boolean)).filter((row) => row.length > 0);
+      return rows.length ? [{ ...block, rows }] : [];
+    }
+    const text = normalizeText(block.text);
+    return text ? [{ ...block, text }] : [];
+  });
+  const annotated = annotateBlocks(cleaned);
+  const warnings = warningsFor(annotated, possibleColumns);
+  return Object.freeze({
+    version: 1,
+    blocks: Object.freeze(annotated),
+    ...(warnings.length
+      ? { warnings: Object.freeze(warnings.map((warning) => Object.freeze({ ...warning }))) }
+      : {}),
+  });
+}
+
+function assertNormalizedText(text: string, ocr = false): void {
+  const nonWhitespace = text.replace(/\s/gu, '').length;
+  if (nonWhitespace < minimumCvTextCharacters) {
+    throw new CvExtractionError(
+      ocr ? 'CV_OCR_REQUIRED' : 'CV_TEXT_TOO_SHORT',
+      ocr ? 'PDF contains too little extractable text and requires OCR.' : 'CV contains fewer than 100 non-whitespace characters.',
+    );
+  }
+  if (text.length > maximumCvTextCharacters) {
+    throw new CvExtractionError('CV_TEXT_TOO_LONG', 'Normalized CV text exceeds 500,000 characters.');
+  }
+}
+
+function stripMarkdownInline(value: string): string {
+  return value
+    .replace(/!\[([^\]]*)\]\([^)]*\)/gu, '$1')
+    .replace(/\[([^\]]+)\]\([^)]*\)/gu, '$1')
+    .replace(/`([^`]+)`/gu, '$1')
+    .replace(/\*\*([^*]+)\*\*/gu, '$1')
+    .replace(/__([^_]+)__/gu, '$1')
+    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/gu, '$1')
+    .replace(/(?<!_)_([^_]+)_(?!_)/gu, '$1')
+    .replace(/\\([\\`*_[\]{}()#+.!-])/gu, '$1')
+    .trim();
+}
+
+function markdownBlocks(source: string): CvDocumentBlock[] {
+  const lines = source.split('\n');
+  const blocks: CvDocumentBlock[] = [];
+  let paragraph: string[] = [];
+  let fenced = false;
+  const flush = (): void => {
+    if (paragraph.length) blocks.push({ type: 'paragraph', text: stripMarkdownInline(paragraph.join(' ')) });
+    paragraph = [];
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (/^\s*```/u.test(line)) { flush(); fenced = !fenced; continue; }
+    if (fenced) { paragraph.push(line); continue; }
+    const heading = /^(#{1,6})\s+(.+)$/u.exec(line);
+    if (heading) { flush(); blocks.push({ type: 'heading', level: heading[1]!.length, text: stripMarkdownInline(heading[2]!) }); continue; }
+    const list = /^\s*(?:[-*+] |\d+[.)]\s+)(.+)$/u.exec(line);
+    if (list) { flush(); blocks.push({ type: 'list-item', text: stripMarkdownInline(list[1]!) }); continue; }
+    if (/^\s*>/u.test(line)) { paragraph.push(line.replace(/^\s*>\s?/u, '')); continue; }
+    if (line.includes('|') && index + 1 < lines.length && /^\s*\|?\s*:?-+/u.test(lines[index + 1]!)) {
+      flush();
+      const rows: string[][] = [];
+      const row = (value: string): string[] => value.replace(/^\s*\||\|\s*$/gu, '').split('|').map(stripMarkdownInline);
+      rows.push(row(line));
+      index += 2;
+      while (index < lines.length && lines[index]!.includes('|') && lines[index]!.trim()) {
+        rows.push(row(lines[index]!));
+        index += 1;
+      }
+      index -= 1;
+      blocks.push({ type: 'table', rows });
+      continue;
+    }
+    if (!line.trim()) flush();
+    else paragraph.push(line.trim());
+  }
+  flush();
+  return blocks;
+}
+
+function textBlocks(source: string): CvDocumentBlock[] {
+  const blocks: CvDocumentBlock[] = [];
+  for (const paragraph of source.split(/\n\s*\n/gu)) {
+    const lines = paragraph.split('\n').map((line) => line.trim()).filter(Boolean);
+    for (const line of lines) {
+      const bullet = /^(?:[-*•‣▪◦]|\d+[.)])\s+(.+)$/u.exec(line);
+      if (bullet) { blocks.push({ type: 'list-item', text: bullet[1]! }); continue; }
+      const words = line.match(/\p{L}+/gu) ?? [];
+      const uppercaseHeading = line.length <= 80 && words.length > 0 && words.length <= 8
+        && line === line.toUpperCase() && line !== line.toLowerCase()
+        && words.some((word) => word.length > 3);
+      blocks.push(uppercaseHeading
+        ? { type: 'heading', text: line, level: 2 }
+        : { type: 'paragraph', text: line });
+    }
+  }
+  return blocks;
+}
+
+function findEocd(bytes: Uint8Array): number {
+  const minimum = Math.max(0, bytes.length - 65_557);
+  for (let offset = bytes.length - 22; offset >= minimum; offset -= 1) {
+    if (bytes[offset] === 0x50 && bytes[offset + 1] === 0x4b && bytes[offset + 2] === 0x05 && bytes[offset + 3] === 0x06) return offset;
+  }
+  return -1;
+}
+
+/** Reads only classic ZIP metadata, rejecting ambiguous ZIP64 or truncated archives before Mammoth sees bytes. */
+function inspectDocxZip(bytes: Uint8Array): void {
+  const eocd = findEocd(bytes);
+  if (eocd < 0) throw new CvExtractionError('CV_INVALID_DOCX', 'DOCX ZIP central directory is missing or truncated.');
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const entries = view.getUint16(eocd + 10, true);
+  const directorySize = view.getUint32(eocd + 12, true);
+  const directoryOffset = view.getUint32(eocd + 16, true);
+  if (entries === 0) throw new CvExtractionError('CV_INVALID_DOCX', 'DOCX ZIP contains no readable entries.');
+  if (entries === 0xffff || directorySize === 0xffffffff || directoryOffset === 0xffffffff
+    || (eocd >= 20 && view.getUint32(eocd - 20, true) === 0x07064b50)) {
+    throw new CvExtractionError('CV_UNSAFE_DOCX', 'ZIP64 DOCX archives are not supported.');
+  }
+  if (entries > 2_000) throw new CvExtractionError('CV_UNSAFE_DOCX', 'DOCX ZIP contains more than 2,000 entries.');
+  if (directoryOffset + directorySize > eocd) {
+    throw new CvExtractionError('CV_INVALID_DOCX', 'DOCX ZIP central directory is truncated.');
+  }
+
+  let offset = directoryOffset;
+  let compressedTotal = 0;
+  let uncompressedTotal = 0;
+  for (let index = 0; index < entries; index += 1) {
+    if (offset + 46 > eocd || view.getUint32(offset, true) !== 0x02014b50) {
+      throw new CvExtractionError('CV_INVALID_DOCX', 'DOCX ZIP central directory entry is truncated.');
+    }
+    const compressed = view.getUint32(offset + 20, true);
+    const uncompressed = view.getUint32(offset + 24, true);
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    if (compressed === 0xffffffff || uncompressed === 0xffffffff) {
+      throw new CvExtractionError('CV_UNSAFE_DOCX', 'ZIP64 DOCX entries are not supported.');
+    }
+    compressedTotal += compressed;
+    uncompressedTotal += uncompressed;
     offset += 46 + nameLength + extraLength + commentLength;
   }
-  if (!entries) throw new Error('DOCX archive has no readable directory.');
-}
-
-async function extractPdf(bytes: Uint8Array): Promise<Omit<ExtractedCvDocument, 'sourceFormat' | 'mediaType'>> {
-  const pdf = await getDocumentProxy(Uint8Array.from(bytes));
-  const extracted = await extractText(pdf, { mergePages: true });
-  const raw=String(extracted.text);
-  if(raw.replace(/\s/g,'').length<100)throw new Error('CV_OCR_REQUIRED: PDF contains no usable text layer. Export it with OCR and upload it again.');
-  const text = normalizeText(raw);
-  return { text, document: annotateDocument(plainBlocks(text),text), parserName: 'unpdf', parserVersion: '2' };
-}
-async function extractDocx(bytes: Uint8Array): Promise<Omit<ExtractedCvDocument, 'sourceFormat' | 'mediaType'>> {
-  validateDocxArchive(bytes);
-  const buffer = Buffer.from(bytes);
-  const [raw, html] = await Promise.all([mammoth.extractRawText({ buffer }), mammoth.convertToHtml({ buffer })]);
-  const document = htmlDocument(html.value);
-  const text = normalizeText(document.blocks.length ? canonicalDocumentText(document) : raw.value);
-  return { text, document: annotateDocument(document.blocks.length ? document : plainBlocks(text),text),
-    parserName: 'mammoth', parserVersion: '1.12.0' };
-}
-export async function extractCvDocument(filename: string, mediaType: string | undefined,
-  bytes: Uint8Array): Promise<ExtractedCvDocument> {
-  const sourceFormat = detectFormat(filename, mediaType, bytes);
-  if (sourceFormat === 'pdf') return { ...await extractPdf(bytes), sourceFormat, mediaType: mediaTypes.pdf };
-  if (sourceFormat === 'docx') return { ...await extractDocx(bytes), sourceFormat, mediaType: mediaTypes.docx };
-  const source = decodeText(bytes);
-  if (sourceFormat === 'md') {
-    const document = markdownDocument(source);
-    const text = normalizeText(canonicalDocumentText(document));
-    return { text, document:annotateDocument(document,text), sourceFormat, mediaType: mediaTypes.md, parserName: 'builtin-markdown', parserVersion: '2' };
+  if (offset > eocd) throw new CvExtractionError('CV_INVALID_DOCX', 'DOCX ZIP central directory is truncated.');
+  if (uncompressedTotal > 50 * 1024 * 1024) {
+    throw new CvExtractionError('CV_UNSAFE_DOCX', 'DOCX ZIP exceeds 50 MiB uncompressed.');
   }
-  const text = normalizeText(source);
-  return { text, document: annotateDocument(plainBlocks(text),text), sourceFormat, mediaType: mediaTypes.txt,
-    parserName: 'builtin-text', parserVersion: '2' };
+  if (uncompressedTotal > 0 && (compressedTotal === 0 || uncompressedTotal / compressedTotal > 100)) {
+    throw new CvExtractionError('CV_UNSAFE_DOCX', 'DOCX ZIP compression ratio exceeds 100.');
+  }
 }
 
+function htmlBlocks(root: HTMLElement): CvDocumentBlock[] {
+  const blocks: CvDocumentBlock[] = [];
+  const visit = (node: HTMLElement): void => {
+    const tag = node.tagName?.toLowerCase();
+    if (tag && /^h[1-6]$/u.test(tag)) {
+      blocks.push({ type: 'heading', text: node.textContent, level: Number(tag[1]) });
+      return;
+    }
+    if (tag === 'li') { blocks.push({ type: 'list-item', text: node.textContent }); return; }
+    if (tag === 'p') { blocks.push({ type: 'paragraph', text: node.textContent }); return; }
+    if (tag === 'table') {
+      const rows = node.querySelectorAll('tr').map((row) => row.querySelectorAll('th,td').map((cell) => cell.textContent));
+      if (rows.length) blocks.push({ type: 'table', rows });
+      return;
+    }
+    for (const child of node.childNodes) {
+      if ('tagName' in child) visit(child as HTMLElement);
+    }
+  };
+  visit(root);
+  return blocks;
+}
+
+async function extractDocx(bytes: Uint8Array): Promise<{ blocks: CvDocumentBlock[]; rawText: string }> {
+  inspectDocxZip(bytes);
+  const mammoth = (await import('mammoth')).default;
+  const input = { buffer: Buffer.from(bytes) };
+  const [raw, html] = await Promise.all([
+    mammoth.extractRawText(input),
+    mammoth.convertToHtml(input, { externalFileAccess: false }),
+  ]);
+  const { parse } = await import('node-html-parser');
+  const semantic = htmlBlocks(parse(html.value));
+  return { blocks: semantic.length ? semantic : textBlocks(raw.value), rawText: raw.value };
+}
+
+async function extractPdf(bytes: Uint8Array): Promise<{ blocks: CvDocumentBlock[]; possibleColumns: boolean }> {
+  const { extractTextItems } = await import('unpdf');
+  const result = await extractTextItems(new Uint8Array(bytes));
+  const blocks: CvDocumentBlock[] = [];
+  let possibleColumns = false;
+  result.items.forEach((items, pageIndex) => {
+    const lines: string[] = [];
+    let line = '';
+    let previousX: number | null = null;
+    let resets = 0;
+    for (const item of items) {
+      if (previousX !== null && item.x + 100 < previousX && !item.hasEOL) resets += 1;
+      line += `${line && !/^\s/u.test(item.str) ? ' ' : ''}${item.str}`;
+      previousX = item.x + item.width;
+      if (item.hasEOL) { if (line.trim()) lines.push(line); line = ''; previousX = null; }
+    }
+    if (line.trim()) lines.push(line);
+    if (resets >= 3) possibleColumns = true;
+    for (const value of lines) blocks.push({ type: 'paragraph', text: value, source: { start: 0, end: 0, page: pageIndex + 1 } });
+  });
+  return { blocks, possibleColumns };
+}
+
+export async function extractCvDocument(
+  filename: string,
+  mediaType: string | undefined,
+  bytes: Uint8Array,
+): Promise<ExtractedCvDocument> {
+  if (!(bytes instanceof Uint8Array)) throw new TypeError('Invalid CV bytes: expected Uint8Array.');
+  if (bytes.byteLength > maximumCvBytes) {
+    throw new CvExtractionError('CV_TOO_LARGE', 'CV upload exceeds 20 MiB.');
+  }
+  const format = detectCvSourceFormat(filename, mediaType, bytes);
+
+  try {
+    let document: CanonicalCvDocument;
+    let parserName: string;
+    let parserVersion: string;
+    if (format === 'pdf') {
+      const pdf = await extractPdf(bytes);
+      document = finishDocument(pdf.blocks, pdf.possibleColumns);
+      parserName = 'unpdf'; parserVersion = '1.8.0';
+    } else if (format === 'docx') {
+      const docx = await extractDocx(bytes);
+      document = finishDocument(docx.blocks);
+      parserName = 'mammoth'; parserVersion = '1.12.0';
+    } else {
+      const decoded = normalizeText(decodeText(bytes));
+      document = finishDocument(format === 'md' ? markdownBlocks(decoded) : textBlocks(decoded));
+      parserName = format === 'md' ? 'jobseeker-markdown' : 'jobseeker-text'; parserVersion = '1';
+    }
+    const text = canonicalDocumentText(document);
+    assertNormalizedText(text, format === 'pdf');
+    return Object.freeze({
+      text,
+      document,
+      sourceFormat: format,
+      mediaType: mediaType?.split(';', 1)[0]?.trim().toLowerCase() || 'application/octet-stream',
+      parserName,
+      parserVersion,
+    });
+  } catch (error) {
+    if (error instanceof CvExtractionError) throw error;
+    throw new CvExtractionError('CV_PARSE_FAILED', 'CV parser failed to produce a canonical document.', { cause: error });
+  }
+}
 
 export type CvLanguage = 'ru' | 'en';
 
 export function detectCvLanguage(text: string): CvLanguage {
-  const cyrillic = text.match(/[А-Яа-яЁё]/g)?.length ?? 0;
-  const latin = text.match(/[A-Za-z]/g)?.length ?? 0;
-  return cyrillic >= 20 && cyrillic >= latin * 0.15 ? 'ru' : 'en';
+  const cyrillic = text.match(/\p{Script=Cyrillic}/gu)?.length ?? 0;
+  const latin = text.match(/\p{Script=Latin}/gu)?.length ?? 0;
+  return cyrillic >= 20 && cyrillic / Math.max(1, cyrillic + latin) >= 0.3 ? 'ru' : 'en';
 }

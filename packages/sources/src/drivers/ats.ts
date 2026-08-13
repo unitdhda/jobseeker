@@ -1,33 +1,31 @@
-/**
- * Applicant-tracking-system boards. Company career pages are overwhelmingly hosted on a handful of ATS products
- * that publish the same board as public JSON, so one adapter per product covers every company on it. Discovery
- * lists a board and keeps the postings whose title matches a CV-derived query; there is no server-side search.
- */
 import * as v from 'valibot';
-import type { SourceContext } from '../context.ts';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { asObject, hashedVacancy, htmlText, plainText, VacancySearchCollector, type JsonObject } from '../http.ts';
+import {
+  parseSourceKey,
+  parseSourceVacancyId,
+  type VacancyCandidate,
+  type VacancyInput,
+} from '@jobseeker/engine/contracts';
 import type { PlatformValidationTemplate, SearchPlan, SearchPlatform } from '../contract.ts';
+import type { SourceContext } from '../context.ts';
+import { asObject, hashedVacancy, htmlText, plainText, VacancySearchCollector, type JsonObject } from '../http.ts';
 import { createSourceProvider } from '../sources.ts';
-import { postingMatchesQuery } from '../boards.ts';
-export { postingMatchesQuery } from '../boards.ts';
 
 export const atsProviders = ['greenhouse', 'lever', 'ashby', 'smartrecruiters'] as const;
 export type AtsProvider = typeof atsProviders[number];
+const providerSet = new Set<string>(atsProviders);
+const slugPattern = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/u;
 
-/**
- * Boards are configured rather than discovered: an ATS exposes no directory of its customers, and an unknown slug
- * is indistinguishable from a private board. Entries use `provider:slug` syntax.
- */
 export function configuredBoards(entries: readonly string[] = []): Record<AtsProvider, string[]> {
-  const boards: Record<AtsProvider, string[]> = { greenhouse: [], lever: [], ashby: [], smartrecruiters: [] };
+  const output: Record<AtsProvider, string[]> = { greenhouse: [], lever: [], ashby: [], smartrecruiters: [] };
   for (const entry of entries) {
-    const [provider, slug] = entry.split(':');
-    if (!provider || !slug) throw new Error(`ATS board entry must be provider:slug, got ${entry}`);
-    if (!atsProviders.includes(provider as AtsProvider)) throw new Error(`Unknown ATS provider: ${provider}`);
-    boards[provider as AtsProvider].push(slug);
+    const parts = entry.split(':');
+    if (parts.length !== 2 || !providerSet.has(parts[0]!) || !slugPattern.test(parts[1]!)) {
+      throw new TypeError(`Invalid ATS board declaration: ${entry}.`);
+    }
+    const provider = parts[0] as AtsProvider;
+    if (!output[provider].includes(parts[1]!)) output[provider].push(parts[1]!);
   }
-  return boards;
+  return output;
 }
 
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
@@ -43,188 +41,177 @@ export type AtsSearchProfile = v.InferOutput<typeof atsSearchProfileSchema>;
 export type AtsSearch = AtsSearchProfile['searches'][number];
 
 export const atsHosts = [
-  'boards-api.greenhouse.io', 'boards.greenhouse.io', 'job-boards.greenhouse.io',
+  'boards-api.greenhouse.io', 'job-boards.greenhouse.io',
   'api.lever.co', 'jobs.lever.co',
   'api.ashbyhq.com', 'jobs.ashbyhq.com',
   'api.smartrecruiters.com', 'jobs.smartrecruiters.com',
 ] as const;
 
 export interface AtsSourceDefinition {
-  id: string;
-  name: string;
-  hosts?: readonly string[];
-  template?: () => PlatformValidationTemplate;
+  readonly id: string;
+  readonly name: string;
+  readonly hosts?: readonly string[];
+  template?(): PlatformValidationTemplate;
 }
 
 export function atsPlatform(definition: AtsSourceDefinition): SearchPlatform<typeof atsSearchProfileSchema> {
-  return {
-    id: definition.id,
-    name: definition.name,
-    schema: atsSearchProfileSchema,
-    hosts: definition.hosts ?? atsHosts,
-    enumerates: true,
+  return Object.freeze({
+    id: definition.id, name: definition.name, schema: atsSearchProfileSchema,
+    hosts: definition.hosts ?? atsHosts, enumerates: true,
     template: definition.template ?? (() => ({
-      platform: definition.id,
-      version: 1,
-      purpose: 'Public applicant-tracking boards published through Greenhouse, Lever, Ashby, or SmartRecruiters.',
-      jsonShape: {
-        version: 1,
-        searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }],
-      },
-      capabilities: {
-        query: 'One concise English role title; boards are matched by title text, not by a search engine',
-        maxSearches: 8,
-      },
-      rules: [
-        'Use English role titles because these boards are predominantly English.',
-        'Each query contains one role title without boolean syntax, slashes, or parentheses.',
-        'Prefer widely used titles over company-specific ones, because matching is on the posting title.',
-        'Do not add location, seniority punctuation, salary, or work-format terms.',
-      ],
+      platform: definition.id, version: 1, purpose: 'Generate bounded ATS title searches.',
+      jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'role title' }] },
+      capabilities: { maxSearches: 8, query: 'One concise role title matched locally against posting titles.' },
+      rules: ['Return at most 8 searches.', 'Use one role title per query.', 'Do not include location or salary terms.'],
     })),
-  };
+  });
 }
 
 export interface AtsBoardPosting {
-  sourceId: string; url: string; title: string; description: string; employer: string;
-  location: string; publishedAt: string; employment: string; remote: boolean;
+  readonly sourceId: string;
+  readonly url: string;
+  readonly title: string;
+  readonly description: string;
+  readonly employer: string;
+  readonly location: string;
+  readonly publishedAt: string;
+  readonly employment: string;
+  readonly remote: boolean;
 }
 
-function textOf(value: unknown): string { return htmlText(plainText(value)); }
+function objects(value: unknown): JsonObject[] {
+  return Array.isArray(value) ? value.map(asObject).filter((item): item is JsonObject => item !== null) : [];
+}
+function text(value: unknown): string { return htmlText(plainText(value)); }
+function isoDate(value: unknown): string {
+  const date = new Date(plainText(value));
+  return Number.isFinite(date.getTime()) ? date.toISOString() : '';
+}
+function locationName(value: unknown): string {
+  const object = asObject(value);
+  return plainText(object?.name ?? object?.location ?? value);
+}
 
-function greenhousePostings(slug: string, payload: JsonObject): AtsBoardPosting[] {
-  const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
-  return jobs.flatMap((entry) => {
-    const job = asObject(entry); if (!job) return [];
-    const id = plainText(job.id); if (!id) return [];
-    return [{
-      // `absolute_url` often points at the company's own careers domain, which is outside the source allowlist,
-      // so the canonical board address is used instead.
-      sourceId: `greenhouse:${slug}:${id}`, url: `https://job-boards.greenhouse.io/${encodeURIComponent(slug)}/jobs/${id}`,
-      title: plainText(job.title), description: textOf(job.content),
-      employer: plainText(asObject(job.company)?.name) || slug,
-      location: plainText(asObject(job.location)?.name),
-      // `updated_at` moves whenever the advert is edited, so the first publication is the age that matters.
-      publishedAt: plainText(job.first_published) || plainText(job.updated_at),
-      employment: '', remote: /remote/i.test(plainText(asObject(job.location)?.name)),
-    }];
+function greenhouse(slug: string, payload: unknown): AtsBoardPosting[] {
+  return objects(asObject(payload)?.jobs).flatMap((job) => {
+    const id = plainText(job.id); const title = plainText(job.title);
+    if (!id || !title) return [];
+    return [{ sourceId: `greenhouse:${slug}:${id}`,
+      url: `https://job-boards.greenhouse.io/${encodeURIComponent(slug)}/jobs/${encodeURIComponent(id)}`,
+      title, description: text(job.content), employer: slug, location: locationName(job.location),
+      publishedAt: isoDate(job.updated_at), employment: '', remote: /remote/iu.test(locationName(job.location)) }];
   });
 }
-
-function leverPostings(slug: string, payload: unknown): AtsBoardPosting[] {
-  const jobs = Array.isArray(payload) ? payload : [];
-  return jobs.flatMap((entry) => {
-    const job = asObject(entry); if (!job) return [];
-    const id = plainText(job.id); if (!id) return [];
+function lever(slug: string, payload: unknown): AtsBoardPosting[] {
+  return objects(payload).flatMap((job) => {
+    const id = plainText(job.id); const title = plainText(job.text);
+    if (!id || !title) return [];
     const categories = asObject(job.categories);
-    const created = Number(job.createdAt);
-    return [{
-      sourceId: `lever:${slug}:${id}`, url: plainText(job.hostedUrl) || plainText(job.applyUrl),
-      title: plainText(job.text), description: textOf(job.descriptionPlain) || textOf(job.description),
-      employer: slug, location: plainText(categories?.location),
-      publishedAt: Number.isFinite(created) ? new Date(created).toISOString() : '',
-      employment: plainText(categories?.commitment),
-      remote: /remote/i.test(plainText(categories?.location) + plainText(job.workplaceType)),
-    }];
+    const description = [job.descriptionPlain, job.description, ...objects(job.lists).map((item) => item.content)]
+      .map(text).filter(Boolean).join('\n');
+    const location = plainText(categories?.location);
+    return [{ sourceId: `lever:${slug}:${id}`, url: `https://jobs.lever.co/${encodeURIComponent(slug)}/${encodeURIComponent(id)}`,
+      title, description, employer: slug, location, publishedAt: isoDate(job.createdAt),
+      employment: plainText(categories?.commitment), remote: /remote/iu.test(location) }];
   });
 }
-
-function ashbyPostings(slug: string, payload: JsonObject): AtsBoardPosting[] {
-  const jobs = Array.isArray(payload.jobs) ? payload.jobs : [];
-  return jobs.flatMap((entry) => {
-    const job = asObject(entry); if (!job) return [];
-    const id = plainText(job.id); if (!id) return [];
-    return [{
-      sourceId: `ashby:${slug}:${id}`, url: plainText(job.jobUrl) || plainText(job.applyUrl),
-      title: plainText(job.title), description: textOf(job.descriptionPlain) || textOf(job.descriptionHtml),
-      employer: plainText(job.organizationName) || slug, location: plainText(job.location),
-      publishedAt: plainText(job.publishedAt), employment: plainText(job.employmentType),
-      remote: job.isRemote === true,
-    }];
+function ashby(slug: string, payload: unknown): AtsBoardPosting[] {
+  return objects(asObject(payload)?.jobs).flatMap((job) => {
+    const id = plainText(job.id ?? job.jobUrl?.toString().split('/').at(-1)); const title = plainText(job.title);
+    if (!id || !title) return [];
+    const location = plainText(job.location);
+    return [{ sourceId: `ashby:${slug}:${id}`, url: `https://jobs.ashbyhq.com/${encodeURIComponent(slug)}/${encodeURIComponent(id)}`,
+      title, description: text(job.descriptionPlain ?? job.descriptionHtml), employer: slug, location,
+      publishedAt: isoDate(job.publishedAt), employment: plainText(job.employmentType),
+      remote: Boolean(job.isRemote) || /remote/iu.test(location) }];
   });
 }
-
-function smartRecruitersPostings(slug: string, payload: JsonObject): AtsBoardPosting[] {
-  const jobs = Array.isArray(payload.content) ? payload.content : [];
-  return jobs.flatMap((entry) => {
-    const job = asObject(entry); if (!job) return [];
-    const id = plainText(job.id); if (!id) return [];
+function smartListing(slug: string, payload: unknown): AtsBoardPosting[] {
+  return objects(asObject(payload)?.content).flatMap((job) => {
+    const id = plainText(job.id); const title = plainText(job.name);
+    if (!id || !title) return [];
     const location = asObject(job.location);
-    const city = plainText(location?.city); const country = plainText(location?.country);
-    return [{
-      sourceId: `smartrecruiters:${slug}:${id}`,
-      // The posting API returns ids; the public posting page is the stable canonical address.
+    return [{ sourceId: `smartrecruiters:${slug}:${id}`,
       url: `https://jobs.smartrecruiters.com/${encodeURIComponent(slug)}/${encodeURIComponent(id)}`,
-      title: plainText(job.name), description: '', employer: plainText(asObject(job.company)?.name) || slug,
-      location: [city, country].filter(Boolean).join(', '), publishedAt: plainText(job.releasedDate),
-      employment: plainText(asObject(job.typeOfEmployment)?.label), remote: location?.remote === true,
-    }];
+      title, description: '', employer: plainText(asObject(job.company)?.name) || slug,
+      location: [location?.city, location?.region, location?.country].map(plainText).filter(Boolean).join(', '),
+      publishedAt: isoDate(job.releasedDate), employment: plainText(asObject(job.typeOfEmployment)?.label), remote: false }];
   });
+}
+function smartSection(value: unknown): string {
+  const section = asObject(value);
+  return text(section?.text ?? section?.html ?? value);
+}
+
+function smartDetail(base: AtsBoardPosting, payload: unknown): AtsBoardPosting {
+  const detail = asObject(payload) ?? {};
+  const description = asObject(asObject(detail.jobAd)?.sections);
+  return { ...base,
+    description: [description?.jobDescription, description?.qualifications, description?.additionalInformation]
+      .map(smartSection).filter(Boolean).join('\n'),
+    remote: /remote/iu.test(`${base.location} ${plainText(detail.workLocation)}`),
+  };
 }
 
 function boardUrl(provider: AtsProvider, slug: string): string {
-  const encoded = encodeURIComponent(slug);
-  if (provider === 'greenhouse') return `https://boards-api.greenhouse.io/v1/boards/${encoded}/jobs?content=true`;
-  if (provider === 'lever') return `https://api.lever.co/v0/postings/${encoded}?mode=json`;
-  if (provider === 'ashby') return `https://api.ashbyhq.com/posting-api/job-board/${encoded}?includeCompensation=true`;
-  return `https://api.smartrecruiters.com/v1/companies/${encoded}/postings?limit=100`;
+  switch (provider) {
+    case 'greenhouse': return `https://boards-api.greenhouse.io/v1/boards/${encodeURIComponent(slug)}/jobs?content=true`;
+    case 'lever': return `https://api.lever.co/v0/postings/${encodeURIComponent(slug)}?mode=json`;
+    case 'ashby': return `https://api.ashbyhq.com/posting-api/job-board/${encodeURIComponent(slug)}`;
+    case 'smartrecruiters': return `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings?limit=100`;
+  }
 }
 
-export async function readBoard(sourceId: string, provider: AtsProvider, slug: string,
-  context: SourceContext): Promise<AtsBoardPosting[]> {
+export async function readBoard(
+  sourceId: string, provider: AtsProvider, slug: string, context: SourceContext,
+): Promise<AtsBoardPosting[]> {
   const payload = await context.http.fetchSourceJson(sourceId, boardUrl(provider, slug));
-  if (provider === 'lever') return leverPostings(slug, payload);
-  const object = asObject(payload);
-  if (!object) throw new Error(`${provider} board ${slug} returned an unexpected payload`);
-  if (provider === 'greenhouse') return greenhousePostings(slug, object);
-  if (provider === 'ashby') return ashbyPostings(slug, object);
-  return smartRecruitersPostings(slug, object);
+  switch (provider) {
+    case 'greenhouse': return greenhouse(slug, payload);
+    case 'lever': return lever(slug, payload);
+    case 'ashby': return ashby(slug, payload);
+    case 'smartrecruiters': return smartListing(slug, payload);
+  }
 }
 
-/**
- * SmartRecruiters' list endpoint carries no advert text, so a matched posting is completed from its detail
- * endpoint. Only matched postings are fetched, keeping this to a handful of requests per cycle.
- */
-export async function smartRecruitersDescription(sourceId: string, slug: string, id: string,
-  context: SourceContext): Promise<string> {
-  const payload = asObject(await context.http.fetchSourceJson(sourceId,
-    `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings/${encodeURIComponent(id)}`));
-  const sections = asObject(asObject(payload?.jobAd)?.sections);
-  const parts = ['companyDescription', 'jobDescription', 'qualifications', 'additionalInformation']
-    .map((key) => textOf(asObject(sections?.[key])?.text)).filter(Boolean);
-  return parts.join('\n\n');
+export async function smartRecruitersDescription(
+  sourceId: string, slug: string, id: string, posting: AtsBoardPosting, context: SourceContext,
+): Promise<AtsBoardPosting> {
+  const payload = await context.http.fetchSourceJson(sourceId,
+    `https://api.smartrecruiters.com/v1/companies/${encodeURIComponent(slug)}/postings/${encodeURIComponent(id)}`);
+  return smartDetail(posting, payload);
 }
 
-export async function scrapeAts(sourceId: string, plan: SearchPlan<AtsSearch>, context: SourceContext,
-  boardEntries: readonly string[]): Promise<{ seen: number; discovered: number }> {
-  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
-    context.recordListingCandidate);
-  if (!plan.searches.length) return collector.result();
-  const boards = configuredBoards(boardEntries);
+function significantWords(query: string): readonly string[] {
+  return query.toLocaleLowerCase().match(/[\p{L}\p{N}+#.]{2,}/gu) ?? [];
+}
+export function postingMatchesQuery(title: string, query: string): boolean {
+  const normalized = title.toLocaleLowerCase();
+  const words = significantWords(query);
+  return words.length > 0 && words.every((word) => normalized.includes(word));
+}
+
+export async function scrapeAts(
+  sourceId: string, plan: SearchPlan<AtsSearch>, context: SourceContext, entries: readonly string[],
+) {
+  const boards = configuredBoards(entries);
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
   for (const provider of atsProviders) {
     for (const slug of boards[provider]) {
-      if (collector.complete) return collector.result();
-      let postings: AtsBoardPosting[];
-      try {
-        postings = await readBoard(sourceId, provider, slug, context);
-        context.trace('scrape.search.result', { platform: sourceId, provider, slug, found: postings.length });
-      } catch (error) {
-        console.error(`Failed to read ${provider} board ${slug}: ${context.errorMessage(error)}`);
-        continue;
-      }
-      for (const posting of postings) {
-        const planned = plan.searches.find((entry) => postingMatchesQuery(posting.title, entry.search.query));
-        if (!planned || !posting.url || !posting.title) continue;
-        if (provider === 'smartrecruiters' && !posting.description) {
-          const id = posting.sourceId.split(':').at(-1) ?? '';
-          posting.description = await smartRecruitersDescription(sourceId, slug, id, context)
-            .catch((error) => { console.error(`Failed to read SmartRecruiters posting ${id}: ${context.errorMessage(error)}`); return ''; });
+      if (collector.complete) break;
+      let postings = await readBoard(sourceId, provider, slug, context);
+      for (let posting of postings) {
+        if (collector.complete) break;
+        const matches = plan.searches.filter(({ search }) => postingMatchesQuery(posting.title, search.query));
+        if (matches.length === 0) continue;
+        if (provider === 'smartrecruiters') {
+          const id = posting.sourceId.split(':').at(-1)!;
+          posting = await smartRecruitersDescription(sourceId, slug, id, posting, context);
         }
-        await collector.record({ source: sourceId, sourceId: posting.sourceId,
-          url: context.http.safeVacancyUrl(sourceId, posting.url),
-          searchName: planned.search.name, title: posting.title, summary: posting.description.slice(0, 1_000),
-          publishedAt: posting.publishedAt, payload: posting as unknown as JsonObject }, planned.recipients);
-        if (collector.complete) return collector.result();
+        const recipients = matches.flatMap(({ recipients }) => recipients);
+        await collector.record({ source: parseSourceKey(sourceId), sourceId: parseSourceVacancyId(posting.sourceId),
+          url: context.http.sourceUrl(sourceId, posting.url), searchName: matches[0]!.search.name,
+          title: posting.title, ...(posting.publishedAt ? { publishedAt: new Date(posting.publishedAt) } : {}), payload: posting }, recipients);
       }
     }
   }
@@ -232,37 +219,32 @@ export async function scrapeAts(sourceId: string, plan: SearchPlan<AtsSearch>, c
 }
 
 export async function normalizeAtsCandidate(sourceId: string, candidate: VacancyCandidate): Promise<VacancyInput | null> {
-  // Board payloads are already complete, so normalization does not re-fetch a page that may need a browser.
-  const posting = candidate.payload as unknown as AtsBoardPosting | null;
-  if (!posting?.title) return null;
-  const description = posting.description || posting.title;
-  if (description.length < 20) return null;
-  return hashedVacancy({
-    source: sourceId, sourceId: candidate.sourceId, name: posting.title, employer: posting.employer || 'Не указано',
-    area: posting.location || 'Не указано', salaryFrom: null, salaryTo: null, salaryCurrency: null, salaryGross: null,
-    experience: '', employment: posting.employment ?? '', schedule: '', workFormat: posting.remote ? 'remote' : '',
-    description, keySkills: [], url: candidate.url,
-    publishedAt: posting.publishedAt || new Date().toISOString(), sourceQuery: candidate.searchName,
-  });
+  const posting = candidate.payload as AtsBoardPosting | undefined;
+  if (!posting?.title || posting.description.length < 20) return null;
+  return hashedVacancy({ source: parseSourceKey(sourceId), sourceId: candidate.sourceId, name: posting.title,
+    employer: posting.employer || 'Не указано', area: posting.location || 'Не указано', salary: null,
+    experience: { kind: 'unspecified' }, employment: posting.employment ? 'other' : 'unspecified', schedule: 'unspecified',
+    workFormat: posting.remote ? 'remote' : 'unspecified', description: posting.description, keySkills: [],
+    url: candidate.url, publishedAt: posting.publishedAt ? new Date(posting.publishedAt) : candidate.publishedAt,
+    sourceQuery: candidate.searchName });
 }
-export interface AtsSourceOptions { boards?: readonly string[] }
 
-/** Creates a grouped ATS provider without embedding customer boards or application identity in the package. */
+export interface AtsSourceOptions { readonly boards?: readonly string[] }
 export function createAtsSource(definition: AtsSourceDefinition, options: AtsSourceOptions = {}) {
   const platform = atsPlatform(definition);
-  return createSourceProvider({
-    ...platform,
+  const boardEntries = Object.freeze([...(options.boards ?? [])]);
+  configuredBoards(boardEntries);
+  return createSourceProvider({ ...platform,
     async discover(plan, context) {
-      const result = await scrapeAts(definition.id, plan, context, options.boards ?? []);
       const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
-      return { searches: plan.searches.length, users: users.size, ...result };
+      return { searches: plan.searches.length, users: users.size, ...await scrapeAts(definition.id, plan, context, boardEntries) };
     },
     async normalize(candidates) {
       const results = new Map<string, VacancyInput | null | Error>();
-      for (const candidate of candidates) {
+      await Promise.all(candidates.map(async (candidate) => {
         try { results.set(candidate.sourceId, await normalizeAtsCandidate(definition.id, candidate)); }
         catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error))); }
-      }
+      }));
       return results;
     },
   });

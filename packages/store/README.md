@@ -1,29 +1,40 @@
-# @jobseeker/store
+# `@jobseeker/store`
 
-The PostgreSQL client and every repository of the engine schema (`users`, `cv_documents`, `vacancies`,
-`search_units`, `unit_subscriptions`, `matches`, `accounts`, `usage_events`, `user_state`, `telegram_updates`).
+The only runtime persistence package. It owns PostgreSQL connections and named repositories; settings and security policy are injected explicitly.
 
-The package never reads `process.env`. `createStore` receives the database URL and a `StoreSettings` snapshot of
-every knob queries need. Each returned store owns its pool and repository context; tests can construct independent
-instances without configuration or pool leakage.
+```ts
+import { createStore } from '@jobseeker/store';
 
-- `client.ts` — instance context, pool, retries, transactions, and advisory locks.
-- `store.ts` — `createStore`, repository binding, lifecycle, and instance-scoped admin access.
-- `repos.ts` — users/access, CV documents and search profiles, vacancy listings and normalization lifecycle,
-  scored reads, digests and alerts, applications, usage, retention, the owner's scraper health summary.
-- `engine-repos.ts` — the scheduler's tables: due units, unit runs, demand application, match ingest
-  (append-only), state transitions (guarded in the `where` clause — a lost race writes nothing), skip-locked
-  scoring claims, daily spend.
-- `telegram-repos.ts` — expiring Telegram sessions and durable webhook-update claims.
+const store = createStore({
+  databaseUrl,
+  poolMax: 10,
+  ssl,
+  settings,
+});
+```
 
-Source listing shapes come from `@jobseeker/engine/contracts`; persisted CV shapes come from
-`@jobseeker/cv/extract`. Runtime modules call named repositories.
+## Runtime ownership
 
-Two invariants live here, enforced in SQL:
+- Store construction does not create a pool.
+- The first SQL operation creates that store instance's bounded pool.
+- Repository calls are bound to their owning instance through `AsyncLocalStorage`.
+- Transactions, advisory locks, and singleton session locks retain one PostgreSQL connection for their full lifetime.
+- `close()` is idempotent and releases pooled and dedicated singleton connections.
 
-1. **The delivered wall** — a match in `alerted`, `digested`, `skipped`, `applying`, or `applied` can never be
-   re-created or re-delivered; ingest is `on conflict do nothing`, transitions check their source state.
-2. **Scores land only on claims** — `saveScore` updates only a row in `queued`, so a lost scoring race is a
-   no-op.
+`store.admin` exposes raw query/transaction/pool access only for application-owned initialization and integration work. Normal app runtime modules must use named repositories.
 
-Tested through the app's integration suite (`bun run test:postgres`) and the migration gates.
+## Schema
+
+`packages/app/schema.sql` is the complete schema for a fresh database. It is not a migration series.
+
+## PostgreSQL integration test
+
+Set a dedicated database whose name contains `test`:
+
+```sh
+JOBSEEKER_TEST_DATABASE_URL=postgres://.../jobseeker_test bun run test:postgres
+```
+
+Set `JOBSEEKER_TEST_DATABASE_SSL=1` for TLS-required hosts. If a controlled test environment uses a certificate chain unavailable to the local trust store, `JOBSEEKER_TEST_DATABASE_TLS_INSECURE=1` keeps transport encrypted but disables certificate verification for that test run only.
+
+The test creates and drops a unique temporary schema containing the complete schema; a single test table is insufficient for repository lifecycle and constraint validation. It refuses a database name without `test` unless `JOBSEEKER_ALLOW_DESTRUCTIVE_POSTGRES_TEST=1` is explicitly set.

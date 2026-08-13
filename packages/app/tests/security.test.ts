@@ -1,20 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readResponseBytes } from '../src/http.ts';
-import { errorMessage } from '../src/observability.ts';
+import { redactTrace, safeErrorMessage } from '../src/security.ts';
 
-// The URL-policy allowlist test moved to packages/sources: it exercises example providers, which the application
-// no longer carries.
-
-test('response reader enforces declared and streamed byte limits', async () => {
-  await assert.rejects(() => readResponseBytes(new Response('12345', { headers: { 'content-length': '5' } }), 4), /exceeds/);
-  const stream = new ReadableStream<Uint8Array>({
-    start(controller) { controller.enqueue(new Uint8Array(3)); controller.enqueue(new Uint8Array(3)); controller.close(); },
-  });
-  await assert.rejects(() => readResponseBytes(new Response(stream), 5), /exceeds/);
+test('recursive trace redaction removes sensitive keys and bounds depth, arrays, strings, and cycles', () => {
+  const value: Record<string, unknown> = { event: 'ok', token: 'secret', nested: { query: 'private search', safe: 'x'.repeat(100) },
+    list: [1, 2, 3, 4], url: new URL('https://example.test/path?secret=value#fragment') };
+  value.self = value;
+  const redacted = redactTrace(value, { depth: 3, array: 2, string: 10 }) as Record<string, unknown>;
+  assert.equal(redacted.token, '[REDACTED]'); assert.deepEqual(redacted.list, [1, 2]);
+  assert.equal((redacted.nested as Record<string, unknown>).query, '[REDACTED]');
+  assert.equal(redacted.url, 'https://example.test/path'); assert.equal(redacted.self, '[CIRCULAR]');
+  assert.equal(String((redacted.nested as Record<string, unknown>).safe).length, 10);
 });
 
-test('logged error summaries redact credentials and personal contacts', () => {
-  const message = errorMessage(new Error('Bearer abcdefghijklmnopqrstuvwxyz token=secret user@example.com'));
-  assert.doesNotMatch(message, /abcdefghijklmnopqrstuvwxyz|secret|user@example\.com/);
+test('error summaries redact database URLs, Telegram tokens, authorization, emails, secret assignments, and URL queries', () => {
+  const error = new Error('postgres://user:pass@db.example/prod failed; Bearer abc.def; bot 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi; email me@example.com; token=raw https://example.test/path?q=private#x');
+  const summary = safeErrorMessage(error);
+  for (const secret of ['user:pass', 'abc.def', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'me@example.com', 'token=raw', 'q=private']) {
+    assert.equal(summary.includes(secret), false);
+  }
+  assert.match(summary, /REDACTED/u); assert.match(summary, /https:\/\/example.test\/path/u); assert.ok(summary.length <= 500);
 });

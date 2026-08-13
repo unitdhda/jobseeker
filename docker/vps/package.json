@@ -1,8 +1,8 @@
 {
-  "name": "jobseeker-deployment",
+  "name": "jobseeker-vps-deployment",
   "private": true,
-  "type": "module",
+  "version": "0.2.0",
   "dependencies": {
-    "@unitdhda/jobseeker": "0.1.12"
+    "@unitdhda/jobseeker": "0.2.0"
   }
 }

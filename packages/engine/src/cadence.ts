@@ -1,16 +1,29 @@
-/**
- * A unit's polling rhythm follows its yield. Novelty halves the interval toward the floor — a source that just
- * produced something new is likely to produce more; emptiness backs off toward the ceiling, so a search that has
- * gone quiet stops spending the politeness budget other units could use.
- */
 export interface CadencePolicy {
-  floorMinutes: number;
-  ceilingMinutes: number;
+  readonly floorMinutes: number;
+  readonly ceilingMinutes: number;
 }
 
-export function nextCadence(currentMinutes: number, foundNovelty: boolean, policy: CadencePolicy): number {
-  const bounded = Math.min(policy.ceilingMinutes, Math.max(policy.floorMinutes, currentMinutes));
+function assertPositiveSafeInteger(value: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(
+      `Invalid cadence ${name}: expected a positive safe integer number of minutes, received ${value}.`,
+    );
+  }
+}
+
+/** Clamps the current cadence before adapting it, then enforces the relevant policy boundary. */
+export function nextCadence(current: number, foundNovelty: boolean, policy: CadencePolicy): number {
+  assertPositiveSafeInteger(current, 'current value');
+  assertPositiveSafeInteger(policy.floorMinutes, 'floor');
+  assertPositiveSafeInteger(policy.ceilingMinutes, 'ceiling');
+  if (policy.floorMinutes > policy.ceilingMinutes) {
+    throw new RangeError(
+      `Invalid cadence policy: floor ${policy.floorMinutes} minutes must not exceed ceiling ${policy.ceilingMinutes} minutes.`,
+    );
+  }
+
+  const clamped = Math.min(policy.ceilingMinutes, Math.max(policy.floorMinutes, current));
   return foundNovelty
-    ? Math.max(policy.floorMinutes, Math.round(bounded / 2))
-    : Math.min(policy.ceilingMinutes, Math.round(bounded * 1.5));
+    ? Math.max(policy.floorMinutes, Math.round(clamped / 2))
+    : Math.min(policy.ceilingMinutes, Math.round(clamped * 1.5));
 }

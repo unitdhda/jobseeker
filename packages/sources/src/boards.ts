@@ -1,34 +1,33 @@
-/**
- * Generic driver internals for server-rendered boards whose vacancy pages publish schema.org JobPosting. The board
- * definition enumerates listing pages, and discovery filters entries by title when no server-side search is
- * available. Carrying the real title matters because the candidate prefilter scores on it.
- */
 import * as v from 'valibot';
+import {
+  parseSourceKey,
+  parseSourceVacancyId,
+  type VacancyCandidate,
+  type VacancyInput,
+} from '@jobseeker/engine/contracts';
+import type { SearchPlan, SearchPlatform } from './contract.ts';
 import type { SourceContext } from './context.ts';
-import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import { jobPostings, structuredVacancy, VacancySearchCollector } from './http.ts';
-import type { SearchPlan } from './contract.ts';
-import type { SearchPlatform } from './contract.ts';
+import { jobPostings, plainText, structuredVacancy, VacancySearchCollector } from './http.ts';
 
-export interface BoardEntry { url: string; title: string; publishedAt?: string }
-
-export interface JsonLdBoard {
-  id: string;
-  name: string;
-  hosts: readonly string[];
-  /** Listing address for one page; these boards ignore text queries, so no query is sent. */
-  listing(page: number): string;
-  /** Extracts sourceId → {url, title} from listing HTML. */
-  entries(html: string, base: string): Map<string, BoardEntry>;
-  rules: string[];
+export interface BoardEntry {
+  readonly url: string;
+  readonly title: string;
+  readonly publishedAt?: string;
 }
 
-/** Every significant query word must occur in the listing title. */
+export interface JsonLdBoard {
+  readonly id: string;
+  readonly name: string;
+  readonly hosts: readonly string[];
+  listing(page: number): string;
+  entries(html: string, base: string): ReadonlyMap<string, BoardEntry>;
+  readonly rules: readonly string[];
+}
+
 export function postingMatchesQuery(title: string, query: string): boolean {
-  const words = query.toLowerCase().split(/[^\p{L}\p{N}+#]+/u).filter((word) => word.length > 2);
-  if (!words.length) return false;
-  const haystack = title.toLowerCase();
-  return words.every((word) => haystack.includes(word));
+  const words = query.toLocaleLowerCase().match(/[\p{L}\p{N}+#.]{2,}/gu) ?? [];
+  const haystack = title.toLocaleLowerCase();
+  return words.length > 0 && words.every((word) => haystack.includes(word));
 }
 
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
@@ -44,74 +43,59 @@ export type BoardSearchProfile = v.InferOutput<typeof boardSearchProfileSchema>;
 export type BoardSearch = BoardSearchProfile['searches'][number];
 
 export function boardPlatform(board: JsonLdBoard): SearchPlatform<typeof boardSearchProfileSchema> {
-  return {
-    id: board.id, name: board.name, hosts: board.hosts, schema: boardSearchProfileSchema,
-    // The whole board is listed whatever the query, so one enumeration serves every user's searches at once.
-    enumerates: true,
+  return Object.freeze({
+    id: board.id, name: board.name, hosts: Object.freeze([...new Set(board.hosts)]),
+    schema: boardSearchProfileSchema, enumerates: true,
     template: () => ({
       platform: board.id, version: 1,
-      purpose: `Public ${board.name} board. The whole board is listed and matched against the query by title.`,
-      jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }] },
-      capabilities: {
-        query: 'One concise role title; every word must appear in a listing title for the vacancy to be kept',
-        maxSearches: 8,
-      },
-      rules: [
-        'Each query contains one role title in the language expected by the platform.',
-        'Keep queries short, because every word must occur in the vacancy title.',
-        'Put translations and alternative titles in separate searches.',
-        'Do not combine titles with slash, pipe, parentheses, or boolean syntax.',
-        'Do not add adjacent occupations, generic industries, location, salary, or work-format terms.',
-        ...board.rules,
-      ],
+      purpose: `Search the enumerated public ${board.name} board by local title matching.`,
+      jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct evidence', query: 'role title' }] },
+      capabilities: { maxSearches: 8, enumerates: true },
+      rules: Object.freeze(['Return at most 8 searches.', 'Every significant query word must occur in the title.', ...board.rules]),
     }),
-  };
+  });
 }
 
-function pause(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 250 + Math.random() * 400));
-}
-
-export async function scrapeJsonLdBoard(board: JsonLdBoard, plan: SearchPlan<BoardSearch>, context: SourceContext,
-  maxPages: number): Promise<{ seen: number; discovered: number }> {
-  const id = board.id;
-  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
-    context.recordListingCandidate);
-  if (!plan.searches.length) return collector.result();
-  const pages = Math.max(1, Math.min(maxPages, context.limits.searchPageBudgetPerPlatform));
-  const seenIds = new Set<string>();
-  for (let page = 1; page <= pages; page++) {
-    const url = board.listing(page);
-    try {
-      context.trace('scrape.search.request', { platform: id, page, url });
-      const { html, url: resolved } = await context.http.fetchSourceHtml(id, url);
-      const entries = board.entries(html, resolved);
-      let fresh = 0;
-      for (const [sourceId, entry] of entries) {
-        if (seenIds.has(sourceId)) continue;
-        seenIds.add(sourceId); fresh++;
-        const planned = plan.searches.find((candidate) => postingMatchesQuery(entry.title, candidate.search.query));
-        if (!planned) continue;
-        await collector.record({ source: id, sourceId, url: entry.url, searchName: planned.search.name,
-          title: entry.title, summary: entry.title, publishedAt: entry.publishedAt }, planned.recipients);
-        if (collector.complete) break;
-      }
-      context.trace('scrape.search.result', { platform: id, page, found: entries.size, fresh, kept: collector.result().seen });
-      if (collector.complete || !fresh) break;
-      await pause();
-    } catch (error) {
-      console.error(`Failed to read ${board.name} listing page ${page}: ${context.errorMessage(error)}`);
-      break;
+export async function scrapeJsonLdBoard(
+  board: JsonLdBoard, plan: SearchPlan<BoardSearch>, context: SourceContext, maxPages: number,
+) {
+  if (!Number.isSafeInteger(maxPages) || maxPages < 1) throw new RangeError('Invalid JSON-LD board page limit.');
+  const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
+  const pages = Math.min(maxPages, context.limits.searchPageBudgetPerPlatform);
+  for (let page = 1; page <= pages && !collector.complete; page += 1) {
+    const listingUrl = board.listing(page);
+    const response = await context.http.fetchSourceHtml(board.id, listingUrl);
+    const entries = board.entries(response.html, response.url);
+    if (!(entries instanceof Map) && typeof entries?.[Symbol.iterator] !== 'function') {
+      throw new TypeError(`JSON-LD board ${board.id} returned invalid entries.`);
+    }
+    if (entries.size === 0) break;
+    for (const [sourceId, entry] of entries) {
+      if (collector.complete) break;
+      if (!entry.title.trim()) throw new TypeError(`JSON-LD board ${board.id} returned an empty title.`);
+      const matches = plan.searches.filter(({ search }) => postingMatchesQuery(entry.title, search.query));
+      if (matches.length === 0) continue;
+      const publishedAt = entry.publishedAt ? new Date(entry.publishedAt) : undefined;
+      if (publishedAt && !Number.isFinite(publishedAt.getTime())) throw new TypeError(`JSON-LD board ${board.id} returned an invalid date.`);
+      await collector.record({ source: parseSourceKey(board.id), sourceId: parseSourceVacancyId(sourceId),
+        url: context.http.sourceUrl(board.id, entry.url), searchName: matches[0]!.search.name,
+        title: entry.title, ...(publishedAt ? { publishedAt } : {}) },
+      matches.flatMap(({ recipients }) => recipients));
     }
   }
   return collector.result();
 }
 
-export async function normalizeJsonLdCandidate(board: JsonLdBoard, candidate: VacancyCandidate,
-  context: SourceContext): Promise<VacancyInput | null> {
-  if (candidate.source !== board.id) throw new Error(`Board provider ${board.id} cannot normalize ${candidate.source}.`);
-  const page = await context.http.fetchSourceHtml(board.id, candidate.url);
-  const posting = jobPostings(page.html)[0];
-  if (!posting) return null;
+export async function normalizeJsonLdCandidate(
+  board: JsonLdBoard, candidate: VacancyCandidate, context: SourceContext,
+): Promise<VacancyInput | null> {
+  if (candidate.source !== board.id) throw new Error(`JSON-LD board ${board.id} cannot normalize source ${candidate.source}.`);
+  const page = await context.http.fetchSourceHtml(board.id, candidate.url.href);
+  const postings = jobPostings(page.html);
+  if (postings.length === 0) return null;
+  const title = candidate.title.toLocaleLowerCase();
+  const posting = postings.find((item) => plainText(item.title).toLocaleLowerCase() === title)
+    ?? (postings.length === 1 ? postings[0] : undefined);
+  if (!posting) throw new Error(`JSON-LD board ${board.id} detail contains no matching JobPosting.`);
   return structuredVacancy(board.id, candidate.sourceId, page.url, candidate.searchName, posting);
 }

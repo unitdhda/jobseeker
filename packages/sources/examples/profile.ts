@@ -2,7 +2,7 @@ import * as v from 'valibot';
 import type { PlatformValidationTemplate } from '@jobseeker/sources';
 
 const label = v.pipe(v.string(), v.trim(), v.minLength(2), v.maxLength(100));
-export const companySearchProfileSchema = v.strictObject({
+export const textSearchProfileSchema = v.strictObject({
   version: v.literal(1),
   searches: v.pipe(v.array(v.strictObject({
     name: label,
@@ -10,26 +10,17 @@ export const companySearchProfileSchema = v.strictObject({
     query: label,
   })), v.maxLength(8)),
 });
+export type TextSearchProfile = v.InferOutput<typeof textSearchProfileSchema>;
+export type TextSearch = TextSearchProfile['searches'][number];
 
-export type CompanySearch = v.InferOutput<typeof companySearchProfileSchema>['searches'][number];
-
-export function companySearchTemplate(id: string, employer: string): PlatformValidationTemplate {
+export function textSearchTemplate(id: string, name: string, language: string, rules: readonly string[] = []): PlatformValidationTemplate {
   return {
-    platform: id,
-    version: 1,
-    purpose: `Public first-party vacancies operated by ${employer}.`,
-    jsonShape: {
-      version: 1,
-      searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'one role title' }],
-    },
-    capabilities: { query: 'One concise Russian or established English technical role title', maxSearches: 8 },
-    rules: [
-      'Each query contains one role title without boolean syntax, slashes, pipes, or parentheses.',
-      'Put translations and alternative titles in separate searches.',
-      'Do not add adjacent occupations, generic industries, location, salary, or work-format terms.',
-    ],
+    platform: id, version: 1, purpose: `Generate title searches for ${name}.`,
+    jsonShape: { version: 1, searches: [{ name: 'CV track', rationale: 'Direct CV evidence', query: 'role title' }] },
+    capabilities: { maxSearches: 8, queryLanguage: language },
+    rules: ['Return at most 8 searches.', 'Use one concise role title per query.',
+      'Do not include salary, location, or work-format terms.', ...rules],
   };
 }
 
-/** A shared helper, not a provider: the loader imports every module here, so this default export is a deliberate no-op. */
 export default function register(): void {}

@@ -1,12 +1,8 @@
 {
   "name": "@unitdhda/jobseeker",
-  "version": "0.1.12",
-  "description": "Self-hosted Telegram service that turns a CV into continuous vacancy monitoring, scoring, and tailored applications.",
+  "version": "0.2.0",
+  "description": "Self-hosted Telegram service for vacancy discovery, scoring, and tailored applications.",
   "license": "MIT",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/unitdhda/jobseeker.git"
-  },
   "type": "module",
   "bin": {
     "jobseeker": "bin/jobseeker.mjs"

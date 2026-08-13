@@ -1,64 +1,54 @@
-import { Bot, type Context } from 'grammy';
-import { config } from '../config.ts';
-import { getTelegramUser, type TelegramIdentity } from '../postgres.ts';
-import type { Locale, Messages } from '../i18n/index.ts';
+import { Bot, GrammyError, HttpError, type Context } from 'grammy';
+import { maximumCvBytes } from '@jobseeker/cv/extract';
+import { parseUserId } from '@jobseeker/engine/contracts';
+import type { Locale, TelegramIdentity } from '@jobseeker/store';
 
-
-/**
- * Every update carries the locale of the person who sent it, resolved once by the access middleware, so handlers
- * never have to ask the store again or guess.
- */
-export interface LocaleFlavor { locale: Locale; t: Messages }
-export type BotContext = Context & LocaleFlavor;
-
-let bot: Bot<BotContext> | undefined;
-let botConfigured = false;
-export function getBot(): Bot<BotContext> {
-  const token = process.env.TELEGRAM_BOT_TOKEN;
-  if (!token) throw new Error('TELEGRAM_BOT_TOKEN is required.');
-  return bot ??= new Bot<BotContext>(token);
-}
-export function ownerUserId(): string {
-  if (!config.telegramUserId) throw new Error('TELEGRAM_USER_ID is required for the bot owner.');
-  return config.telegramUserId;
-}
-export async function targetChat(userId: string): Promise<string> {
-  const user = await getTelegramUser(userId);
-  if (!user) throw new Error(`Telegram user ${userId} was not found.`);
-  return user.chatId;
-}
-export function identity(ctx: Context): TelegramIdentity | null {
-  if (!ctx.from || !ctx.chat || ctx.chat.type !== 'private') return null;
-  const displayName = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || ctx.from.username || String(ctx.from.id);
-  // The client language is the opening guess at someone's language; the store keeps it only until they choose one.
-  return { userId: String(ctx.from.id), chatId: String(ctx.chat.id), username: ctx.from.username, displayName,
-    languageCode: ctx.from.language_code };
-}
-export function telegramRetryAfter(error:unknown):number|null{
-  const value=error as {error_code?:unknown;parameters?:{retry_after?:unknown};message?:unknown};
-  if(value?.error_code!==429&&!/429: Too Many Requests/i.test(String(value?.message??error)))return null;
-  const seconds=Number(value?.parameters?.retry_after);return Number.isFinite(seconds)&&seconds>0?seconds:1;
+export interface TelegramSendError {
+  readonly kind: 'rate-limit' | 'blocked' | 'bad-request' | 'network' | 'unknown';
+  readonly retryAfterSeconds?: number;
+  readonly message: string;
 }
 
-export function retryAfterMilliseconds(error: unknown): number {
-  const seconds = Number((error as { parameters?: { retry_after?: number } })?.parameters?.retry_after ?? 0);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1_000 + 250 : 0;
+export function telegramIdentity(from: Context['from'], locale: Locale | null): TelegramIdentity {
+  if (!from || from.is_bot) throw new TypeError('Telegram update has no human sender identity.');
+  return Object.freeze({ userId: parseUserId(String(from.id)), username: from.username,
+    firstName: from.first_name, lastName: from.last_name, ...(locale ? { locale } : {}) });
 }
-export function isUnchangedMessageError(error: unknown): boolean {
-  return /message is not modified/i.test(error instanceof Error ? error.message : String(error));
-}
-export function isMissingTelegramMessageError(error:unknown):boolean{
-  return /message to edit not found|message to delete not found|message can't be edited|message_id_invalid/i
-    .test(error instanceof Error?error.message:String(error));
-}
-/**
- * Progress indicators are transient status, not something to be woken up for: cycles run around the clock and CV
- * tailoring is already in the foreground for the user who asked. They are sent without a notification and are not
- * gated by the delivery window, which applies only to alerts and digests.
- */
 
-export function isBotConfigured(): boolean { return botConfigured; }
-export function markBotConfigured(): void { botConfigured = true; }
+export function telegramSendError(error: unknown): TelegramSendError {
+  if (error instanceof GrammyError) {
+    const retry = typeof error.parameters.retry_after === 'number' ? error.parameters.retry_after : undefined;
+    if (retry !== undefined) return Object.freeze({ kind: 'rate-limit', retryAfterSeconds: retry, message: 'Telegram rate limit.' });
+    if (error.error_code === 403) return Object.freeze({ kind: 'blocked', message: 'Telegram recipient blocked the bot.' });
+    return Object.freeze({ kind: 'bad-request', message: `Telegram API request failed (${error.error_code}).` });
+  }
+  if (error instanceof HttpError) return Object.freeze({ kind: 'network', message: 'Telegram network request failed.' });
+  return Object.freeze({ kind: 'unknown', message: 'Telegram send failed.' });
+}
 
-/** The lifecycle needs to stop only a bot that was ever created; getBot would create one just to stop it. */
-export function currentBot(): Bot<BotContext> | undefined { return bot; }
+export function createTelegramApi(token: string): Bot {
+  if (!/^\d{6,12}:[A-Za-z0-9_-]{30,}$/u.test(token)) throw new TypeError('Invalid Telegram bot token syntax.');
+  return new Bot(token);
+}
+
+export async function downloadTelegramFile(input: { readonly token: string; readonly filePath: string;
+  readonly maximumBytes?: number; readonly fetch?: typeof globalThis.fetch }): Promise<Uint8Array> {
+  const maximum = input.maximumBytes ?? maximumCvBytes;
+  if (!input.filePath || input.filePath.startsWith('/') || input.filePath.includes('..')) throw new TypeError('Telegram returned an invalid file path.');
+  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new RangeError('Invalid Telegram download limit.');
+  const response = await (input.fetch ?? globalThis.fetch)(`https://api.telegram.org/file/bot${input.token}/${input.filePath}`, { redirect: 'error' });
+  if (!response.ok || !response.body) throw new Error(`Telegram file download failed (${response.status}).`);
+  const declared = response.headers.get('content-length');
+  if (declared !== null && (!/^\d+$/u.test(declared) || Number(declared) > maximum)) throw new RangeError('Telegram file exceeds the byte limit.');
+  const reader = response.body.getReader(); const chunks: Uint8Array[] = []; let total = 0;
+  try {
+    while (true) {
+      const value = await reader.read(); if (value.done) break;
+      total += value.value.byteLength; if (total > maximum) throw new RangeError('Telegram file exceeds the byte limit.');
+      chunks.push(value.value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(total); let offset = 0;
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+  return bytes;
+}

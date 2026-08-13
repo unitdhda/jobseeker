@@ -1,50 +1,42 @@
 #!/usr/bin/env node
-// Thin launcher: everything lives in the built CLI bundle next to this file's package.
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { parseEnv } from 'node:util';
+import { readFile } from 'node:fs/promises';
 
-const args = process.argv.slice(2);
-const forwarded = [];
-let envFile;
-for (let index = 0; index < args.length; index++) {
-  const argument = args[index];
-  if (argument === '--env-file') {
-    envFile = args[++index];
-    if (!envFile) {
-      console.error('jobseeker: --env-file requires a path.');
-      process.exit(2);
+function envArguments(argv) {
+  const paths = []; const rest = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const value = argv[index];
+    if (value === '--env-file') {
+      const path = argv[++index]; if (!path) throw new Error('--env-file requires a path.'); paths.push(path); continue;
     }
-  } else if (argument.startsWith('--env-file=')) {
-    envFile = argument.slice('--env-file='.length);
-    if (!envFile) {
-      console.error('jobseeker: --env-file requires a path.');
-      process.exit(2);
+    if (value.startsWith('--env-file=')) {
+      const path = value.slice('--env-file='.length); if (!path) throw new Error('--env-file requires a path.'); paths.push(path); continue;
     }
-  } else forwarded.push(argument);
-}
-if (envFile) {
-  const path = resolve(envFile);
-  let values;
-  try { values = parseEnv(readFileSync(path, 'utf8')); }
-  catch (error) {
-    console.error(`jobseeker: cannot load environment file ${path}: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit(1);
+    rest.push(value);
   }
-  for (const [name, value] of Object.entries(values)) {
-    if (value != null && process.env[name] === undefined) process.env[name] = value;
+  return { paths, rest };
+}
+function unquote(value) {
+  if (value.startsWith('"') && value.endsWith('"')) return JSON.parse(value);
+  if (value.startsWith("'") && value.endsWith("'")) return value.slice(1, -1);
+  return value.replace(/\s+#.*$/u, '').trim();
+}
+async function loadEnvironment(path) {
+  const source = await readFile(path, 'utf8');
+  for (const rawLine of source.replace(/^\uFEFF/u, '').split(/\r?\n/u)) {
+    const line = rawLine.trim(); if (!line || line.startsWith('#')) continue;
+    const match = /^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/u.exec(line);
+    if (!match) throw new Error(`Invalid environment line in ${path}.`);
+    const key = match[1]; if (Object.hasOwn(process.env, key)) continue;
+    process.env[key] = unquote(match[2]);
   }
 }
-process.argv.splice(2, process.argv.length - 2, ...forwarded);
 
-const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const built = join(packageRoot, 'dist', 'cli.mjs');
-if (existsSync(built)) {
-  await import(built);
-} else if (process.versions.bun) {
-  await import(join(packageRoot, 'src', 'cli.ts'));
-} else {
-  console.error('jobseeker: dist/cli.mjs is missing. Run the package build (bun run build) first.');
-  process.exit(1);
+try {
+  const { paths, rest } = envArguments(process.argv.slice(2));
+  for (const path of paths) await loadEnvironment(path);
+  const cli = await import('../dist/cli.js');
+  process.exitCode = await cli.main(rest);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : 'Jobseeker launcher failed.');
+  process.exitCode = 1;
 }

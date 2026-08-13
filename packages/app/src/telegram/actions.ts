@@ -1,201 +1,131 @@
-import { InlineKeyboard, InputFile } from 'grammy';
-import { config } from '../config.ts';
-import {
-  getCvHash,
-  getCvSource,
-  getScoredVacancy,
-  getSearchProfile,
-  isApprovedUser,
-  markApplicationDelivered,
-  type ScoredVacancy,
-  deliveredArtifact, saveDeliveredArtifact,
-} from '../postgres.ts';
-import { careerProfilePlatformId, parseStoredCareerProfile, type StoredCareerProfile } from '@jobseeker/engine';
-import { refreshUserInWorker, tailorApplicationInWorker } from '../worker-client.ts';
-import { type ApplicationArtifact } from '../postgres.ts';
-import { maximumCvBytes } from '../cv.ts';
-import { readResponseBytes } from '../http.ts';
-import { errorMessage } from '../observability.ts';
-import { getBot, targetChat } from './api.ts';
-import { enabledSourceProviderIds } from '../vacancies/registry.ts';
-import {
-  artifactLabels,
-  platformLabel,
-  profileSearchTerms,
-  searchProfileMessage,
-  sourceLabel,
-  type SearchProfilePlatformView,
-} from './format.ts';
-import { startEditableIndicator, type ApplicationLoader, type EditableIndicator } from './indicators.ts';
-import { type UserWorkflowLease } from './workflow-lock.ts';
-import { messages, userLocale, type Locale } from '../i18n/index.ts';
+import { maximumCvBytes } from '@jobseeker/cv/extract';
+import { parseCvContentHash, type CvContentHash, type UserId } from '@jobseeker/engine/contracts';
+import type { ApplicationArtifact, DeliveredArtifact } from '@jobseeker/store';
+import type { CvParser, CvImportPreview } from '../cv.ts';
+import type { JobWorkerClient } from '../worker-client.ts';
+import type { WorkflowSessionPorts, UserWorkflowClaim } from './workflow-lock.ts';
+import { claimUserWorkflow, resumeUserWorkflow } from './workflow-lock.ts';
 
+const uploadSessionKind = 'cv-upload';
+const confirmationSessionKind = 'cv-confirm';
+const uploadTtlMs = 15 * 60_000;
+const allowedMediaTypes = new Set(['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'text/markdown', 'text/plain']);
 
-const refreshingUsers = new Set<string>();
-async function startApplicationLoader(userId: string, applyId: string,
-  artifact: ApplicationArtifact, locale: Locale): Promise<ApplicationLoader | null> {
-  const indicator = await startEditableIndicator(userId, `${artifactLabels(locale)[artifact].loader} · ${applyId}`);
-  return indicator ? { setTask: (task) => indicator.setLabel(task), stop: () => indicator.stop() } : null;
+export interface CvActionPorts extends WorkflowSessionPorts {
+  getTelegramSession<TResult>(userId: UserId, kind: string): Promise<TResult | null>;
+  setTelegramSession(userId: UserId, kind: string, state: unknown, ttlMs: number): Promise<void>;
+  deleteTelegramSession(userId: UserId, kind: string): Promise<void>;
+  stageCvSource: Parameters<CvParser['parse']>[0] extends never ? never : (userId: UserId, filename: string,
+    cvHash: CvContentHash, extraction: Awaited<ReturnType<CvParser['parse']>>['extraction']) => Promise<void>;
+  discardStagedCvSource(userId: UserId): Promise<void>;
+  confirmStagedCvSource(userId: UserId): Promise<boolean>;
+  getCvHash(userId: UserId): Promise<CvContentHash | null>;
+}
+export interface CvUploadDocument {
+  readonly filename: string; readonly mediaType?: string; readonly declaredSize: number;
+  download(): Promise<Uint8Array>;
+}
+export type CvUploadResult =
+  | { readonly kind: 'busy'; readonly claim: Extract<UserWorkflowClaim, { claimed: false }> }
+  | { readonly kind: 'preview'; readonly preview: CvImportPreview; readonly token: string }
+  | { readonly kind: 'invalid'; readonly error: string };
+
+export async function armCvUpload(ports: CvActionPorts, userId: UserId): Promise<boolean> {
+  if (await ports.getTelegramSession(userId, uploadSessionKind)) return false;
+  await ports.setTelegramSession(userId, uploadSessionKind, { armedAt: new Date().toISOString() }, uploadTtlMs);
+  return true;
+}
+function validUpload(document: CvUploadDocument): string | null {
+  if (!document.filename.trim() || document.filename.length > 255) return 'Invalid CV filename.';
+  if (!Number.isSafeInteger(document.declaredSize) || document.declaredSize < 1 || document.declaredSize > maximumCvBytes) return 'CV file is too large.';
+  if (document.mediaType && !allowedMediaTypes.has(document.mediaType.toLowerCase())) return 'Unsupported CV media type.';
+  return null;
 }
 
-function applicationFailureMessage(error:unknown,retryId:string,artifact:ApplicationArtifact,locale:Locale):string{
-  const message=error instanceof Error?error.message:String(error);
-  const text=messages(locale).application;
-  if(/daily tailored-cv limit/i.test(message))
-    return text.withId(text.cvLimit(config.userDailyApplicationLimit),retryId);
-  if(/daily cover-letter limit/i.test(message))
-    return text.withId(text.letterLimit(config.userDailyCoverLetterLimit),retryId);
-  if(/vacancy not found|scored vacancy .* was not found/i.test(message))return text.gone(retryId);
-  if(/connection terminated|connection timeout|server closed the connection|socket hang up/i.test(message))
-    return text.storeUnavailable(retryId);
-  return text.failed(text.artifacts[artifact].noun,retryId);
-}
-async function generateAndSendApplication(userId: string, vacancyId: number, chat: string,
-  artifact: ApplicationArtifact, lease: UserWorkflowLease): Promise<void> {
-  let loader: ApplicationLoader | null = null; let vacancy: ScoredVacancy | null = null;
-  const locale = await userLocale(userId); const text = messages(locale);
+export async function processCvUpload(input: { readonly ports: CvActionPorts; readonly parser: CvParser;
+  readonly userId: UserId; readonly document: CvUploadDocument; readonly errorMessage?: (error: unknown) => string }): Promise<CvUploadResult> {
+  if (!await input.ports.getTelegramSession(input.userId, uploadSessionKind)) return { kind: 'invalid', error: 'CV upload is not armed.' };
+  const validation = validUpload(input.document); if (validation) return { kind: 'invalid', error: validation };
+  const claim = await claimUserWorkflow(input.ports, input.userId, 'cv-import');
+  if (!claim.claimed) return Object.freeze({ kind: 'busy', claim });
   try {
-    vacancy = await getScoredVacancy(userId, vacancyId);
-    if (!vacancy) throw new Error('Vacancy not found.');
-    const api = getBot().api;
-    // A repeat request for an artifact built from the current CV resends what was already delivered: a Telegram
-    // file_id upload costs nothing and no LLM run or daily-limit slot is spent on work that already happened.
-    const cvHash = await getCvHash(userId);
-    const stored = await deliveredArtifact(userId, vacancyId, artifact);
-    if (stored && cvHash && stored.cvSha256 === cvHash) {
-      if (stored.fileId) await api.sendDocument(chat, stored.fileId, {
-        caption: text.application.cvCaption(vacancy.name).slice(0, 1024) });
-      else if (stored.text) await api.sendMessage(chat, stored.text, { link_preview_options: { is_disabled: true } });
-      else throw new Error(`Stored ${artifact} artifact is empty.`);
-      return;
-    }
-    loader = await startApplicationLoader(userId,vacancy.applyId,artifact,locale);
-    const documents = await tailorApplicationInWorker(userId, vacancyId, artifact);
-    if (!await isApprovedUser(userId)) throw new Error('User access was revoked during application generation.');
-    loader?.setTask(artifactLabels(locale)[artifact].sending);
-    const deliveredAt = new Date().toISOString();
-    if (documents.tailoredCvPdf) {
-      const sent = await api.sendDocument(chat, new InputFile(documents.tailoredCvPdf, `cv-${vacancyId}.pdf`), {
-        caption: text.application.cvCaption(vacancy.name).slice(0, 1024),
-      });
-      if (cvHash && sent.document?.file_id) await saveDeliveredArtifact(userId, vacancyId, artifact,
-        { cvSha256: cvHash, fileId: sent.document.file_id, deliveredAt }).catch((saveError) =>
-        console.warn(`Could not store delivered cv artifact: ${errorMessage(saveError)}`));
-    } else if (documents.coverLetter) {
-      await api.sendMessage(chat, documents.coverLetter, { link_preview_options: { is_disabled: true } });
-      if (cvHash) await saveDeliveredArtifact(userId, vacancyId, artifact,
-        { cvSha256: cvHash, text: documents.coverLetter, deliveredAt }).catch((saveError) =>
-        console.warn(`Could not store delivered letter artifact: ${errorMessage(saveError)}`));
-    } else throw new Error(`Application worker returned no ${artifact}.`);
-    await markApplicationDelivered(userId, vacancyId, artifact); await loader?.stop();
+    const bytes = await input.document.download();
+    if (!(bytes instanceof Uint8Array) || bytes.byteLength < 1 || bytes.byteLength > maximumCvBytes) throw new RangeError('Downloaded CV exceeds the byte limit.');
+    const parsed = await input.parser.parse(input.document.filename, input.document.mediaType, bytes);
+    const hash = parseCvContentHash(parsed.preview.sha256);
+    await input.ports.stageCvSource(input.userId, input.document.filename, hash, parsed.extraction);
+    await input.ports.deleteTelegramSession(input.userId, uploadSessionKind);
+    await input.ports.setTelegramSession(input.userId, confirmationSessionKind,
+      { token: claim.lease.state.token, cvHash: hash, preview: parsed.preview }, uploadTtlMs);
+    return Object.freeze({ kind: 'preview', preview: parsed.preview, token: claim.lease.state.token });
   } catch (error) {
-    await loader?.stop().catch((stopError)=>console.warn(`Could not stop application indicator: ${errorMessage(stopError)}`));
-    console.error(`Application generation failed: ${errorMessage(error)}`);
-    const keyboard = new InlineKeyboard().text(text.application.retryButton, `${artifact}:${vacancyId}`);
-    // Without the vacancy row there is no link to offer and no source to name, so the retry button stands alone
-    // rather than pointing at a guessed provider.
-    if (vacancy?.url) keyboard.url(text.common.openAt(sourceLabel(vacancy.source, locale)), vacancy.url);
-    const retryId=vacancy?.applyId??String(vacancyId);
-    await getBot().api.sendMessage(chat, applicationFailureMessage(error,retryId,artifact,locale),
-      { reply_markup: keyboard }).catch((notificationError)=>
-      console.error(`Could not send application failure notice: ${errorMessage(notificationError)}`));
-  } finally {
-    await lease.release().catch((releaseError)=>console.warn(`Could not release application workflow: ${errorMessage(releaseError)}`));
+    await claim.lease.release().catch(() => false);
+    return Object.freeze({ kind: 'invalid', error: (input.errorMessage?.(error)
+      ?? (error instanceof Error ? error.message : 'CV processing failed.')).slice(0, 500) });
   }
-}
-export async function runApplication(userId:string,vacancyId:number,chat:string,artifact:ApplicationArtifact,
-  lease:UserWorkflowLease):Promise<void>{
-  const task=generateAndSendApplication(userId,vacancyId,chat,artifact,lease);
-  if(config.telegramMode==='webhook'){await task;return;}
-  void task.catch((error)=>console.error(`Detached application task failed: ${errorMessage(error)}`));
 }
 
-export async function cvStatus(userId: string, locale: Locale): Promise<string> {
-  const cv = await getCvSource(userId);
-  return cv ? messages(locale).cv.present : messages(locale).cv.absent;
-}
-export async function downloadTelegramFile(fileId: string, declaredSize?: number): Promise<Uint8Array> {
-  if (declaredSize != null && declaredSize > maximumCvBytes) throw new Error('CV document exceeds the 20 MB limit.');
-  const file = await getBot().api.getFile(fileId);
-  if (!file.file_path || file.file_path.includes('..') || file.file_path.startsWith('/')) {
-    throw new Error('Telegram returned an invalid file path.');
-  }
-  const response = await fetch(`https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${file.file_path}`,
-    { redirect: 'error', signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`Telegram file download failed: ${response.status}`);
-  return readResponseBytes(response, maximumCvBytes);
-}
-export async function searchProfileResult(userId: string, locale: Locale): Promise<{ text: string; complete: boolean }> {
-  const cv = await getCvSource(userId);
-  if (!cv) return { text: messages(locale).profile.cvMissing, complete: false };
-  const career = parseStoredCareerProfile(
-    await getSearchProfile<StoredCareerProfile>(userId, careerProfilePlatformId), cv.cvSha256,
-  );
-  const platforms: SearchProfilePlatformView[] = [];
-  for (const platformId of enabledSourceProviderIds) {
-    platforms.push({ label: platformLabel(platformId),
-      terms: profileSearchTerms(await getSearchProfile(userId, platformId)) });
-  }
-  const text = searchProfileMessage({ filename: cv.originalFilename,
-    tracks: career?.tracks.map((track) => track.name) ?? [], platforms }, locale);
-  // A constrained platform may legitimately have no supported search, so one ready platform is enough.
-  return { text, complete: Boolean(career) && platforms.some((platform) => platform.terms.length > 0) };
+interface ConfirmationState { readonly token: string; readonly cvHash: CvContentHash; readonly preview: CvImportPreview }
+export async function confirmCvUpload(input: { readonly ports: CvActionPorts; readonly worker: Pick<JobWorkerClient, 'request'>; readonly userId: UserId }): Promise<boolean> {
+  const state = await input.ports.getTelegramSession<ConfirmationState>(input.userId, confirmationSessionKind);
+  if (!state) return false;
+  const lease = await resumeUserWorkflow(input.ports, input.userId, state.token, 'cv-import'); if (!lease) return false;
+  try {
+    if (!await input.ports.confirmStagedCvSource(input.userId)) return false;
+    await input.ports.deleteTelegramSession(input.userId, confirmationSessionKind);
+    const hash = await input.ports.getCvHash(input.userId); if (!hash || hash !== state.cvHash) throw new Error('Confirmed CV hash mismatch.');
+    if (!await lease.handoff('profile-refresh')) throw new Error('CV workflow lease was lost before profile refresh.');
+    await input.worker.request({ type: 'refresh-user', userId: input.userId, cvHash: hash });
+    return true;
+  } finally { await lease.release().catch(() => false); }
 }
 
-export function cvRetryKeyboard(action: 'cv:retry' | 'cv:refresh', locale: Locale): InlineKeyboard {
-  const text = messages(locale).cv;
-  return new InlineKeyboard().text(action === 'cv:retry' ? text.retryUploadButton : text.retryRefreshButton, action);
+export async function rejectCvUpload(ports: CvActionPorts, userId: UserId): Promise<boolean> {
+  const state = await ports.getTelegramSession<ConfirmationState>(userId, confirmationSessionKind); if (!state) return false;
+  const lease = await resumeUserWorkflow(ports, userId, state.token, 'cv-import');
+  await ports.discardStagedCvSource(userId); await ports.deleteTelegramSession(userId, confirmationSessionKind);
+  await ports.setTelegramSession(userId, uploadSessionKind, { armedAt: new Date().toISOString() }, uploadTtlMs);
+  await lease?.release().catch(() => false); return true;
 }
-export async function finishNotice(userId: string, indicator: EditableIndicator | null, text: string,
-  keyboard?: InlineKeyboard): Promise<void> {
-  if (indicator) { await indicator.finish(text, keyboard); return; }
-  await getBot().api.sendMessage(await targetChat(userId), text,
-    { parse_mode: 'HTML', reply_markup: keyboard, link_preview_options: { is_disabled: true } });
+
+export interface ApplicationActionPorts extends WorkflowSessionPorts {
+  saveDeliveredArtifact(userId: UserId, vacancyId: number, artifact: ApplicationArtifact,
+    value: Omit<DeliveredArtifact, 'deliveredAt'>, deliveredAt: Date): Promise<boolean>;
+  markApplicationDelivered(userId: UserId, vacancyId: number, artifact: ApplicationArtifact): Promise<boolean>;
 }
-/** Takes ownership of both the indicator and lease; each always ends when the detached refresh does. */
-export async function refreshSearchesAfterCvUpload(userId: string, indicator: EditableIndicator | null,
-  lease: UserWorkflowLease, locale: Locale): Promise<void> {
-  const notice = messages(locale).cv;
-  const deliver = async (text: string, keyboard?: InlineKeyboard): Promise<void> => {
-    const current = indicator; indicator = null;
-    await finishNotice(userId, current, text, keyboard);
-  };
-  let cvHash: string | null = null;
-  let readFailed = false;
-  try { cvHash = await getCvHash(userId); }
-  catch (error) { readFailed = true; console.error(`Could not read the stored CV of user ${userId}: ${errorMessage(error)}`); }
-  if (!cvHash) {
-    await deliver(readFailed ? notice.unreadable : notice.missing,
-      cvRetryKeyboard(readFailed ? 'cv:refresh' : 'cv:retry', locale));
-    await lease.release().catch((error) => console.warn(`Could not release profile workflow: ${errorMessage(error)}`));
-    return;
-  }
-  // The durable lease is the real exclusion mechanism. This local check is only a last line of defence if a lease
-  // expires while a worker is still returning.
-  if (refreshingUsers.has(userId)) {
-    await deliver(notice.refreshInFlight);
-    await lease.release().catch((error) => console.warn(`Could not release duplicate profile workflow: ${errorMessage(error)}`));
-    return;
-  }
-  refreshingUsers.add(userId);
-  void (async () => {
-    try {
-      await refreshUserInWorker(userId, cvHash);
-      if (await isApprovedUser(userId) && await getCvHash(userId) === cvHash) {
-        const result = await searchProfileResult(userId, locale);
-        await deliver(result.text, result.complete ? undefined : cvRetryKeyboard('cv:refresh', locale));
+export interface ApplicationTransport {
+  sendDocument(userId: UserId, bytes: Uint8Array, filename: string): Promise<{ readonly fileId: string }>;
+  sendFileId(userId: UserId, fileId: string): Promise<void>;
+  sendText(userId: UserId, text: string): Promise<void>;
+}
+export async function deliverApplicationArtifact(input: { readonly ports: ApplicationActionPorts; readonly worker: Pick<JobWorkerClient, 'request'>;
+  readonly transport: ApplicationTransport; readonly userId: UserId; readonly vacancyId: number; readonly artifact: ApplicationArtifact }): Promise<'busy' | 'cached' | 'generated'> {
+  const workflowKind = input.artifact === 'cv' ? 'tailored-cv' : 'cover-letter';
+  const claim = await claimUserWorkflow(input.ports, input.userId, workflowKind);
+  if (!claim.claimed) return 'busy';
+  try {
+    const result = await input.worker.request({ type: 'tailor-application', userId: input.userId,
+      vacancyId: input.vacancyId, artifact: input.artifact });
+    if (result.type !== 'tailor-application' || result.artifact !== input.artifact) throw new TypeError('Worker returned the wrong application artifact.');
+    if (result.artifact === 'cv') {
+      if (result.kind === 'cached') { if (!result.fileId) throw new TypeError('Cached CV has no file ID.');
+        await input.transport.sendFileId(input.userId, result.fileId); return 'cached'; }
+      if (!result.pdf) throw new TypeError('Generated CV has no PDF bytes.');
+      const sent = await input.transport.sendDocument(input.userId, result.pdf, `tailored-${input.vacancyId}.pdf`);
+      if (!await input.ports.saveDeliveredArtifact(input.userId, input.vacancyId, 'cv', { cvSha256: result.cvHash, fileId: sent.fileId }, new Date())) {
+        throw new Error('Delivered CV metadata could not be saved.');
       }
-    } catch (error) {
-      if (await isApprovedUser(userId) && await getCvHash(userId)) {
-        console.error(`Search-profile refresh failed for user ${userId}`,
-          error instanceof Error ? error.message : String(error));
-        await deliver(notice.refreshFailed, cvRetryKeyboard('cv:refresh', locale));
+    } else {
+      await input.transport.sendText(input.userId, result.text);
+      if (result.kind === 'cached') return 'cached';
+      if (!await input.ports.saveDeliveredArtifact(input.userId, input.vacancyId, 'letter', { cvSha256: result.cvHash, text: result.text }, new Date())) {
+        throw new Error('Delivered letter metadata could not be saved.');
       }
-    } finally {
-      refreshingUsers.delete(userId);
-      await indicator?.stop().catch((error) => console.warn(`Could not stop CV indicator: ${errorMessage(error)}`));
-      await lease.release().catch((error) => console.warn(`Could not release profile workflow: ${errorMessage(error)}`));
     }
-  })();
+    if (!await input.ports.markApplicationDelivered(input.userId, input.vacancyId, input.artifact)) {
+      throw new Error('Application delivery state could not be saved.');
+    }
+    return 'generated';
+  } finally { await claim.lease.release().catch(() => false); }
 }
-

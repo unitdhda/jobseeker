@@ -1,76 +1,46 @@
-# Single-host CLI deployment: one container polls Telegram and runs the engine loop in-process. The application
-# comes from the published npm package pinned in package.json; vacancy sources and any inference bridge are
-# extensions in ./extensions.
-#
-# OWNERSHIP — this host is the sole Telegram receiver and the sole engine loop. No other process anywhere may
-# poll the same bot token or run with RUN_JOBS=true, and no webhook may be configured while polling is on.
-#
-# Expected deployment directory:
-#   compose.yaml            this file
-#   Dockerfile              the image recipe beside it
-#   package.json            {"dependencies": {"@unitdhda/jobseeker": "<version>"}}
-#   seccomp-chromium.json   copied from the repository's docker/ directory
-#   extensions/             this deployment's own modules and their package.json
-#   .env                    configuration and secrets
-#
-#   docker compose --env-file .env up -d --build
-#
-# Extensions may require their own services — an inference sidecar, a proxy — plus the environment that selects
-# them. Add those services here, keep them on the private network, publish no host port for them, and make the
-# application depend on their health.
 services:
   jobseeker:
     build:
       context: .
-    image: jobseeker-cli:local
+      dockerfile: Dockerfile
+    image: unitdhda/jobseeker:0.2.0
     restart: unless-stopped
-    stop_grace_period: 70s
     init: true
+    env_file:
+      - ./jobseeker.env
+    environment:
+      TELEGRAM_MODE: polling
+      RUN_JOBS: "true"
+      HH_BROWSER_DATA_PATH: /app/data/hh-browser
+      JOBSEEKER_EXTENSIONS: /app/extensions
+      AI_AUTH_FILE: /app/data/auth.json
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - jobseeker-data:/app/data
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
-      # Chromium needs a permissive-enough profile; required only by browser-backed source extensions.
-      - seccomp:./seccomp-chromium.json
-    pids_limit: 512
+      - seccomp=../seccomp-chromium.json
+    pids_limit: 256
     mem_limit: 2g
-    cpus: 1.5
+    cpus: 2.0
     tmpfs:
-      - /tmp:rw,nosuid,nodev,size=768m,mode=1777
-    env_file:
-      - .env
-    environment:
-      # Sole receiver and sole producer on this host. Both must be false everywhere else.
-      TELEGRAM_MODE: "polling"
-      RUN_JOBS: "true"
-      RUN_INITIAL_CYCLE: "false"
-      JOBSEEKER_EXTENSIONS: /app/extensions
-      # Model roles are deployment choices; nothing is hardcoded. Set them in .env.
-      AI_MODEL: "${AI_MODEL:?set AI_MODEL}"
-      AI_THINKING_LEVEL: "${AI_THINKING_LEVEL:-high}"
-      AI_SCORING_MODEL: "${AI_SCORING_MODEL:?set AI_SCORING_MODEL}"
-      AI_SCORING_THINKING_LEVEL: "${AI_SCORING_THINKING_LEVEL:-medium}"
-      # A 2-vCPU host cannot sustain large concurrency settings.
-      USER_WORKFLOW_CONCURRENCY: "${USER_WORKFLOW_CONCURRENCY:-2}"
-      SCORE_AGENT_CONCURRENCY_MIN: "2"
-      SCORE_AGENT_CONCURRENCY_MAX: "4"
-      NORMALIZE_SOURCE_CONCURRENCY: "${NORMALIZE_SOURCE_CONCURRENCY:-3}"
-      DISCOVERY_TICK_CONCURRENCY: "${DISCOVERY_TICK_CONCURRENCY:-3}"
-      HH_BROWSER_DATA_PATH: /app/data/hh-browser
-      PLAYWRIGHT_BROWSERS_PATH: /ms-playwright
-      POSTGRES_SSL: "require"
-      PORT: "3000"
-    volumes:
-      - jobseeker-data:/app/data
-    ports:
-      - "127.0.0.1:${APP_PORT:-3000}:3000"
+      - /tmp:rw,noexec,nosuid,nodev,size=256m,mode=1777
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     networks:
-      - jobseeker
+      - private
 
 volumes:
   jobseeker-data:
 
 networks:
-  jobseeker:
+  private:
     driver: bridge

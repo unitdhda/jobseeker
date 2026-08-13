@@ -1,58 +1,104 @@
-// The store composition must run before any module touches a repository.
-import './postgres.ts';
 import { timingSafeEqual } from 'node:crypto';
+import type { ServerType } from '@hono/node-server';
 import { serve } from '@hono/node-server';
 import { Hono } from 'hono';
-import { config } from './config.ts';
-import { errorMessage } from './observability.ts';
-import {
-  claimTelegramUpdate, closePostgresPool, completeTelegramUpdate, failTelegramUpdate, persistenceReady,
-} from './postgres.ts';
+import type { TelegramMode } from './config.ts';
 
-const app=new Hono();
-app.get('/health',c=>c.json({ok:true}));
-app.get('/ready',async c=>{
-  try{return c.json({ok:true,persistence:await persistenceReady()});}
-  catch(error){console.error(`Readiness check failed: ${errorMessage(error)}`);return c.json({ok:false},503);}
-});
-app.post('/telegram/webhook',async c=>{
-  if(config.telegramMode!=='webhook')return c.json({ok:false},404);
-  const secret=config.telegramWebhookSecret;
-  if(!secret||!/^[-A-Za-z0-9_]{32,256}$/.test(secret)){
-    console.error('TELEGRAM_WEBHOOK_SECRET must contain 32-256 URL-safe characters.');return c.json({ok:false},503);
-  }
-  const provided=Buffer.from(c.req.header('X-Telegram-Bot-Api-Secret-Token')??'');
-  const expected=Buffer.from(secret);
-  if(provided.length!==expected.length||!timingSafeEqual(provided,expected))return c.json({ok:false},401);
-  let update:unknown;try{update=await c.req.json();}catch{return c.json({ok:false},400);}
-  const updateId=Number((update as {update_id?:unknown})?.update_id);
-  if(!Number.isSafeInteger(updateId)||updateId<0)return c.json({ok:false},400);
-  if(!await claimTelegramUpdate(updateId))return c.json({ok:true,duplicate:true});
-  try{
-    const {handleTelegramWebhookUpdate}=await import('./telegram/bot.ts');
-    await handleTelegramWebhookUpdate(update);await completeTelegramUpdate(updateId);return c.json({ok:true});
-  }catch(error){
-    await failTelegramUpdate(updateId,error).catch(()=>undefined);
-    console.error(`Telegram webhook update failed: ${errorMessage(error)}`);return c.json({ok:false},500);
-  }
-});
-
-let stopRuntime=async():Promise<void>=>{};
-async function initializeRuntime():Promise<void>{
-  if(!config.runJobs&&config.telegramMode!=='polling'&&config.telegramMode!=='webhook')return;
-  const [telegram,worker,engine]=await Promise.all([import('./telegram/bot.ts'),import('./worker-client.ts'),import('./engine-main.ts')]);
-  telegram.startTelegramBot();
-  if(config.telegramMode==='webhook')await telegram.initializeTelegramWebhookMode();
-  if(config.runJobs)engine.startEngineLoop();
-  stopRuntime=async()=>{await engine.stopEngineLoop();await telegram.stopTelegramBot();await worker.stopJobWorker();};
+export interface WebPorts {
+  persistenceReady(): Promise<'postgres'>;
+  claimTelegramUpdate(updateId: number, retryProcessing?: boolean): Promise<boolean>;
+  completeTelegramUpdate(updateId: number): Promise<boolean>;
+  failTelegramUpdate(updateId: number, error: unknown): Promise<boolean>;
+  handleTelegramUpdate(update: unknown): Promise<void>;
 }
-await initializeRuntime();
-
-const port=Number(process.env.PORT??3000);
-if(!Number.isSafeInteger(port)||port<1||port>65_535)throw new Error('PORT must be an integer between 1 and 65535.');
-const server=serve({fetch:app.fetch,port});let stopping=false;
-async function stop():Promise<void>{
-  if(stopping)return;stopping=true;await stopRuntime();
-  await new Promise<void>(resolve=>server.close(()=>resolve()));await closePostgresPool();
+export interface WebOptions {
+  readonly telegramMode: TelegramMode;
+  readonly webhookSecret?: string;
+  readonly ports: WebPorts;
+  readonly maximumWebhookBytes?: number;
 }
-process.once('SIGTERM',()=>void stop());process.once('SIGINT',()=>void stop());
+
+export function validWebhookSecret(value: string | undefined): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{32,256}$/u.test(value);
+}
+export function webhookSecretMatches(expected: string, received: string | undefined): boolean {
+  if (!validWebhookSecret(expected) || typeof received !== 'string') return false;
+  const left = Buffer.from(expected); const right = Buffer.from(received);
+  return left.byteLength === right.byteLength && timingSafeEqual(left, right);
+}
+function updateId(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) throw new TypeError('Invalid Telegram update ID.');
+  return value as number;
+}
+async function boundedJson(request: Request, maximum: number): Promise<unknown> {
+  const declared = request.headers.get('content-length');
+  if (declared && (!/^\d+$/u.test(declared) || Number(declared) > maximum)) throw new RangeError('Webhook body is too large.');
+  const bytes = new Uint8Array(await request.arrayBuffer());
+  if (bytes.byteLength > maximum) throw new RangeError('Webhook body is too large.');
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+
+export function createWebApp(options: WebOptions): Hono {
+  const app = new Hono(); const maximum = options.maximumWebhookBytes ?? 1024 * 1024;
+  if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 10 * 1024 * 1024) throw new RangeError('Invalid webhook body limit.');
+  app.get('/health', (context) => context.json({ ok: true }));
+  app.get('/ready', async (context) => {
+    try { const persistence = await options.ports.persistenceReady(); return context.json({ ok: true, persistence }); }
+    catch { return context.json({ ok: false }, 503); }
+  });
+  if (options.telegramMode === 'webhook') {
+    if (!validWebhookSecret(options.webhookSecret)) throw new TypeError('Webhook mode requires a valid URL-safe secret.');
+    app.post('/telegram/webhook', async (context) => {
+      if (!webhookSecretMatches(options.webhookSecret!, context.req.header('x-telegram-bot-api-secret-token'))) {
+        return context.json({ ok: false }, 401);
+      }
+      let payload: unknown; let id: number;
+      try {
+        payload = await boundedJson(context.req.raw, maximum);
+        if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) throw new TypeError('Invalid webhook JSON.');
+        id = updateId((payload as Record<string, unknown>).update_id);
+      } catch (error) {
+        return context.json({ ok: false, error: error instanceof RangeError ? 'too_large' : 'invalid' }, error instanceof RangeError ? 413 : 400);
+      }
+      const claimed = await options.ports.claimTelegramUpdate(id, true);
+      if (!claimed) return context.json({ ok: true, duplicate: true });
+      try {
+        await options.ports.handleTelegramUpdate(payload);
+        await options.ports.completeTelegramUpdate(id);
+        return context.json({ ok: true });
+      } catch (error) {
+        await options.ports.failTelegramUpdate(id, error).catch(() => false);
+        return context.json({ ok: false }, 500);
+      }
+    });
+  }
+  return app;
+}
+
+export interface HttpServerHandle { readonly server: ServerType; close(): Promise<void> }
+export function startHttpServer(app: Hono, port: number, hostname = '0.0.0.0', serverFactory = serve): HttpServerHandle {
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new RangeError('HTTP port must be 1 through 65535.');
+  const server = serverFactory({ fetch: app.fetch, port, hostname }); let closed = false;
+  return Object.freeze({ server, close: async () => { if (closed) return; closed = true;
+    await new Promise<void>((resolve, reject) => server.close((error?: Error) => error ? reject(error) : resolve())); } });
+}
+
+export interface ShutdownComponents {
+  readonly stopEngine: () => Promise<void>;
+  readonly stopTelegram: () => Promise<void>;
+  readonly stopWorker: () => Promise<void>;
+  readonly stopHttp: () => Promise<void>;
+  readonly closeApplication: () => Promise<void>;
+}
+export function createOrderedShutdown(components: ShutdownComponents): () => Promise<void> {
+  let promise: Promise<void> | undefined;
+  return () => promise ??= (async () => {
+    const failures: unknown[] = [];
+    for (const operation of [components.stopEngine, components.stopTelegram, components.stopWorker,
+      components.stopHttp, components.closeApplication]) {
+      try { await operation(); } catch (error) { failures.push(error); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Ordered application shutdown failed.');
+  })();
+}

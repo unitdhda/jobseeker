@@ -1,127 +1,89 @@
-/**
- * Лаборатория Касперского first-party careers. The site is a Next.js App Router app whose only data channel is
- * RSC payloads, but its search route and vacancy pages are fully server-rendered, so discovery reads the search
- * page's plain anchors and normalization reads the vacancy page's h1/main text.
- */
+import * as v from 'valibot';
 import type { VacancyCandidate, VacancyInput } from '@jobseeker/engine/contracts';
-import type { JsonObject } from '@jobseeker/sources';
+import type { SearchPlan, SearchPlatform } from '@jobseeker/sources';
+import {
+  assertToolkitInitialized,
+  createSourceProvider,
+  examplePages,
+  hashedVacancy,
+  htmlText,
+  initToolkit,
+  parseSourceKey,
+  parseSourceVacancyId,
+  plainText,
+  VacancySearchCollector,
+  type SourceExtensionApi,
+} from './toolkit.ts';
+import { textSearchProfileSchema, textSearchTemplate, type TextSearch } from './profile.ts';
 
-import { companySearchProfileSchema, companySearchTemplate } from './profile.ts';
-import { createSourceProvider, examplePages, hashedVacancy, htmlText, initToolkit, mainVacancyText, VacancySearchCollector, type SourceExtensionApi } from './toolkit.ts';
-
-const id = 'kaspersky';
-const employer = 'Лаборатория Касперского';
 const origin = 'https://careers.kaspersky.ru';
-
-export interface KasperskySourceOptions { maxPages?: number }
-
 export function kasperskySearchUrl(query: string): string {
-  const url = new URL('/vacancies/search', origin);
-  url.searchParams.set('q', query);
-  return url.toString();
+  const url = new URL('/vacancies', origin); url.searchParams.set('search', query); return url.href;
 }
-
-export interface KasperskyEntry { sourceId: string; url: string; title: string }
-
-export function kasperskyEntries(html: string): KasperskyEntry[] {
-  const found = new Map<string, KasperskyEntry>();
-  for (const match of html.matchAll(/href="\/vacancy\/(\d+)"[^>]*>(?:<span[^>]*>)?([^<]{3,200})/g)) {
-    const sourceId = match[1]!, title = htmlText(match[2]!);
-    if (title && !found.has(sourceId)) found.set(sourceId, { sourceId, url: `${origin}/vacancy/${sourceId}`, title });
+export interface KasperskyEntry { readonly sourceId: string; readonly url: string; readonly title: string }
+export function kasperskyEntries(html: string): readonly KasperskyEntry[] {
+  const output = new Map<string, KasperskyEntry>();
+  for (const match of html.matchAll(/<a\b[^>]*href=["'](?<url>\/vacancies\/[^"']+)["'][^>]*>(?<title>[\s\S]*?)<\/a>/giu)) {
+    const url = match.groups?.url; const title = htmlText(match.groups?.title ?? ''); const sourceId = url?.split('/').filter(Boolean).at(-1);
+    if (url && title && sourceId) output.set(sourceId, { sourceId, url: new URL(url, origin).href, title });
   }
-  return [...found.values()];
+  return Object.freeze([...output.values()]);
 }
-
-/** City and skill names ride in the page's RSC payload with backslash-escaped quotes. */
-export function kasperskyFlightNames(html: string, field: 'cities' | 'skills'): string[] {
-  const block = new RegExp(`\\\\?"${field}\\\\?":\\\\?\\[(.{0,600}?)\\\\?\\]`, 's').exec(html)?.[1] ?? '';
-  const names: string[] = [];
-  for (const match of block.matchAll(/\\?"name\\?":\\?"((?:[^"\\]|\\\\.)+?)\\?"/g)) {
-    const value = htmlText(match[1]!.replaceAll('\\"', '"'));
-    if (value && !names.includes(value)) names.push(value);
+export function kasperskyFlightNames(html: string, field: 'cities' | 'skills'): readonly string[] {
+  for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/giu)) {
+    if (!match[1]?.includes(field)) continue;
+    try {
+      const parsed = JSON.parse(match[1]); const values = parsed?.[field];
+      if (Array.isArray(values)) return Object.freeze(values.map((value: unknown) => plainText(value)).filter(Boolean));
+    } catch { /* Other server-component scripts may still be usable. */ }
   }
-  return names;
+  return [];
 }
-
+function detailText(html: string): { readonly title: string; readonly description: string } | null {
+  const title = htmlText(/<h1\b[^>]*>([\s\S]*?)<\/h1>/iu.exec(html)?.[1] ?? '');
+  const description = htmlText(/<main\b[^>]*>([\s\S]*?)<\/main>/iu.exec(html)?.[1] ?? '');
+  return title && description.length >= 20 ? { title, description } : null;
+}
 export function kasperskyVacancyInput(candidate: VacancyCandidate, html: string, resolvedUrl: string,
-  validateUrl: (source: string, input: string) => string): VacancyInput | null {
-  const detail = mainVacancyText(html);
-  if (!detail) return null;
-  // The page's <main> continues into similar-vacancy teasers and application chrome after the advert body.
-  const description = detail.description.split(/Похожие вакансии|Similar vacancies/)[0]!.trim();
-  return hashedVacancy({
-    source: id,
-    sourceId: candidate.sourceId,
-    name: detail.title,
-    employer,
-    area: kasperskyFlightNames(html, 'cities').join(', ') || 'Не указано',
-    salaryFrom: null,
-    salaryTo: null,
-    salaryCurrency: null,
-    salaryGross: null,
-    experience: '',
-    employment: '',
-    schedule: '',
-    workFormat: '',
-    description,
-    keySkills: kasperskyFlightNames(html, 'skills').slice(0, 30),
-    url: validateUrl(id, resolvedUrl),
-    publishedAt: candidate.publishedAt,
-    sourceQuery: candidate.searchName,
-  });
+  safeUrl: (source: string, input: string) => string): VacancyInput | null {
+  const detail = detailText(html); if (!detail) return null;
+  return hashedVacancy({ source: candidate.source, sourceId: candidate.sourceId, name: detail.title, employer: 'Лаборатория Касперского',
+    area: kasperskyFlightNames(html, 'cities').join(', ') || 'Не указано', salary: null,
+    experience: { kind: 'unspecified' }, employment: 'unspecified', schedule: 'unspecified', workFormat: 'unspecified',
+    description: detail.description, keySkills: kasperskyFlightNames(html, 'skills'), url: new URL(safeUrl('kaspersky', resolvedUrl)),
+    publishedAt: candidate.publishedAt, sourceQuery: candidate.searchName });
 }
-
-/** Fresh Kaspersky provider; register it in any createSources() collection. */
-export function kasperskySource(options: KasperskySourceOptions = {}) {
-  void options;
-  return createSourceProvider({
-    id,
-    name: 'Kaspersky Careers',
-    hosts: ['careers.kaspersky.ru'],
-    schema: companySearchProfileSchema,
-    template: () => companySearchTemplate(id, employer),
-    async discover(plan, context) {
-      const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit,
-        context.recordListingCandidate);
-      searches: for (const { search, recipients } of plan.searches) {
-        try {
-          context.trace('scrape.search.request', { platform: id });
-          const page = await context.http.fetchSourceHtml(id, kasperskySearchUrl(search.query));
-          const entries = kasperskyEntries(page.html);
-          context.trace('scrape.search.result', { platform: id, found: entries.length });
-          for (const entry of entries) {
-            await collector.record({
-              source: id, sourceId: entry.sourceId, url: context.http.safeVacancyUrl(id, entry.url),
-              searchName: search.name, title: entry.title, summary: entry.title,
-              payload: entry as unknown as JsonObject,
-            }, recipients);
-            if (collector.complete) break searches;
-          }
-        } catch (error) {
-          console.error(`Failed to search Kaspersky Careers: ${context.errorMessage(error)}`);
-        }
-      }
+export function kasperskySource(options: { readonly maxPages?: number } = {}) {
+  assertToolkitInitialized(); const maxPages = options.maxPages ?? 1;
+  if (!Number.isSafeInteger(maxPages) || maxPages < 1) throw new RangeError('Invalid Kaspersky page limit.');
+  const platform: SearchPlatform<typeof textSearchProfileSchema> = { id: 'kaspersky', name: 'Kaspersky Careers',
+    hosts: ['careers.kaspersky.ru'], schema: textSearchProfileSchema,
+    template: () => textSearchTemplate('kaspersky', 'Kaspersky Careers', 'Russian or English') };
+  return createSourceProvider({ ...platform,
+    async discover(plan: SearchPlan<TextSearch>, context) {
+      const collector = new VacancySearchCollector(context.limits.searchNewVacancyLimit, context.recordListingCandidate);
       const users = new Set(plan.searches.flatMap(({ recipients }) => recipients.map(({ userId }) => userId)));
+      const pages = Math.min(maxPages, Math.max(1, Math.floor(context.limits.searchPageBudgetPerPlatform / Math.max(1, plan.searches.length))));
+      for (const planned of plan.searches) for (let page = 1; page <= pages && !collector.complete; page += 1) {
+        const url = new URL(kasperskySearchUrl(planned.search.query)); if (page > 1) url.searchParams.set('page', String(page));
+        const response = await context.http.fetchSourceHtml('kaspersky', url.href); const entries = kasperskyEntries(response.html);
+        if (entries.length === 0) break;
+        for (const entry of entries) await collector.record({ source: parseSourceKey('kaspersky'),
+          sourceId: parseSourceVacancyId(entry.sourceId), url: context.http.sourceUrl('kaspersky', entry.url),
+          searchName: planned.search.name, title: entry.title }, planned.recipients);
+      }
       return { searches: plan.searches.length, users: users.size, ...collector.result() };
     },
     async normalize(candidates, context) {
       const results = new Map<string, VacancyInput | null | Error>();
-      for (const candidate of candidates) {
-        try {
-          const page = await context.http.fetchSourceHtml(id, candidate.url);
-          results.set(candidate.sourceId,
-            kasperskyVacancyInput(candidate, page.html, page.url, context.http.safeVacancyUrl));
-        } catch (error) {
-          results.set(candidate.sourceId, error instanceof Error ? error : new Error(String(error)));
-        }
-      }
-      return results;
+      await Promise.all(candidates.map(async (candidate) => {
+        try { const page = await context.http.fetchSourceHtml('kaspersky', candidate.url.href);
+          results.set(candidate.sourceId, kasperskyVacancyInput(candidate, page.html, page.url, context.http.safeVacancyUrl)); }
+        catch (error) { results.set(candidate.sourceId, error instanceof Error ? error : new Error(context.errorMessage(error))); }
+      })); return results;
     },
   });
 }
-
-/** Registers this example; the loader calls it once the file sits in an extensions directory. */
 export default function register(api: SourceExtensionApi): void {
-  initToolkit(api);
-  api.registerSourceProvider(kasperskySource({ maxPages: examplePages(api) }));
+  initToolkit(api); api.registerSourceProvider(kasperskySource({ maxPages: examplePages(api) }));
 }

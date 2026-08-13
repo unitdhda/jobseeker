@@ -1,34 +1,56 @@
-/**
- * The life of a match, as the schema's single source of truth. Store repositories enforce these transitions, so an
- * illegal move — re-alerting something delivered, un-scoring a score — fails loudly instead of corrupting memory.
- */
 export type MatchState =
-  | 'matched'   // above the lexical floor, waiting for the scoring queue
-  | 'queued'    // claimed by a scoring batch
-  | 'scored'    // has an llm_score, waiting for delivery routing
-  | 'alerted' | 'digested' | 'skipped'  // delivered (or declined by the user); terminal for discovery
-  | 'applying' | 'applied'              // application flow after delivery
-  | 'expired';                          // aged out before delivery
+  | 'matched'
+  | 'queued'
+  | 'scored'
+  | 'alerted'
+  | 'digested'
+  | 'skipped'
+  | 'applying'
+  | 'applied'
+  | 'expired';
 
-const transitions: Record<MatchState, readonly MatchState[]> = {
-  matched: ['queued', 'expired'],
-  queued: ['scored', 'matched', 'expired'],   // back to matched when a scoring batch fails
-  scored: ['alerted', 'digested', 'skipped', 'expired'],
-  alerted: ['applying', 'skipped'],
-  digested: ['applying', 'skipped'],
-  skipped: ['applying'],                       // a user may return to a listing they skipped
-  applying: ['applied', 'alerted', 'digested', 'skipped'], // failure returns to the delivered state
-  applied: [],
-  expired: [],
+const allowedTransitions: Readonly<Record<MatchState, ReadonlySet<MatchState>>> = {
+  matched: new Set(['queued', 'expired']),
+  queued: new Set(['scored', 'matched', 'expired']),
+  scored: new Set(['alerted', 'digested', 'skipped', 'expired']),
+  alerted: new Set(['applying', 'skipped']),
+  digested: new Set(['applying', 'skipped']),
+  skipped: new Set(['applying']),
+  applying: new Set(['applied', 'alerted', 'digested', 'skipped']),
+  applied: new Set(),
+  expired: new Set(),
 };
 
+export const deliveredStates = Object.freeze([
+  'alerted',
+  'digested',
+  'skipped',
+  'applying',
+  'applied',
+] as const satisfies readonly MatchState[]);
+
+export class MatchTransitionError extends Error {
+  readonly from: MatchState;
+  readonly to: MatchState;
+  readonly allowed: readonly MatchState[];
+
+  constructor(from: MatchState, to: MatchState, allowed: readonly MatchState[]) {
+    const explanation = allowed.length > 0
+      ? `allowed destinations are ${allowed.join(', ')}.`
+      : `${from} is terminal and permits no outgoing transitions.`;
+    super(`Invalid match transition from ${from} to ${to}: ${explanation}`);
+    this.name = 'MatchTransitionError';
+    this.from = from;
+    this.to = to;
+    this.allowed = Object.freeze([...allowed]);
+  }
+}
+
 export function canTransition(from: MatchState, to: MatchState): boolean {
-  return transitions[from]?.includes(to) ?? false;
+  return allowedTransitions[from].has(to);
 }
 
 export function assertTransition(from: MatchState, to: MatchState): void {
-  if (!canTransition(from, to)) throw new Error(`Illegal match transition ${from} -> ${to}.`);
+  if (canTransition(from, to)) return;
+  throw new MatchTransitionError(from, to, [...allowedTransitions[from]]);
 }
-
-/** States that mean the user has already seen this vacancy; nothing in these states may ever be delivered again. */
-export const deliveredStates: readonly MatchState[] = ['alerted', 'digested', 'skipped', 'applying', 'applied'];

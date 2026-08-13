@@ -1,0 +1,9 @@
+{
+  "name": "@jobseeker-extension/hh",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright": "1.62.0",
+    "valibot": "1.4.2"
+  }
+}

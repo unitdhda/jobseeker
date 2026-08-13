@@ -1,23 +1,63 @@
-import { extractCvDocument } from './cv.ts';
-import type { ExtractedCvDocument } from './cv.ts';
+import { createInterface } from 'node:readline';
+import { extractCvDocument } from '@jobseeker/cv/extract';
 
 interface CvWorkerRequest {
-  filename: string;
-  mediaType?: string;
-  bytes: Buffer | Uint8Array | { type: 'Buffer'; data: number[] };
+  readonly filename: string;
+  readonly mediaType?: string;
+  readonly bytesBase64: string;
 }
-type CvWorkerResponse = { ok: true; result: ExtractedCvDocument } | { ok: false; error: string };
 
-let handled = false;
-process.on('message', (request: CvWorkerRequest) => {
-  if (handled) return;
-  handled = true;
-  const input = request.bytes;
-  const bytes = input instanceof Uint8Array ? new Uint8Array(input.buffer, input.byteOffset, input.byteLength)
-    : input?.type === 'Buffer' && Array.isArray(input.data) ? Uint8Array.from(input.data) : new Uint8Array();
-  void extractCvDocument(request.filename, request.mediaType, bytes)
-    .then((result) => process.send?.({ ok: true, result } satisfies CvWorkerResponse))
-    .catch((error) => process.send?.({ ok: false,
-      error: error instanceof Error ? error.message : String(error) } satisfies CvWorkerResponse))
-    .finally(() => process.disconnect?.());
+interface SerializedError {
+  readonly name: string;
+  readonly code?: string;
+  readonly message: string;
+}
+
+function errorResult(error: unknown): { readonly ok: false; readonly error: SerializedError } {
+  const value = error instanceof Error ? error : new Error('Unknown CV parser failure.');
+  const code = 'code' in value && typeof value.code === 'string' ? value.code : undefined;
+  return {
+    ok: false,
+    error: { name: value.name, ...(code ? { code } : {}), message: value.message.slice(0, 1_000) },
+  };
+}
+
+async function handle(line: string): Promise<unknown> {
+  const request = JSON.parse(line) as Partial<CvWorkerRequest>;
+  if (typeof request.filename !== 'string' || typeof request.bytesBase64 !== 'string'
+    || (request.mediaType !== undefined && typeof request.mediaType !== 'string')) {
+    throw new TypeError('Invalid CV worker request.');
+  }
+  // Copy out of Node's Buffer-backed view so the domain boundary receives an ordinary Uint8Array.
+  const bytes = Uint8Array.from(Buffer.from(request.bytesBase64, 'base64'));
+  return {
+    ok: true,
+    extraction: await extractCvDocument(request.filename, request.mediaType, bytes),
+  };
+}
+
+const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
+let received = false;
+lines.on('line', async (line) => {
+  if (received) {
+    process.stdout.write(`${JSON.stringify(errorResult(new Error('CV worker accepts exactly one request.')))}\n`);
+    process.exitCode = 1;
+    lines.close();
+    return;
+  }
+  received = true;
+  try {
+    process.stdout.write(`${JSON.stringify(await handle(line))}\n`);
+  } catch (error) {
+    process.stdout.write(`${JSON.stringify(errorResult(error))}\n`);
+    process.exitCode = 1;
+  } finally {
+    lines.close();
+  }
+});
+lines.on('close', () => {
+  if (!received) {
+    process.stdout.write(`${JSON.stringify(errorResult(new Error('CV worker received no request.')))}\n`);
+    process.exitCode = 1;
+  }
 });

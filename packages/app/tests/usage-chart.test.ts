@@ -1,74 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { usageTimelineChart } from '../src/telegram/format.ts';
+import { fixedChart, usageStatus } from '../src/observability.ts';
 
-const start=Date.parse('2026-08-02T12:00:00Z');
-const hours=Array.from({length:25},(_,index)=>({
-  at:new Date(start+index*3_600_000).toISOString(),tokens:12_000,costUsd:0,
-}));
-
-test('usage timeline renders a fixed dual-axis rectangle with a marker on every hour',()=>{
-  const chart=usageTimelineChart(hours,'+00:00','ru'),lines=chart.split('\n');
-  assert.equal(lines.length,19);
-  const plotRows=lines.slice(3,15),left=plotRows[0]!.indexOf('│'),right=plotRows[0]!.lastIndexOf('│');
-  assert.equal(right-left-1,49);
-  for(const line of plotRows){
-    assert.equal(line.indexOf('│'),left);assert.equal(line.lastIndexOf('│'),right);
-    assert.match(line.slice(left+1,right),/^[ │╭╮─╯╰○●]+$/u);
-  }
-  // One marker per hour across 25 points — every second cell of the 49-wide plot — plus the legend's own symbol.
-  assert.equal((chart.match(/●/gu)??[]).length,26);
-  assert.equal((chart.match(/○/gu)??[]).length,26);
-  assert.match(chart,/12\s+16\s+20\s+00\s+04\s+08\s+12/u);
+test('usage chart is a fixed 25-point dual axis with independent scaling', () => {
+  const chart = fixedChart(Array.from({ length: 30 }, (_, index) => ({ primary: index, secondary: index === 29 ? 1000 : 0 })));
+  assert.equal([...chart.primary].length, 25); assert.equal([...chart.secondary].length, 25);
+  assert.notEqual(chart.primary, chart.secondary); assert.equal(chart.secondary.at(-1), '█');
+  assert.throws(() => fixedChart([], 24), /exactly 25/u);
 });
 
-test('coinciding markers merge into a half-filled circle',()=>{
-  const overlapping=hours.map(hour=>({...hour,costUsd:0.12}));
-  const chart=usageTimelineChart(overlapping,'+00:00','ru');
-  const plot=chart.split('\n').slice(3,15).join('\n');
-  assert.equal((plot.match(/◐/gu)??[]).length,25); // every hourly point coincides, so every one merges
-  assert.equal((plot.match(/○/gu)??[]).length,0);
-  assert.equal((plot.match(/●/gu)??[]).length,0);
-});
-
-test('shared cells are drawn with the heavy stroke',()=>{
-  const overlapping=hours.map(hour=>({...hour,costUsd:0.12}));
-  const plot=usageTimelineChart(overlapping,'+00:00','ru').split('\n').slice(3,15).join('\n');
-  assert.equal((plot.match(/━/gu)??[]).length,24); // the 49-cell shared run minus the 25 merged markers
-  assert.equal((plot.match(/─/gu)??[]).length,0);
-});
-
-test('cells owned by a single series keep the light stroke',()=>{
-  const diverging=hours.map((hour,index)=>({...hour,costUsd:index<12?0:0.12}));
-  const rows=usageTimelineChart(diverging,'+00:00','ru').split('\n').slice(3,15);
-  const plot=rows.map(row=>row.slice(row.indexOf('│')+1,row.lastIndexOf('│'))).join('\n');
-  assert.match(plot,/━/u);assert.match(plot,/─/u);
-  for(const row of plot.split('\n'))assert.match(row,/^[ │╭╮─╯╰○●◐┃┏┓━┛┗]*$/u);
-});
-
-test('usage timeline connects steep hourly slopes with verticals and corners',()=>{
-  const steep=hours.map((hour,index)=>({...hour,tokens:index===12?12_000:0}));
-  const chart=usageTimelineChart(steep,'+00:00','ru');
-  assert.match(chart,/│/u);assert.match(chart,/╭●/u);
-});
-
-// The money series is parked on the top row by a flat $0.12, so these shapes belong to the tokens.
-const plotOf=(points:typeof hours):string[]=>usageTimelineChart(points,'+00:00','ru').split('\n').slice(3,15)
-  .map(row=>row.slice(row.indexOf('│')+1,row.lastIndexOf('│')));
-
-test('a falling edge turns down over the point it lands on',()=>{
-  const plot=plotOf(hours.map((hour,index)=>({...hour,tokens:index<16?10_000:0,costUsd:0.12})));
-  assert.equal(plot[2]![31],'─'); // the row is held across the connector
-  assert.equal(plot[2]![32],'╮'); // and turns down on the landing point's own column
-  assert.equal(plot[6]![32],'│');
-  assert.equal(plot[11]![32],'●'); // the point itself closes the drop
-  assert.equal(plot[11]![31],' ');
-});
-
-test('a rising edge turns up in the connector right after the point',()=>{
-  const plot=plotOf(hours.map((hour,index)=>({...hour,tokens:index<=16?0:10_000,costUsd:0.12})));
-  assert.equal(plot[11]![32],'●');
-  assert.equal(plot[11]![33],'╯');
-  assert.equal(plot[6]![33],'│');
-  assert.equal(plot[2]![33],'╭');
+test('usage status localizes totals and emits bounded chart lines', () => {
+  const hours = Array.from({ length: 25 }, (_, index) => ({ at: new Date(index * 3600000), tokens: index * 100, costUsd: index / 10 }));
+  const output = usageStatus({ turns24h: 10, turnsTotal: 20, tokens24h: 1000, tokensTotal: 5000,
+    cost24h: 1.5, costTotal: 9.5, hours }, 'en');
+  assert.equal(output.length, 1); assert.match(output[0]!, /Usage — 24 hours/u); assert.match(output[0]!, /Tokens/u);
+  assert.match(output[0]!, /Money — right axis/u); assert.match(output[0]!, /<pre>/u);
+  assert.ok(output[0]!.length < 4096);
 });
