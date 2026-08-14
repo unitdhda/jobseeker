@@ -46,7 +46,9 @@ jobs:
       - name: Pack application only
         id: pack
         working-directory: packages/app
-        run: echo "tarball=$(npm pack --json | node -e \"let s='';process.stdin.on('data',d=>s+=d).on('end',()=>process.stdout.write(JSON.parse(s)[0].filename))\")" >> "$GITHUB_OUTPUT"
+        run: |
+          tarball="$(npm pack --json | node -e 'let s=""; process.stdin.on("data", d => s += d).on("end", () => process.stdout.write(JSON.parse(s)[0].filename))')"
+          printf 'tarball=%s\n' "$tarball" >> "$GITHUB_OUTPUT"
 
       - name: Install tarball externally and run Node CLI help
         env:
