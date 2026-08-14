@@ -241,7 +241,6 @@ upgrades.
 | How are CVs extracted, validated, and rendered? | [CV](packages/cv/README.md) |
 | How does persistence ownership work? | [Store](packages/store/README.md) |
 | How do I operate the published package? | [Application](packages/app/README.md) |
-| How was the 0.1.12 production schema moved forward? | [Schema compatibility](docs/production-schema-compatibility.md) |
 
 ## Project status
 
