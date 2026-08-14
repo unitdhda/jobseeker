@@ -2,6 +2,7 @@ node_modules/
 dist/
 data/
 auth/
+docs/implementation-from-scratch/
 .env
 .env.*
 !.env.example
