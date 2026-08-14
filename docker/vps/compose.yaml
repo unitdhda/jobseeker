@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: unitdhda/jobseeker:0.2.1
+    image: unitdhda/jobseeker:0.2.2
     restart: unless-stopped
     init: true
     env_file:
