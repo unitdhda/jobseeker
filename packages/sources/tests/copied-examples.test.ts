@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { cp, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { exampleSourceIds } from '../examples/catalogue.ts';
 import { loadExtensionsFrom, type JobseekerExtensionApi } from '../../app/src/extensions.ts';
@@ -10,6 +11,7 @@ import type { SourceExtensionApi } from '../examples/toolkit.ts';
 
 const _appApiSatisfiesCopiedExamples: JobseekerExtensionApi extends SourceExtensionApi ? true : never = true;
 void _appApiSatisfiesCopiedExamples;
+const valibotPackagePath = dirname(dirname(fileURLToPath(import.meta.resolve('valibot'))));
 
 test('example catalogue contains exactly the required unique provider IDs', () => {
   assert.deepEqual(exampleSourceIds, [
@@ -25,7 +27,7 @@ test('whole copied catalogue loads outside the monorepo with only valibot instal
   try {
     await cp(resolve('packages/sources/examples'), join(root, 'examples'), { recursive: true });
     await mkdir(join(root, 'node_modules'), { recursive: true });
-    await symlink('/Users/uf90/work/jobseeker/node_modules/valibot', join(root, 'node_modules', 'valibot'));
+    await symlink(valibotPackagePath, join(root, 'node_modules', 'valibot'));
     const loaded = await loadExtensionsFrom(root, { env: {} });
     assert.deepEqual(loaded.names, ['examples']);
     assert.deepEqual(loaded.sourceProviders.map((provider) => provider.id), exampleSourceIds);
@@ -40,7 +42,7 @@ test('combining whole catalogue and flat provider copies fails on duplicate IDs'
       await cp(resolve('packages/sources/examples', file), join(root, file));
     }
     await mkdir(join(root, 'node_modules'), { recursive: true });
-    await symlink('/Users/uf90/work/jobseeker/node_modules/valibot', join(root, 'node_modules', 'valibot'));
+    await symlink(valibotPackagePath, join(root, 'node_modules', 'valibot'));
     await assert.rejects(() => loadExtensionsFrom(root, { env: {} }), /Duplicate source provider ID: habr/u);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
@@ -50,7 +52,7 @@ test('copied toolkit runs outside the monorepo with only valibot installed and i
   try {
     await cp(resolve('packages/sources/examples/toolkit.ts'), join(root, 'toolkit.ts'));
     await mkdir(join(root, 'node_modules'), { recursive: true });
-    await symlink('/Users/uf90/work/jobseeker/node_modules/valibot', join(root, 'node_modules', 'valibot'));
+    await symlink(valibotPackagePath, join(root, 'node_modules', 'valibot'));
     await writeFile(join(root, 'provider.ts'), `
       import * as v from 'valibot';
       import { initToolkit, createSourceProvider } from './toolkit.ts';
