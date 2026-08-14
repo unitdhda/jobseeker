@@ -12,6 +12,15 @@ test('English has exactly the Russian-derived catalogue keys and contains no Cyr
   assert.equal(messages('ru'), ru); assert.equal(messages('en'), en);
 });
 
+test('start messages welcome users and explain the next action in both languages', () => {
+  for (const catalogue of [en, ru]) {
+    assert.match(catalogue.startUnknown, /<b>.+<\/b>/u); assert.match(catalogue.startUnknown, /\/request/u);
+    assert.match(catalogue.startPending, /<b>.+<\/b>/u);
+    assert.match(catalogue.startApproved, /<b>.+<\/b>/u); assert.match(catalogue.startApproved, /\/cv/u);
+    assert.match(catalogue.startApproved, /\/digest/u); assert.match(catalogue.startApproved, /\/privacy/u);
+  }
+});
+
 test('locale resolution prefers explicit stored choice, then supported client language, then deployment default', () => {
   assert.equal(resolveLocale({ stored: 'ru', explicitlySelected: true, clientLanguage: 'en-US', defaultLocale: 'en' }), 'ru');
   assert.equal(resolveLocale({ stored: 'ru', explicitlySelected: false, clientLanguage: 'en-US', defaultLocale: 'ru' }), 'en');

@@ -2,7 +2,7 @@ import type { Bot } from 'grammy';
 import type { Locale } from '@jobseeker/store';
 import type { UserId } from '@jobseeker/engine/contracts';
 import type { TelegramMode } from '../config.ts';
-import { ownerCommands, type TelegramCommand } from './bot.ts';
+import type { TelegramCommand } from './bot.ts';
 
 export interface TelegramReceiverBot {
   init(): Promise<void>;
@@ -61,16 +61,11 @@ export async function startTelegramOwnership(input: { readonly mode: TelegramMod
   let stopped = false; let pollingRun: Promise<void> | null = null;
   if (input.mode !== 'off') {
     await input.bot.init();
-    // Telegram has language-specific fallbacks; remove every app-controlled global scope before adding the owner menu.
+    // Telegram has language-specific fallbacks; clear every app-controlled menu, including stale owner scopes.
     for (const locale of [undefined, 'ru', 'en'] as const) {
       await input.bot.deleteCommands('default', locale);
       await input.bot.deleteCommands('all_private_chats', locale);
       if (input.ownerUserId) await input.bot.deleteUserCommands(input.ownerUserId, locale);
-    }
-    if (input.ownerUserId) {
-      await input.bot.setUserCommands(input.ownerUserId, undefined, ownerCommands);
-      await input.bot.setUserCommands(input.ownerUserId, 'ru', ownerCommands);
-      await input.bot.setUserCommands(input.ownerUserId, 'en', ownerCommands);
     }
   }
   if (input.mode === 'polling') { await input.bot.deleteWebhook(); pollingRun = input.bot.start(); }

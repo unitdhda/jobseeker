@@ -61,16 +61,16 @@ test('approved middleware resolves locale and touches identity exactly once befo
   assert.equal(value.calls.approved, 1); assert.equal(value.calls.owner, 0);
 });
 
-test('non-owner cannot invoke owner commands while only admin commands are advertised to the owner', async () => {
+test('owner commands are hidden and rejected before touching a non-owner identity', async () => {
   const denied = fixture(user({ isOwner: false }));
   assert.equal(await routeTelegramUpdate(update('/status'), denied.ports, denied.response, 'en', denied.handlers), null);
-  assert.equal(denied.calls.owner, 0); assert.equal(denied.calls.touch, 1); assert.equal(denied.calls.replies.length, 1);
+  assert.equal(denied.calls.owner, 0); assert.equal(denied.calls.touch, 0); assert.equal(denied.calls.replies.length, 1);
 
   const owner = fixture(user({ isOwner: true, locale: 'ru', localeSelected: true }));
   await routeTelegramUpdate(update('/status'), owner.ports, owner.response, 'en', owner.handlers);
-  assert.equal(owner.calls.owner, 1);
+  assert.equal(owner.calls.owner, 1); assert.equal(owner.calls.touch, 1);
   await routeTelegramUpdate(update('/language'), owner.ports, owner.response, 'en', owner.handlers);
-  assert.deepEqual(owner.calls.menus.at(-1)?.commands, ownerCommands);
+  assert.deepEqual(owner.calls.menus.at(-1)?.commands, []);
 });
 
 test('known but unapproved user gets explicit denial without identity touch', async () => {

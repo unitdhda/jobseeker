@@ -52,9 +52,9 @@ function identity(input: NonNullable<TelegramUpdateInput['from']>, locale: Local
   return Object.freeze({ userId: parseUserId(String(input.id)), username: input.username,
     firstName: input.firstName, lastName: input.lastName, ...(locale ? { locale } : {}) });
 }
-function menuFor(user: TelegramUser): readonly TelegramCommand[] {
-  // Menu visibility is intentionally narrower than command authorization: only administrative commands are advertised.
-  return user.isOwner ? ownerCommands : Object.freeze([]);
+function menuFor(_user: TelegramUser): readonly TelegramCommand[] {
+  // Commands remain intentionally unregistered. Authorization is enforced when a typed command is received.
+  return Object.freeze([]);
 }
 
 export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: TelegramAccessPorts,
@@ -99,12 +99,13 @@ export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: Tel
   }
   if (!command) return null;
   if (!existing || existing.status !== 'approved') { await response.reply(t.accessDenied, { locale }); return null; }
+  const ownerCommand = (ownerCommands as readonly string[]).includes(command);
+  if (ownerCommand && !existing.isOwner) { await response.reply(t.accessDenied, { locale }); return null; }
 
-  // Approved updates touch identity exactly once, after access is established and before handler execution.
+  // Authorized updates touch identity exactly once, after both access and owner checks pass.
   const user = await ports.touchTelegramUser(identity(input.from, clientLocale));
   const context = Object.freeze({ command, argument, user, locale, t });
-  if ((ownerCommands as readonly string[]).includes(command)) {
-    if (!user.isOwner) { await response.reply(t.accessDenied, { locale }); return null; }
+  if (ownerCommand) {
     await handlers.owner?.[command as OwnerCommand]?.(context); return context;
   }
   await handlers.approved?.[command as ApprovedCommand]?.(context); return context;

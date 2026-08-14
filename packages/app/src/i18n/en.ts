@@ -2,9 +2,9 @@ import type { Catalogue } from './ru.ts';
 
 export const en = {
   languageName: 'English',
-  startUnknown: 'This is a private vacancy-search bot. Send /request to ask for access.',
-  startPending: 'Your access request is awaiting the owner’s decision.',
-  startApproved: 'Access is approved. Upload or update your CV with /cv.',
+  startUnknown: '👋 <b>Welcome to Jobseeker</b>\n\nI find vacancies that match your experience, score them against your CV, and send the strongest opportunities here.\n\nThis is a private service. Send /request to ask the owner for access. You can switch languages at any time with /language.',
+  startPending: '👋 <b>Your request is with the owner</b>\n\nYou will be able to upload your CV and start receiving matched vacancies as soon as access is approved. There is nothing else you need to do right now.',
+  startApproved: '👋 <b>Welcome to Jobseeker</b>\n\nI continuously look for vacancies that match your CV, explain the fit, and help prepare a tailored CV or cover letter.\n\n<b>Get started</b>\n1. Send /cv and upload your CV file.\n2. Review and confirm the extracted profile.\n3. I will begin searching and send strong matches here.\n\nUse /digest for current matches, /search to find something in your history, /window to manage daily delivery, and /privacy for data controls.',
   accessRequested: 'Your access request was sent to the owner.',
   accessCooldown: (seconds: number) => `You can request access again in ${seconds} sec.`,
   accessDenied: 'This command requires approved access.',
