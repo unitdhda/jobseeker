@@ -117,7 +117,7 @@ export async function startService(): Promise<void> {
       telegram = await startTelegramOwnership({ mode: 'off', bot: {
         init: async () => undefined, start: async () => undefined, stop: async () => undefined,
         handleUpdate: async () => undefined, setWebhook: async () => undefined, deleteWebhook: async () => undefined,
-        deleteCommands: async () => undefined, deleteUserCommands: async () => undefined,
+        deleteCommands: async () => undefined, setCommands: async () => undefined, deleteUserCommands: async () => undefined,
         setUserCommands: async () => undefined } });
     }
     const scorePool = new AdaptiveTaskPool(config.scoreConcurrencyMin, config.scoreConcurrencyMax);

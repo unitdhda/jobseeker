@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseUserId } from '@jobseeker/engine/contracts';
+import { userCommands } from '../src/telegram/bot.ts';
 import { startTelegramOwnership, type TelegramReceiverBot } from '../src/telegram/ownership.ts';
 
 function bot() {
@@ -10,6 +11,7 @@ function bot() {
     stop: async () => { events.push('stop'); release(); }, handleUpdate: async () => { events.push('update'); },
     setWebhook: async (url, secret) => { events.push(`webhook:${url}:${secret.length}`); }, deleteWebhook: async () => { events.push('delete-webhook'); },
     deleteCommands: async (scope, locale) => { events.push(`delete:${scope}:${locale ?? '*'}`); },
+    setCommands: async (scope, locale, commands) => { events.push(`commands:${scope}:${locale ?? '*'}:${commands.join(',')}`); },
     deleteUserCommands: async (userId, locale) => { events.push(`delete-user:${userId}:${locale ?? '*'}`); },
     setUserCommands: async (userId, locale, commands) => { events.push(`user-commands:${userId}:${locale ?? '*'}:${commands.join(',')}`); } };
   return { value, events };
@@ -21,13 +23,13 @@ test('off mode initializes no receiver or command menu', async () => {
   await ownership.stop(); assert.deepEqual(value.events, []);
 });
 
-test('polling clears global and stale owner menus without registering commands', async () => {
+test('polling registers user commands globally while clearing stale owner menus', async () => {
   const value = bot(); const ownerUserId = parseUserId('123');
   const ownership = await startTelegramOwnership({ mode: 'polling', bot: value.value, ownerUserId });
   assert.deepEqual(value.events, ['init',
-    'delete:default:*', 'delete:all_private_chats:*', 'delete-user:123:*',
-    'delete:default:ru', 'delete:all_private_chats:ru', 'delete-user:123:ru',
-    'delete:default:en', 'delete:all_private_chats:en', 'delete-user:123:en',
+    'delete:default:*', 'delete:all_private_chats:*', `commands:all_private_chats:*:${userCommands.join(',')}`, 'delete-user:123:*',
+    'delete:default:ru', 'delete:all_private_chats:ru', `commands:all_private_chats:ru:${userCommands.join(',')}`, 'delete-user:123:ru',
+    'delete:default:en', 'delete:all_private_chats:en', `commands:all_private_chats:en:${userCommands.join(',')}`, 'delete-user:123:en',
     'delete-webhook', 'start']);
   assert.equal(ownership.polling, true); assert.equal(await ownership.handleWebhook({}, undefined), false);
   assert.equal(value.events.includes('update'), false); await ownership.stop(); await ownership.stop();
@@ -39,9 +41,9 @@ test('webhook mode never polls and requires exact secret for one update handler'
   const ownership = await startTelegramOwnership({ mode: 'webhook', bot: value.value,
     webhookUrl: 'https://bot.example.test/telegram/webhook', webhookSecret: secret });
   assert.deepEqual(value.events, ['init',
-    'delete:default:*', 'delete:all_private_chats:*',
-    'delete:default:ru', 'delete:all_private_chats:ru',
-    'delete:default:en', 'delete:all_private_chats:en',
+    'delete:default:*', 'delete:all_private_chats:*', `commands:all_private_chats:*:${userCommands.join(',')}`,
+    'delete:default:ru', 'delete:all_private_chats:ru', `commands:all_private_chats:ru:${userCommands.join(',')}`,
+    'delete:default:en', 'delete:all_private_chats:en', `commands:all_private_chats:en:${userCommands.join(',')}`,
     'webhook:https://bot.example.test/telegram/webhook:32']); assert.equal(ownership.polling, false);
   assert.equal(await ownership.handleWebhook({}, 'wrong'), false); assert.equal(await ownership.handleWebhook({}, secret), true);
   assert.deepEqual(value.events.slice(-1), ['update']); await ownership.stop(); assert.equal(value.events.includes('stop'), false);

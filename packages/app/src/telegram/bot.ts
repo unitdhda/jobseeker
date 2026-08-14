@@ -7,6 +7,7 @@ import { telegramIdentity } from './api.ts';
 export const publicCommands = Object.freeze(['start', 'request', 'language'] as const);
 export const approvedCommands = Object.freeze(['cv', 'window', 'digest', 'search', 'privacy', 'export_me', 'delete_me'] as const);
 export const ownerCommands = Object.freeze(['ok', 'users', 'revoke', 'usage', 'scraper', 'status'] as const);
+export const userCommands = Object.freeze([...publicCommands, ...approvedCommands] as const);
 export type PublicCommand = typeof publicCommands[number];
 export type ApprovedCommand = typeof approvedCommands[number];
 export type OwnerCommand = typeof ownerCommands[number];
@@ -55,9 +56,9 @@ function identity(input: NonNullable<TelegramUpdateInput['from']>, locale: Local
   return Object.freeze({ userId: parseUserId(String(input.id)), username: input.username,
     firstName: input.firstName, lastName: input.lastName, ...(locale ? { locale } : {}) });
 }
-function menuFor(_user: TelegramUser): readonly TelegramCommand[] {
-  // Commands remain intentionally unregistered. Authorization is enforced when a typed command is received.
-  return Object.freeze([]);
+function menuFor(user: TelegramUser): readonly TelegramCommand[] {
+  // Administrative commands stay hidden; approved users and the owner receive the ordinary user menu.
+  return user.status === 'approved' ? userCommands : publicCommands;
 }
 
 export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: TelegramAccessPorts,

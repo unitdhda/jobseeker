@@ -2,7 +2,7 @@ import type { Bot } from 'grammy';
 import type { Locale } from '@jobseeker/store';
 import type { UserId } from '@jobseeker/engine/contracts';
 import type { TelegramMode } from '../config.ts';
-import type { TelegramCommand } from './bot.ts';
+import { userCommands, type TelegramCommand } from './bot.ts';
 
 export interface TelegramReceiverBot {
   init(): Promise<void>;
@@ -12,6 +12,7 @@ export interface TelegramReceiverBot {
   setWebhook(url: string, secret: string): Promise<void>;
   deleteWebhook(): Promise<void>;
   deleteCommands(scope: 'default' | 'all_private_chats', locale?: Locale): Promise<void>;
+  setCommands(scope: 'all_private_chats', locale: Locale | undefined, commands: readonly TelegramCommand[]): Promise<void>;
   deleteUserCommands(userId: UserId, locale?: Locale): Promise<void>;
   setUserCommands(userId: UserId, locale: Locale | undefined, commands: readonly TelegramCommand[]): Promise<void>;
 }
@@ -32,6 +33,10 @@ export function grammYReceiver(bot: Bot): TelegramReceiverBot {
     deleteWebhook: async () => { await bot.api.deleteWebhook(); },
     deleteCommands: async (scope, locale) => {
       await bot.api.deleteMyCommands({ ...(locale ? { language_code: locale } : {}), scope: { type: scope } });
+    },
+    setCommands: async (scope, locale, commands) => {
+      await bot.api.setMyCommands(commands.map((command) => ({ command, description: command.replace(/_/gu, ' ') })),
+        { ...(locale ? { language_code: locale } : {}), scope: { type: scope } });
     },
     deleteUserCommands: async (userId, locale) => {
       await bot.api.deleteMyCommands({ ...(locale ? { language_code: locale } : {}),
@@ -65,6 +70,7 @@ export async function startTelegramOwnership(input: { readonly mode: TelegramMod
     for (const locale of [undefined, 'ru', 'en'] as const) {
       await input.bot.deleteCommands('default', locale);
       await input.bot.deleteCommands('all_private_chats', locale);
+      await input.bot.setCommands('all_private_chats', locale, userCommands);
       if (input.ownerUserId) await input.bot.deleteUserCommands(input.ownerUserId, locale);
     }
   }

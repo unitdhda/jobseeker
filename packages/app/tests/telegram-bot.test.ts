@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { parseUserId } from '@jobseeker/engine/contracts';
 import type { Locale, TelegramIdentity, TelegramUser } from '@jobseeker/store';
-import { approvedCommands, ownerCommands, publicCommands, routeTelegramUpdate,
+import { approvedCommands, ownerCommands, publicCommands, routeTelegramUpdate, userCommands,
   type TelegramAccessPorts, type TelegramResponsePort } from '../src/telegram/bot.ts';
 
 const userId = parseUserId('123');
@@ -31,6 +31,7 @@ test('command inventories contain exactly the required public, approved, and own
   assert.deepEqual(publicCommands, ['start', 'request', 'language']);
   assert.deepEqual(approvedCommands, ['cv', 'window', 'digest', 'search', 'privacy', 'export_me', 'delete_me']);
   assert.deepEqual(ownerCommands, ['ok', 'users', 'revoke', 'usage', 'scraper', 'status']);
+  assert.deepEqual(userCommands, [...publicCommands, ...approvedCommands]);
 });
 
 test('unknown arbitrary senders and non-private chats create no rows and invoke no command handlers', async () => {
@@ -51,7 +52,7 @@ test('/start, /request, and /language remain public while touching only their in
 
   const language = fixture(null); const changed = await routeTelegramUpdate(update('/language', 'ru-RU'), language.ports, language.response, 'ru', language.handlers);
   assert.equal(language.calls.touch, 1); assert.equal(language.calls.locale, 1); assert.equal(changed?.locale, 'en');
-  assert.deepEqual(language.calls.menus[0]?.commands, []);
+  assert.deepEqual(language.calls.menus[0]?.commands, publicCommands);
 });
 
 test('approved middleware resolves locale and touches identity exactly once before handler', async () => {
@@ -70,7 +71,7 @@ test('owner commands are hidden and rejected before touching a non-owner identit
   await routeTelegramUpdate(update('/status'), owner.ports, owner.response, 'en', owner.handlers);
   assert.equal(owner.calls.owner, 1); assert.equal(owner.calls.touch, 1);
   await routeTelegramUpdate(update('/language'), owner.ports, owner.response, 'en', owner.handlers);
-  assert.deepEqual(owner.calls.menus.at(-1)?.commands, []);
+  assert.deepEqual(owner.calls.menus.at(-1)?.commands, userCommands);
 });
 
 test('known but unapproved user gets explicit denial without identity touch', async () => {
