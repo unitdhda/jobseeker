@@ -7,9 +7,10 @@ import { armCvUpload, deliverApplicationArtifact, type ApplicationActionPorts, t
 import type { ApprovedCommand, OwnerCommand, TelegramCommandHandlers, RoutedTelegramContext } from './bot.ts';
 import { onDemandDigest, type DeliveryPorts } from './delivery.ts';
 import { escapeHtml, formatNumber, splitTelegramHtml, telegramLink } from './format.ts';
+import type { OwnerMessageHistory } from './owner-message-history.ts';
 
 export interface CommandTransport {
-  reply(userId: UserId, html: string): Promise<void>;
+  reply(userId: UserId, html: string): Promise<number | void>;
   sendDocument(userId: UserId, bytes: Uint8Array, filename: string): Promise<void>;
   confirmDelete(userId: UserId): Promise<void>;
 }
@@ -28,14 +29,19 @@ export interface CommandPorts {
   readonly alertScore: number;
   readonly defaultTimezone: string;
   readonly runtimeStatus: () => RuntimeStatusInput;
+  readonly ownerMessageHistory?: OwnerMessageHistory;
 }
 
 function requireUser(context: RoutedTelegramContext): TelegramUser {
   if (!context.user) throw new Error('Telegram command has no user.');
   return context.user;
 }
+const ownerGenerations = new WeakMap<RoutedTelegramContext, number>();
 async function reply(input: CommandPorts, context: RoutedTelegramContext, html: string): Promise<void> {
-  await input.transport.reply(requireUser(context).userId, html);
+  const userId = requireUser(context).userId;
+  const messageId = await input.transport.reply(userId, html);
+  const generation = ownerGenerations.get(context);
+  if (typeof messageId === 'number' && generation !== undefined) input.ownerMessageHistory?.record(userId, generation, messageId);
 }
 function hour(value: string): number | null {
   if (!/^\d{1,2}$/u.test(value)) return null;
@@ -93,7 +99,7 @@ export function createCommandHandlers(input: CommandPorts): TelegramCommandHandl
         await input.transport.sendDocument(user.userId, bytes, 'jobseeker-export.json'); },
       delete_me: async (context) => input.transport.confirmDelete(requireUser(context).userId),
   };
-  const owner: Partial<Record<OwnerCommand, (context: RoutedTelegramContext) => Promise<void> | void>> = {
+  const rawOwner: Partial<Record<OwnerCommand, (context: RoutedTelegramContext) => Promise<void> | void>> = {
       ok: async (context) => { let target: UserId; try { target = parseUserId(context.argument); } catch { await reply(input, context, 'Usage: /ok USER_ID'); return; }
         const updated = await input.store.setUserStatus(target, 'approved'); await reply(input, context, updated ? `Approved ${target}` : `Unknown ${target}`); },
       revoke: async (context) => { let target: UserId; try { target = parseUserId(context.argument); } catch { await reply(input, context, 'Usage: /revoke USER_ID'); return; }
@@ -121,6 +127,12 @@ export function createCommandHandlers(input: CommandPorts): TelegramCommandHandl
         for (const message of scraperStatus(summary, input.configuredSources, context.locale, settings?.timezone ?? input.defaultTimezone)) await reply(input, context, message); },
       status: async (context) => reply(input, context, runtimeStatus(input.runtimeStatus(), context.locale)),
   };
+  const owner = Object.fromEntries(Object.entries(rawOwner).map(([command, handler]) => [command, async (context: RoutedTelegramContext) => {
+    const userId = requireUser(context).userId;
+    const generation = await input.ownerMessageHistory?.begin(userId, context.messageId);
+    if (generation !== undefined) ownerGenerations.set(context, generation);
+    try { await handler?.(context); } finally { ownerGenerations.delete(context); }
+  }])) as Partial<Record<OwnerCommand, (context: RoutedTelegramContext) => Promise<void>>>;
   return Object.freeze({ approved: Object.freeze(approved), owner: Object.freeze(owner) });
 }
 

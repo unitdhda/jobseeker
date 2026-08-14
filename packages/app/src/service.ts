@@ -17,6 +17,7 @@ import { createCommandHandlers } from './telegram/commands.ts';
 import { routeTelegramCallback } from './telegram/callbacks.ts';
 import { sendHighAlerts, sendScheduledDigest } from './telegram/delivery.ts';
 import { grammYReceiver, startTelegramOwnership, type TelegramOwnership } from './telegram/ownership.ts';
+import { createOwnerMessageHistory } from './telegram/owner-message-history.ts';
 import { createWebApp, createOrderedShutdown, startHttpServer, type HttpServerHandle } from './web.ts';
 import { safeErrorMessage } from './security.ts';
 import { createCvParser, nodeCvParserCommand } from './cv.ts';
@@ -67,13 +68,16 @@ export async function startService(): Promise<void> {
         sendFileId: async (userId: UserId, fileId: string) => { await bot.api.sendDocument(Number(userId), fileId); },
         sendText: async (userId: UserId, text: string) => { await bot.api.sendMessage(Number(userId), text); },
       };
+      const ownerMessageHistory = createOwnerMessageHistory(async (userId, messageId) => {
+        await bot.api.deleteMessage(Number(userId), messageId);
+      });
       const commandHandlers = createCommandHandlers({ store: composition.store, cvActions: composition.store,
         applicationActions: composition.store, worker: workerPort, applicationTransport, delivery: deliveryPorts,
-        transport: { reply: async (userId, html) => { await bot.api.sendMessage(Number(userId), html, { parse_mode: 'HTML' }); },
+        transport: { reply: async (userId, html) => (await bot.api.sendMessage(Number(userId), html, { parse_mode: 'HTML' })).message_id,
           sendDocument: async (userId, bytes, filename) => { await bot.api.sendDocument(Number(userId), new InputFile(Buffer.from(bytes), filename)); },
           confirmDelete: async (userId) => { await bot.api.sendMessage(Number(userId), 'Confirm deletion?', {
             reply_markup: { inline_keyboard: [[{ text: 'Delete', callback_data: 'privacy:delete' }]] } }); } },
-        configuredSources: composition.enabledSourceProviderIds, digestMinScore: config.digestMinScore, alertScore: config.alertScore,
+        ownerMessageHistory, configuredSources: composition.enabledSourceProviderIds, digestMinScore: config.digestMinScore, alertScore: config.alertScore,
         defaultTimezone: config.timezone, runtimeStatus: () => ({ uptimeMs: process.uptime() * 1000,
           rssBytes: process.memoryUsage().rss, heapBytes: process.memoryUsage().heapUsed, cpuPercent: 0,
           workerPending: worker?.pendingCount ?? 0, aiActive: 0, aiQueued: 0, telegramMode: config.telegramMode,

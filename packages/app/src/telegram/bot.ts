@@ -20,6 +20,7 @@ export interface TelegramAccessPorts {
 }
 export interface TelegramUpdateInput {
   readonly chatType: string;
+  readonly messageId?: number;
   readonly text?: string;
   readonly from?: { readonly id: number; readonly isBot?: boolean; readonly username?: string; readonly firstName: string;
     readonly lastName?: string; readonly languageCode?: string };
@@ -35,6 +36,8 @@ export interface RoutedTelegramContext {
   readonly user: TelegramUser | null;
   readonly locale: Locale;
   readonly t: Catalogue;
+  readonly messageId?: number;
+  readonly ownerCommand?: boolean;
 }
 export interface TelegramCommandHandlers {
   readonly approved?: Partial<Record<ApprovedCommand, (context: RoutedTelegramContext) => Promise<void> | void>>;
@@ -79,7 +82,7 @@ export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: Tel
     const user = existing ?? await ports.touchTelegramUser(sender);
     const text = user.status === 'approved' ? t.startApproved : user.status === 'pending' ? t.startPending : t.startUnknown;
     await response.reply(text, { locale, command });
-    return Object.freeze({ command, argument, user, locale, t });
+    return Object.freeze({ command, argument, user, locale, t, messageId: input.messageId, ownerCommand: false });
   }
   if (command === 'request') {
     const result = await ports.requestAccess(sender);
@@ -87,7 +90,7 @@ export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: Tel
       : result.user.status === 'approved' ? t.startApproved : result.user.status === 'pending' && !result.notifyOwner
         ? t.startPending : t.accessRequested, { locale, command });
     if (result.notifyOwner) await response.notifyOwner?.(`Access request: ${result.user.userId}`);
-    return Object.freeze({ command, argument, user: result.user, locale, t });
+    return Object.freeze({ command, argument, user: result.user, locale, t, messageId: input.messageId, ownerCommand: false });
   }
   if (command === 'language') {
     const selected: Locale = locale === 'ru' ? 'en' : 'ru';
@@ -95,7 +98,7 @@ export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: Tel
     const updated = await ports.setUserLocale(user.userId, selected);
     await response.setCommands?.(selected, updated ? menuFor(updated) : publicCommands);
     await response.reply(messages(selected).languageChanged, { locale: selected, command });
-    return Object.freeze({ command, argument, user: updated ?? user, locale: selected, t: messages(selected) });
+    return Object.freeze({ command, argument, user: updated ?? user, locale: selected, t: messages(selected), messageId: input.messageId, ownerCommand: false });
   }
   if (!command) return null;
   if (!existing || existing.status !== 'approved') { await response.reply(t.accessDenied, { locale }); return null; }
@@ -104,7 +107,7 @@ export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: Tel
 
   // Authorized updates touch identity exactly once, after both access and owner checks pass.
   const user = await ports.touchTelegramUser(identity(input.from, clientLocale));
-  const context = Object.freeze({ command, argument, user, locale, t });
+  const context = Object.freeze({ command, argument, user, locale, t, messageId: input.messageId, ownerCommand });
   if (ownerCommand) {
     await handlers.owner?.[command as OwnerCommand]?.(context); return context;
   }
@@ -137,7 +140,7 @@ export function installTelegramRoutes(bot: Bot, ports: TelegramAccessPorts, defa
         declaredSize: ctx.message.document.file_size ?? 0 });
       return;
     }
-    await routeTelegramUpdate({ chatType: ctx.chat?.type ?? '', text: ctx.message?.text,
+    await routeTelegramUpdate({ chatType: ctx.chat?.type ?? '', messageId: ctx.message?.message_id, text: ctx.message?.text,
       from: from ? { id: from.id, isBot: from.is_bot, username: from.username,
         firstName: from.first_name, lastName: from.last_name, languageCode: from.language_code } : undefined },
     ports, { reply: async (text) => { await ctx.reply(text, { parse_mode: 'HTML' }); }, notifyOwner: options.notifyOwner,

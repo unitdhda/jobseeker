@@ -10,8 +10,8 @@ import { messages } from '../src/i18n/index.ts';
 const userId = parseUserId('1');
 const user: TelegramUser = { userId, username: null, firstName: 'Owner', lastName: null, status: 'approved', isOwner: true,
   locale: 'en', localeSelected: true, createdAt: new Date(), updatedAt: new Date() };
-function context(command: RoutedTelegramContext['command'], argument = ''): RoutedTelegramContext {
-  return { command, argument, user, locale: 'en', t: messages('en') };
+function context(command: RoutedTelegramContext['command'], argument = '', messageId?: number): RoutedTelegramContext {
+  return { command, argument, user, locale: 'en', t: messages('en'), messageId };
 }
 function fixture() {
   const events: string[] = []; const replies: string[] = [];
@@ -74,6 +74,17 @@ test('search queries the invoking user’s full match history and renders unscor
   assert.equal(value.events.includes('search:1:backend api'), true);
   assert.match(value.replies.at(-1)!, /—\/100/u); assert.match(value.replies.at(-1)!, /&lt;Backend&gt;/u);
   assert.match(value.replies.at(-1)!, /A &amp; B/u);
+});
+
+test('owner command sessions track the incoming command and every answer', async () => {
+  const value = fixture(); const tracked: string[] = [];
+  const handlers = createCommandHandlers({ ...value.ports,
+    ownerMessageHistory: { begin: async (id, messageId) => { tracked.push(`begin:${id}:${messageId}`); return 7; },
+      record: (id, generation, messageId) => { tracked.push(`record:${id}:${generation}:${messageId}`); } },
+    transport: { ...value.ports.transport, reply: async (_user, html) => { value.replies.push(html); return 101; } },
+  });
+  await handlers.owner!.status!(context('status', '', 100));
+  assert.deepEqual(tracked, ['begin:1:100', 'record:1:7:101']);
 });
 
 test('owner usage, scraper, users, and status produce escaped bounded output', async () => {
