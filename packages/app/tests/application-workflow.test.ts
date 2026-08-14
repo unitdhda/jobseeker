@@ -54,6 +54,9 @@ test('matching CV-hash cache returns before reservation, state transition, model
 });
 
 test('tailored CV uses independent prompt, evidence gate, renderer, and ready transition without persisting bytes', async () => {
+  assert.match(tailorCvSystemPrompt, /"artifact":"cv".*"document"/su);
+  for (const kind of ['text', 'bullets', 'entry', 'facts']) assert.match(tailorCvSystemPrompt, new RegExp(`"kind":"${kind}"`, 'u'));
+  assert.match(tailorCvSystemPrompt, /Keep every employer/u); assert.match(tailorCvSystemPrompt, /never hide a gap/iu);
   const value = fixture(); const prompts: string[] = []; let rendered = 0;
   const result = await tailorApplication({ userId, vacancyId: 7, artifact: 'cv',
     models: ai({ artifact: 'cv', document: tailoredDocument }, prompts), model: 'test/model', ports: value.ports,
@@ -65,6 +68,8 @@ test('tailored CV uses independent prompt, evidence gate, renderer, and ready tr
 });
 
 test('cover letter is a separate model call, schema, usage agent, and plain-text result', async () => {
+  assert.match(coverLetterSystemPrompt, /"artifact":"letter","text"/u);
+  assert.match(coverLetterSystemPrompt, /specific evidence over generic enthusiasm/u);
   const value = fixture(); const prompts: string[] = [];
   const letter = 'I built TypeScript APIs and PostgreSQL services at Acme, directly matching this backend role.\n\nI would bring that concrete delivery experience to the team.';
   const result = await tailorApplication({ userId, vacancyId: 7, artifact: 'letter',

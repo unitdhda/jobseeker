@@ -62,9 +62,10 @@ test('JSON generation records each response, feeds bounded validation errors bac
   ], prompts), model: 'test/model', role: 'Profile', agent: 'profile-test', systemPrompt: 'system', userPrompt: 'user', schema,
   reasoning: 'high', recordUsage: (agent, qualified) => { durable.push(`${agent}:${qualified}`); } });
   assert.deepEqual(result, { name: 'valid', count: 2 }); assert.equal(prompts.length, 3);
+  assert.match(prompts[0]!, /Return only the requested complete JSON value/u);
   assert.match(prompts[1]!, /not valid JSON/u); assert.match(prompts[2]!, /name:|count:/u);
   assert.deepEqual(durable, ['profile-test:test/model', 'profile-test:test/model', 'profile-test:test/model']);
-  const delta = llmUsageSince(before); assert.equal(delta.turns, 3); assert.equal(delta.totalTokens, 45); assert.equal(delta.costUsd, .75);
+  const delta = llmUsageSince(before); assert.equal(delta.turns, 3); assert.equal(delta.totalTokens, 45); assert.ok(Math.abs(delta.costUsd - .75) < 1e-12);
   assert.equal(delta.byAgent['profile-test']?.turns, 3); assert.equal(delta.byModel['test/model']?.turns, 3);
 });
 

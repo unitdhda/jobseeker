@@ -14,14 +14,15 @@ export { careerProfileLimits, careerProfileSchema, normalizeCareerProfileJson, p
 export type { CareerProfile, StoredCareerProfile };
 
 export const careerProfileSystemPrompt = `Derive an occupation-neutral career profile from the authoritative CV.
-Return JSON only and obey the schema exactly.
+Return JSON only and obey exactly {"version":1,"tracks":[{"name":"...","titleVariants":["..."],"coreSkills":["..."],"evidence":["..."]}]}. The root key is tracks, never careerTracks, and no additional fields are allowed.
 - version must be 1.
 - Return 1–${careerProfileLimits.tracks} career tracks genuinely evidenced by the CV.
 - Each track has name, 1–${careerProfileLimits.titleVariants} titleVariants, 0–${careerProfileLimits.coreSkills} coreSkills, and 1–${careerProfileLimits.evidence} evidence strings.
 - Put each title and each translated title in a separate titleVariants item. Never pack translations with slash or pipe.
 - Do not broaden into adjacent occupations. A product manager is not a project manager; QA is not software engineering.
-- Do not invent skills, seniority, industries, employers, achievements, dates, or metrics.
+- Do not invent skills, seniority, industries, employers, achievements, dates, or metrics. Contact details, employer technologies, and project names are not candidate skills merely because they occur in the CV.
 - Every track and skill must be supported by specific CV evidence; evidence strings should identify that support concisely.
+- Keep names, title variants, and skills concise; keep evidence specific rather than listing everything the CV supports.
 - Keep source-specific categories, locations, salary, and search syntax out of this profile.`;
 
 export function careerProfilePrompt(cvText: string): string {

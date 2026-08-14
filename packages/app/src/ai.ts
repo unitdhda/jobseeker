@@ -200,11 +200,12 @@ export async function generateJson<TSchema extends v.BaseSchema<unknown, unknown
   const model = resolveModel(options.models, options.model, options.role);
   const attempts = options.attempts ?? 3;
   if (!Number.isSafeInteger(attempts) || attempts < 1 || attempts > 3) throw new RangeError('JSON generation attempts must be from 1 through 3.');
+  const jsonInstruction = '\n\nReturn only the requested complete JSON value without Markdown fences or commentary.';
   let feedback = ''; let lastValue: unknown; let lastError: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     const response = await options.models.completeSimple(model, {
       systemPrompt: options.systemPrompt,
-      messages: [{ role: 'user', content: `${options.userPrompt}${feedback}`, timestamp: Date.now() }],
+      messages: [{ role: 'user', content: `${options.userPrompt}${jsonInstruction}${feedback}`, timestamp: Date.now() }],
     }, { reasoning: options.reasoning, maxRetries: 2, signal: options.signal });
     const qualifiedModel = `${response.provider}/${response.model}`;
     recordInProcessUsage(options.agent, qualifiedModel, response.usage);

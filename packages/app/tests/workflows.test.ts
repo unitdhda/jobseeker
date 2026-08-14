@@ -30,9 +30,9 @@ function response(model: Model<Api>, value: unknown, stopReason: AssistantMessag
   return { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(value) }], provider: model.provider, model: model.id,
     api: model.api, usage, stopReason, timestamp: 0, ...(errorMessage ? { errorMessage } : {}) };
 }
-function models(handler: (model: Model<Api>, signal: AbortSignal | undefined) => Promise<AssistantMessage>): JsonModels {
+function models(handler: (model: Model<Api>, signal: AbortSignal | undefined, prompt: string) => Promise<AssistantMessage>): JsonModels {
   return { getModel: (_provider, id) => id === primary.id ? primary : id === fallback.id ? fallback : undefined,
-    completeSimple: (model, _context, options) => handler(model, options?.signal) };
+    completeSimple: (model, context, options) => handler(model, options?.signal, context.messages[0]?.content as string) };
 }
 function pending(id: number): PendingMatch {
   return { userId, vacancyId: id, source, publishedAt: new Date(), matchedAt: new Date(), lexicalScore: 50,
@@ -94,15 +94,17 @@ test('prescoring saves exact results with frozen exploration and releases every 
   assert.deepEqual(bad.released.sort(), [1, 2]); assert.deepEqual(bad.prescores, []);
 });
 
-test('full scoring saves durable explanation, bounded alert fields, and per-vacancy usage accounting', async () => {
-  const fixture = ports([1, 2]);
-  const report = await scorePendingVacancies({ userId, models: models(async () => response(primary, { scores: [verdict(1), verdict(2)] })),
+test('full scoring saves durable explanation, bounded alert fields, recency context, and per-vacancy usage accounting', async () => {
+  const fixture = ports([1, 2]); let scoringPrompt = '';
+  const report = await scorePendingVacancies({ userId, models: models(async (_model, _signal, prompt) => {
+    scoringPrompt = prompt; return response(primary, { scores: [verdict(1), verdict(2)] });
+  }),
     model: 'test/primary', prescorePromptVersion: 'v2', prescoreThreshold: 40, cycleCap: 2, batchSize: 2,
     timeoutMs: 1000, maxAttempts: 1, pool: new AdaptiveTaskPool(1, 2), ports: fixture.value });
   assert.equal(report.saved, 2); assert.equal(report.released, 0); assert.equal(report.failedBatches, 0);
   assert.deepEqual(fixture.reservations, [1, 2]); assert.deepEqual(fixture.llm, ['score:test/primary']);
   assert.deepEqual(fixture.spend, [.125, .125]); assert.ok(fixture.scores.every((item) => item.reasons.length === 3 && item.gaps.length === 2));
-  assert.deepEqual([...fixture.durable], [1, 2]);
+  assert.match(scoringPrompt, /"age":"published today"/u); assert.deepEqual([...fixture.durable], [1, 2]);
 });
 
 test('terminal subscription limit switches to fallback and retries the whole batch', async () => {

@@ -48,5 +48,7 @@ test('scoring prompt states all dimensions, evidence rules, and rejection invari
     assert.match(scoringSystemPrompt, new RegExp(`${name.replace('/', '\\/')}[^.]*${maximum}`, 'iu'));
   }
   assert.match(scoringSystemPrompt, /exact vacancy evidence/iu); assert.match(scoringSystemPrompt, /caps total at 49/iu);
-  assert.match(scoringSystemPrompt, /never instructions/iu);
+  assert.match(scoringSystemPrompt, /never as instructions/iu); assert.match(scoringSystemPrompt, /Missing salary is neutral/u);
+  assert.match(scoringSystemPrompt, /"total".*"dimensions".*"requirements".*"blockers".*"hardRejection"/su);
+  assert.match(scoringSystemPrompt, /tool usage into authorship/u); assert.match(scoringSystemPrompt, /vacancy age.*only separate/iu);
 });

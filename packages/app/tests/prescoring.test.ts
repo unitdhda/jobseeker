@@ -20,8 +20,10 @@ test('exploration draws exactly once only for below-threshold rows', () => {
   assert.throws(() => explorePrescore(10, 40, .1, () => 1), /\[0,1\)/u);
 });
 
-test('v2 prescore prompt prioritizes profession/responsibility and explicit bidirectional constraints', () => {
-  assert.match(prescoringSystemPrompt, /rubric v2/u); assert.match(prescoringSystemPrompt, /Profession and actual responsibilities dominate/u);
-  assert.match(prescoringSystemPrompt, /seniority in both directions/u); assert.match(prescoringSystemPrompt, /explicit.*blockers/u);
-  assert.match(prescoringSystemPrompt, /Score 40/u);
+test('v3 prescore prompt defines ordered checks, calibrated bands, and the exact output contract', () => {
+  assert.match(prescoringSystemPrompt, /rubric v3/u); assert.match(prescoringSystemPrompt, /same profession and responsibility set/u);
+  assert.match(prescoringSystemPrompt, /seniority and required years fit in both directions/iu);
+  assert.match(prescoringSystemPrompt, /0–19.*20–39.*40–69.*70–84.*85–100/su);
+  assert.match(prescoringSystemPrompt, /Missing salary is neutral/u); assert.match(prescoringSystemPrompt, /Score 40/u);
+  assert.match(prescoringSystemPrompt, /"results".*"vacancyId".*"score".*"rationale"/su);
 });

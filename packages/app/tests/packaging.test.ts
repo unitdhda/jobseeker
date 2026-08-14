@@ -7,10 +7,10 @@ const repository = resolve(import.meta.dirname, '../../..');
 const json = async (path: string) => JSON.parse(await readFile(resolve(repository, path), 'utf8')) as Record<string, any>;
 const text = (path: string) => readFile(resolve(repository, path), 'utf8');
 
-test('published app and reference deployment pin version 0.2.4 consistently', async () => {
+test('published app and reference deployment pin version 0.2.5 consistently', async () => {
   const app = await json('packages/app/package.json'); const deployment = await json('docker/vps/package.json');
   const compose = await text('docker/vps/compose.yaml');
-  assert.equal(app.version, '0.2.4'); assert.equal(deployment.version, app.version);
+  assert.equal(app.version, '0.2.5'); assert.equal(deployment.version, app.version);
   assert.equal(deployment.dependencies['@unitdhda/jobseeker'], app.version);
   assert.match(compose, new RegExp(`image: unitdhda/jobseeker:${app.version.replaceAll('.', '\\.')}`, 'u'));
 });
