@@ -94,7 +94,7 @@ export async function prescorePendingVacancies(options: PrescoreOptions): Promis
     const ids = batch.map((vacancy) => vacancy.id);
     try {
       const result = await generateJson({ models: options.models, model: options.model, role: 'Prescoring', agent: 'prescore',
-        systemPrompt: prescoringSystemPrompt, userPrompt: prompt(cv, batch, maximum), schema: prescoreBatchSchemaFor(ids),
+        systemPrompt: prescoringSystemPrompt(options.threshold), userPrompt: prompt(cv, batch, maximum), schema: prescoreBatchSchemaFor(ids),
         reasoning: options.thinking,
         recordUsage: (agent, responseModel, usage) => options.ports.recordLlmUsage(options.userId, agent, responseModel, usage) });
       const resultById = new Map(result.results.map((item) => [item.vacancyId, item]));

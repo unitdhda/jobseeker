@@ -24,7 +24,7 @@ jobseeker --env-file /app/data/jobseeker.env doctor
 jobseeker --env-file /app/data/jobseeker.env start
 ```
 
-`db init` refuses a non-empty PostgreSQL `public` schema. Existing installations require an explicit forward migration; never rerun initialization over production.
+`db init` refuses a non-empty PostgreSQL `public` schema. `schema.sql` is the sole current schema definition; never rerun initialization over a database containing production data.
 
 ## Ownership
 

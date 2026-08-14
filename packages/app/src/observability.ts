@@ -88,6 +88,8 @@ export function usageStatus(summary: LlmUsageSummary, locale: Locale, timezone =
     `<b>${locale === 'ru' ? 'Использование — 24 часа / всё время' : 'Usage — 24 hours / all time'}</b>`,
     `${locale === 'ru' ? 'LLM-вызовы' : 'LLM calls'}: <b>${formatNumber(summary.turns24h, locale)} / ${formatNumber(summary.turnsTotal, locale)}</b>`,
     `${locale === 'ru' ? 'Токены' : 'Tokens'}: <b>${compact(summary.tokens24h, locale)} / ${compact(summary.tokensTotal, locale)}</b>`,
+    `${locale === 'ru' ? 'Вход' : 'Input'}: ${compact(summary.inputTokens24h, locale)} / ${compact(summary.inputTokensTotal, locale)} · ${locale === 'ru' ? 'выход' : 'output'}: ${compact(summary.outputTokens24h, locale)} / ${compact(summary.outputTokensTotal, locale)}`,
+    `${locale === 'ru' ? 'Чтение кэша' : 'Cache read'}: ${compact(summary.cacheReadTokens24h, locale)} / ${compact(summary.cacheReadTokensTotal, locale)} · ${locale === 'ru' ? 'запись' : 'write'}: ${compact(summary.cacheWriteTokens24h, locale)} / ${compact(summary.cacheWriteTokensTotal, locale)}`,
     `${locale === 'ru' ? 'Стоимость модели' : 'Model cost'}: <b>${money(summary.cost24h)} / ${money(summary.costTotal)}</b>`,
     '', `<b>${locale === 'ru' ? 'Почасовая динамика за 24 часа' : 'Hour by hour over 24 hours'}</b>`, `<pre>${escapeHtml(chart)}</pre>`,
   ]);

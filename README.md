@@ -149,7 +149,7 @@ least one source extension. You need Node.js 23.6+ or Bun 1.3+, PostgreSQL 15+, 
 and credentials for at least one Pi AI provider. Fonts for generated PDFs ship in the package.
 
 `db init` applies the packaged schema **only to an empty PostgreSQL `public` schema** and refuses any existing table.
-Existing installations require a reviewed forward migration; never rerun initialization over production. Every command
+`packages/app/schema.sql` is the sole current schema definition; never rerun initialization over production. Every command
 accepts `--env-file`, while existing process environment values take precedence.
 
 Exactly one process may receive updates for a Telegram bot token. In polling mode no webhook may exist; in webhook mode

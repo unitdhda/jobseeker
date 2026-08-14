@@ -240,7 +240,7 @@ export function parseConfig(env: Readonly<Record<string, string | undefined>>): 
     prescoreBatchSize: positive(env.PRESCORE_BATCH_SIZE, 10, 'PRESCORE_BATCH_SIZE'),
     prescoreLimitPerCycle: positive(env.PRESCORE_LIMIT_PER_CYCLE, 60, 'PRESCORE_LIMIT_PER_CYCLE'),
     prescoreExplorationRate: parseFraction(env.PRESCORE_EXPLORATION_RATE, 0.1, 'PRESCORE_EXPLORATION_RATE'),
-    prescorePromptVersion: optional(env.PRESCORE_PROMPT_VERSION) ?? 'v3',
+    prescorePromptVersion: optional(env.PRESCORE_PROMPT_VERSION) ?? 'v4',
     scoreConcurrencyMin, scoreConcurrencyMax,
     scoreBatchSize: positive(env.SCORE_BATCH_SIZE, 3, 'SCORE_BATCH_SIZE'),
     scoringBatchTimeoutMs: seconds(env.SCORING_BATCH_TIMEOUT_SECONDS, 180, 'SCORING_BATCH_TIMEOUT_SECONDS'),

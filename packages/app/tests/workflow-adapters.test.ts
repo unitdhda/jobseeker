@@ -7,7 +7,7 @@ import { identityRoleResolver } from '@jobseeker/engine/equivalence';
 import { uniformIdfLookups } from '@jobseeker/engine/idf';
 import type { Store, Vacancy } from '@jobseeker/store';
 import { parseConfig } from '../src/config.ts';
-import { createApplicationPorts, createProfileRefreshPorts } from '../src/workflow-adapters.ts';
+import { createApplicationPorts, createProfileRefreshPorts, llmUsageInput } from '../src/workflow-adapters.ts';
 import type { MatchingVocabularies } from '../src/matching-vocabularies.ts';
 
 const userId = parseUserId('1'); const hash = parseCvContentHash('a'.repeat(64)); const source = parseSourceKey('test');
@@ -23,6 +23,13 @@ function vacancy(id: number, matching = true): Vacancy {
     keySkills: matching ? ['TypeScript'] : ['Accounting'], url: new URL(`https://example.test/${id}`),
     publishedAt: new Date(), sourceQuery: matching ? 'backend' : 'accounting' };
 }
+test('LLM usage adapter preserves durable input, output, cache, total, and cost classes', () => {
+  assert.deepEqual(llmUsageInput({ input: 10, output: 5, cacheRead: 7, cacheWrite: 3, totalTokens: 15,
+    cost: { input: .1, output: .2, cacheRead: .03, cacheWrite: .04, total: .37 } }), {
+    inputTokens: 10, outputTokens: 5, cacheReadTokens: 7, cacheWriteTokens: 3, totalTokens: 15, costUsd: .37,
+  });
+});
+
 function vocabularies(): MatchingVocabularies {
   const snapshot = { roleResolver: identityRoleResolver, idfLookups: uniformIdfLookups, loaded: true, rebuiltAt: null };
   return { snapshot: () => snapshot, load: async () => snapshot, refreshEquivalences: async () => snapshot,

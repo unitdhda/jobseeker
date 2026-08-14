@@ -65,6 +65,15 @@ test('match-history search is bounded to one user and includes rows without a fu
   assert.match(search, /limit \$3/u);
 });
 
+test('LLM usage writes every durable token class and rejects invalid counters', async () => {
+  const repos = await read('repos.ts');
+  const recording = /export async function recordLlmUsageEvent[\s\S]*?\n\}\n/u.exec(repos)?.[0] ?? '';
+  for (const column of ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens', 'cost_usd']) {
+    assert.match(recording, new RegExp(`\\b${column}\\b`, 'u'));
+  }
+  assert.match(recording, /Number\.isSafeInteger/u); assert.match(recording, /Number\.isFinite/u);
+});
+
 test('operational summaries contain exactly the current hour plus previous 24 hours', async () => {
   const repos = await read('repos.ts');
   const series = /generate_series\(date_trunc\('hour',now\(\)\)-interval '24 hours',date_trunc\('hour',now\(\)\),interval '1 hour'\)/gu;

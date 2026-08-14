@@ -13,11 +13,12 @@ import { refreshUserProfiles, type ProfileRefreshPorts } from './profile-refresh
 import type { ScoringWorkflowPorts } from './workflows.ts';
 import type { JobWorkerHandlers } from './worker.ts';
 
-function llmInput(usage: Usage) {
-  return { inputTokens: usage.input, outputTokens: usage.output, totalTokens: usage.totalTokens, costUsd: usage.cost.total };
+export function llmUsageInput(usage: Usage) {
+  return { inputTokens: usage.input, outputTokens: usage.output, cacheReadTokens: usage.cacheRead,
+    cacheWriteTokens: usage.cacheWrite, totalTokens: usage.totalTokens, costUsd: usage.cost.total };
 }
 async function recordLlm(store: Store, userId: UserId, agent: string, model: string, usage: Usage): Promise<void> {
-  await store.recordLlmUsageEvent(userId, agent, model, llmInput(usage));
+  await store.recordLlmUsageEvent(userId, agent, model, llmUsageInput(usage));
 }
 
 async function reserveProfile(store: Store, config: AppConfig, userId: UserId, agent: string): Promise<void> {

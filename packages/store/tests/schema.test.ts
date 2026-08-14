@@ -28,6 +28,16 @@ test('schema freezes lifecycle vocabularies and source-independent identities', 
   assert.doesNotMatch(sql, /source\s+[^,]*\bin\s*\(/iu);
 });
 
+test('usage accounting durably retains every token class with wide counters and precise costs', async () => {
+  const sql = await readFile(schemaPath, 'utf8');
+  const usage = /create table usage_events \(([\s\S]*?)\n\);/iu.exec(sql)?.[1] ?? '';
+  for (const column of ['input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_write_tokens', 'total_tokens']) {
+    assert.match(usage, new RegExp(`${column}\\s+bigint\\s+not null\\s+default 0`, 'iu'));
+  }
+  assert.match(usage, /cost_usd\s+numeric\(14,8\)/iu);
+  assert.match(sql, /spent_usd\s+numeric\(14,8\)/iu);
+});
+
 test('every user-owned table cascades and privacy-sensitive artifacts remain JSON metadata', async () => {
   const sql = await readFile(schemaPath, 'utf8');
   for (const table of ['cv_documents', 'pending_cv_imports', 'unit_subscriptions', 'matches', 'usage_events', 'accounts', 'user_state']) {

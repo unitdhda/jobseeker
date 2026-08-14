@@ -208,10 +208,12 @@ create table usage_events (
   kind text not null check (kind in ('score','application','search-profile','llm')),
   agent text,
   model text,
-  input_tokens integer check (input_tokens is null or input_tokens >= 0),
-  output_tokens integer check (output_tokens is null or output_tokens >= 0),
-  total_tokens integer check (total_tokens is null or total_tokens >= 0),
-  cost_usd numeric(14,6) not null default 0 check (cost_usd >= 0),
+  input_tokens bigint not null default 0 check (input_tokens >= 0),
+  output_tokens bigint not null default 0 check (output_tokens >= 0),
+  cache_read_tokens bigint not null default 0 check (cache_read_tokens >= 0),
+  cache_write_tokens bigint not null default 0 check (cache_write_tokens >= 0),
+  total_tokens bigint not null default 0 check (total_tokens >= 0),
+  cost_usd numeric(14,8) not null default 0 check (cost_usd >= 0),
   occurred_at timestamptz not null default now()
 );
 create index usage_events_kind_time_idx on usage_events(kind, occurred_at desc);
@@ -220,7 +222,7 @@ create index usage_events_user_kind_time_idx on usage_events(user_id, kind, occu
 create table accounts (
   user_id text not null references users(user_id) on delete cascade,
   day date not null,
-  spent_usd numeric(14,6) not null default 0 check (spent_usd >= 0),
+  spent_usd numeric(14,8) not null default 0 check (spent_usd >= 0),
   scores integer not null default 0 check (scores >= 0),
   applications integer not null default 0 check (applications >= 0),
   search_profiles integer not null default 0 check (search_profiles >= 0),

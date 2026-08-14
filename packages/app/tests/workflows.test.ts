@@ -30,9 +30,11 @@ function response(model: Model<Api>, value: unknown, stopReason: AssistantMessag
   return { role: 'assistant', content: [{ type: 'text', text: JSON.stringify(value) }], provider: model.provider, model: model.id,
     api: model.api, usage, stopReason, timestamp: 0, ...(errorMessage ? { errorMessage } : {}) };
 }
-function models(handler: (model: Model<Api>, signal: AbortSignal | undefined, prompt: string) => Promise<AssistantMessage>): JsonModels {
+function models(handler: (model: Model<Api>, signal: AbortSignal | undefined, prompt: string,
+  systemPrompt: string) => Promise<AssistantMessage>): JsonModels {
   return { getModel: (_provider, id) => id === primary.id ? primary : id === fallback.id ? fallback : undefined,
-    completeSimple: (model, context, options) => handler(model, options?.signal, context.messages[0]?.content as string) };
+    completeSimple: (model, context, options) => handler(model, options?.signal, context.messages[0]?.content as string,
+      context.systemPrompt ?? '') };
 }
 function pending(id: number): PendingMatch {
   return { userId, vacancyId: id, source, publishedAt: new Date(), matchedAt: new Date(), lexicalScore: 50,
@@ -76,13 +78,15 @@ function ports(ids: readonly number[], overrides: Partial<ScoringWorkflowPorts> 
   return { value, queued, durable, released, reservations, prescores, scores, llm, spend };
 }
 
-test('prescoring saves exact results with frozen exploration and releases every failed batch claim', async () => {
-  const good = ports([1, 2]); let randomCalls = 0;
-  const report = await prescorePendingVacancies({ userId, models: models(async () => response(primary, { results: [
-    { vacancyId: 1, score: 39, rationale: 'Below threshold' }, { vacancyId: 2, score: 70, rationale: 'Strong fit' }] })),
-    model: 'test/primary', promptVersion: 'v2', threshold: 40, explorationRate: .1, random: () => { randomCalls += 1; return .05; },
+test('prescoring uses the configured threshold prompt, saves exact results, and releases failed claims', async () => {
+  const good = ports([1, 2]); let randomCalls = 0; let systemPrompt = '';
+  const report = await prescorePendingVacancies({ userId, models: models(async (_model, _signal, _prompt, system) => {
+    systemPrompt = system; return response(primary, { results: [
+    { vacancyId: 1, score: 49, rationale: 'Below threshold' }, { vacancyId: 2, score: 80, rationale: 'Strong fit' }] }); }),
+    model: 'test/primary', promptVersion: 'v4', threshold: 50, explorationRate: .1, random: () => { randomCalls += 1; return .05; },
     batchSize: 2, cycleCap: 10, ports: good.value });
   assert.deepEqual(report, { selected: 2, claimed: 2, saved: 2, released: 0, failedBatches: 0, errors: [] });
+  assert.match(systemPrompt, /Score 50 is the configured full-scoring admission threshold/u);
   assert.deepEqual(good.prescores, [1, 2]); assert.equal(randomCalls, 1); assert.equal(good.queued.size, 0);
 
   const bad = ports([1, 2]);

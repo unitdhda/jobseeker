@@ -1009,6 +1009,8 @@ export async function recordUsage(targetUserId: UserId, kind: UsageKind, agent?:
 export interface LlmUsageInput {
   readonly inputTokens: number;
   readonly outputTokens: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
   readonly totalTokens: number;
   readonly costUsd: number;
 }
@@ -1016,9 +1018,16 @@ export interface LlmUsageInput {
 export async function recordLlmUsageEvent(
   targetUserId: UserId, agent: string, model: string, usage: LlmUsageInput,
 ): Promise<void> {
-  await postgresQuery(`insert into usage_events(user_id,kind,agent,model,input_tokens,output_tokens,total_tokens,cost_usd)
-    values($1,'llm',$2,$3,$4,$5,$6,$7)`, [
-    targetUserId, agent, model, usage.inputTokens, usage.outputTokens, usage.totalTokens, usage.costUsd,
+  for (const [name, value] of Object.entries(usage)) {
+    if (!Number.isFinite(value) || value < 0 || (name !== 'costUsd' && !Number.isSafeInteger(value))) {
+      throw new RangeError(`Invalid LLM usage ${name}.`);
+    }
+  }
+  await postgresQuery(`insert into usage_events(user_id,kind,agent,model,input_tokens,output_tokens,
+    cache_read_tokens,cache_write_tokens,total_tokens,cost_usd)
+    values($1,'llm',$2,$3,$4,$5,$6,$7,$8,$9)`, [
+    targetUserId, agent, model, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens,
+    usage.cacheWriteTokens, usage.totalTokens, usage.costUsd,
   ]);
 }
 
@@ -1032,15 +1041,27 @@ export async function usageInLast24Hours(targetUserId: UserId, kind: UsageKind, 
 export interface UsageHour { readonly at: Date; readonly tokens: number; readonly costUsd: number }
 export interface LlmUsageSummary {
   readonly turns24h: number; readonly turnsTotal: number; readonly tokens24h: number; readonly tokensTotal: number;
+  readonly inputTokens24h: number; readonly inputTokensTotal: number;
+  readonly outputTokens24h: number; readonly outputTokensTotal: number;
+  readonly cacheReadTokens24h: number; readonly cacheReadTokensTotal: number;
+  readonly cacheWriteTokens24h: number; readonly cacheWriteTokensTotal: number;
   readonly cost24h: number; readonly costTotal: number; readonly hours: readonly UsageHour[];
 }
 
 export async function llmUsageSummary(): Promise<LlmUsageSummary> {
-  const totals = await postgresQuery<{ turns_24h: string; turns_total: string; tokens_24h: string; tokens_total: string; cost_24h: string; cost_total: string }>(`select
+  const totals = await postgresQuery<Record<string, string>>(`select
     count(*) filter(where kind='llm' and occurred_at>=now()-interval '24 hours') turns_24h,
     count(*) filter(where kind='llm') turns_total,
     coalesce(sum(total_tokens) filter(where kind='llm' and occurred_at>=now()-interval '24 hours'),0) tokens_24h,
     coalesce(sum(total_tokens) filter(where kind='llm'),0) tokens_total,
+    coalesce(sum(input_tokens) filter(where kind='llm' and occurred_at>=now()-interval '24 hours'),0) input_tokens_24h,
+    coalesce(sum(input_tokens) filter(where kind='llm'),0) input_tokens_total,
+    coalesce(sum(output_tokens) filter(where kind='llm' and occurred_at>=now()-interval '24 hours'),0) output_tokens_24h,
+    coalesce(sum(output_tokens) filter(where kind='llm'),0) output_tokens_total,
+    coalesce(sum(cache_read_tokens) filter(where kind='llm' and occurred_at>=now()-interval '24 hours'),0) cache_read_tokens_24h,
+    coalesce(sum(cache_read_tokens) filter(where kind='llm'),0) cache_read_tokens_total,
+    coalesce(sum(cache_write_tokens) filter(where kind='llm' and occurred_at>=now()-interval '24 hours'),0) cache_write_tokens_24h,
+    coalesce(sum(cache_write_tokens) filter(where kind='llm'),0) cache_write_tokens_total,
     coalesce(sum(cost_usd) filter(where kind='llm' and occurred_at>=now()-interval '24 hours'),0) cost_24h,
     coalesce(sum(cost_usd) filter(where kind='llm'),0) cost_total from usage_events`);
   const hours = await postgresQuery<{ at: Date | string; tokens: string; cost_usd: string }>(`with hours as (
@@ -1051,7 +1072,11 @@ export async function llmUsageSummary(): Promise<LlmUsageSummary> {
   const total = totals.rows[0]!;
   return Object.freeze({
     turns24h: Number(total.turns_24h), turnsTotal: Number(total.turns_total), tokens24h: Number(total.tokens_24h),
-    tokensTotal: Number(total.tokens_total), cost24h: Number(total.cost_24h), costTotal: Number(total.cost_total),
+    tokensTotal: Number(total.tokens_total), inputTokens24h: Number(total.input_tokens_24h), inputTokensTotal: Number(total.input_tokens_total),
+    outputTokens24h: Number(total.output_tokens_24h), outputTokensTotal: Number(total.output_tokens_total),
+    cacheReadTokens24h: Number(total.cache_read_tokens_24h), cacheReadTokensTotal: Number(total.cache_read_tokens_total),
+    cacheWriteTokens24h: Number(total.cache_write_tokens_24h), cacheWriteTokensTotal: Number(total.cache_write_tokens_total),
+    cost24h: Number(total.cost_24h), costTotal: Number(total.cost_total),
     hours: Object.freeze(hours.rows.map((row) => Object.freeze({ at: new Date(row.at), tokens: Number(row.tokens), costUsd: Number(row.cost_usd) }))),
   });
 }

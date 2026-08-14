@@ -1,6 +1,6 @@
 # Reference VPS deployment
 
-This image installs the published `@unitdhda/jobseeker@0.2.5` package. It does not compile the repository checkout.
+This image installs the published `@unitdhda/jobseeker@0.2.6` package. It does not compile the repository checkout.
 
 ## Prepare
 
@@ -25,7 +25,7 @@ curl --fail http://127.0.0.1:3000/health
 curl --fail http://127.0.0.1:3000/ready
 ```
 
-`db init` refuses any existing table. Existing deployments require a tested forward migration; do not initialize over production.
+`db init` refuses any existing table. `packages/app/schema.sql` is the sole current schema definition; do not initialize over production.
 
 ## Security and ownership
 
@@ -46,7 +46,7 @@ curl --fail http://127.0.0.1:3000/ready
 4. Build and run `doctor` against the candidate image.
 5. Deploy without forcing discovery; existing due schedules remain authoritative.
 
-Rollback installs/builds the last known-good package/container while retaining the forward-compatible database schema. Schema changes roll forward; never down-migrate live data. Never run `git clean` or `rsync --delete` over environment or extension assets.
+Rollback installs/builds the last known-good package/container only when its database expectations remain compatible with the current schema. Never run `git clean` or `rsync --delete` over environment or extension assets.
 
 ## Operations checklist
 

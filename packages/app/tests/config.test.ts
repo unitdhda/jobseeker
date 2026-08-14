@@ -45,6 +45,7 @@ test('blank models remain undefined and defaults satisfy all cross-field invaria
   assert.equal(parsed.engineMode, 'off');
   assert.equal(parsed.telegramMode, 'off');
   assert.equal(parsed.prescoringThinking, undefined);
+  assert.equal(parsed.prescorePromptVersion, 'v4');
   assert.equal(Object.isFrozen(parsed), true);
 });
 
