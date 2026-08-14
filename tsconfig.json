@@ -3,6 +3,12 @@
     "target": "ES2024",
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
+    "paths": {
+      "@jobseeker/engine": ["./packages/engine/src/index.ts"],
+      "@jobseeker/engine/*": ["./packages/engine/src/*.ts"],
+      "@jobseeker/sources": ["./packages/sources/src/index.ts"],
+      "@jobseeker/sources/*": ["./packages/sources/src/*.ts"]
+    },
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,

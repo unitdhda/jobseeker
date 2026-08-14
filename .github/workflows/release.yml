@@ -29,6 +29,11 @@ jobs:
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install extension development dependencies
+        run: |
+          bun install --cwd extensions/hh
+          bun install --cwd extensions/claude-cli
+
       - name: Typecheck
         run: bun run typecheck
 
