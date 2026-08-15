@@ -1,6 +1,6 @@
 # Reference VPS deployment
 
-This image installs the published `@unitdhda/jobseeker@0.2.6` package. It does not compile the repository checkout.
+This image installs the published `@unitdhda/jobseeker@0.2.7` package. It does not compile the repository checkout.
 
 ## Prepare
 
