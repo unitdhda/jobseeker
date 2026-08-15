@@ -6,6 +6,7 @@ import type { TelegramMode } from './config.ts';
 
 export interface WebPorts {
   persistenceReady(): Promise<'postgres'>;
+  engineReady(): boolean;
   claimTelegramUpdate(updateId: number, retryProcessing?: boolean): Promise<boolean>;
   completeTelegramUpdate(updateId: number): Promise<boolean>;
   failTelegramUpdate(updateId: number, error: unknown): Promise<boolean>;
@@ -43,8 +44,11 @@ export function createWebApp(options: WebOptions): Hono {
   if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 10 * 1024 * 1024) throw new RangeError('Invalid webhook body limit.');
   app.get('/health', (context) => context.json({ ok: true }));
   app.get('/ready', async (context) => {
-    try { const persistence = await options.ports.persistenceReady(); return context.json({ ok: true, persistence }); }
-    catch { return context.json({ ok: false }, 503); }
+    try {
+      const persistence = await options.ports.persistenceReady();
+      if (!options.ports.engineReady()) throw new Error('Required engine ownership is unavailable.');
+      return context.json({ ok: true, persistence });
+    } catch { return context.json({ ok: false }, 503); }
   });
   if (options.telegramMode === 'webhook') {
     if (!validWebhookSecret(options.webhookSecret)) throw new TypeError('Webhook mode requires a valid URL-safe secret.');

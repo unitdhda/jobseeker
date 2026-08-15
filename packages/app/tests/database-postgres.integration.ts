@@ -172,10 +172,10 @@ run('PostgreSQL schema and critical store lifecycle', { timeout: 120_000 }, asyn
     const releaseOne = await store.tryAcquireSingletonLock('jobseeker-engine-loop');
     assert.ok(releaseOne);
     assert.equal(await secondStore.tryAcquireSingletonLock('jobseeker-engine-loop'), null);
-    await releaseOne!();
+    await releaseOne!.release();
     const releaseTwo = await secondStore.tryAcquireSingletonLock('jobseeker-engine-loop');
     assert.ok(releaseTwo);
-    await releaseTwo!();
+    await releaseTwo!.release();
 
     await store.deleteUserData(user);
     assert.equal((await store.getTelegramUser(user))?.status, 'approved');

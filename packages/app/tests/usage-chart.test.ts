@@ -23,8 +23,8 @@ test('usage status localizes totals and emits bounded chart lines', () => {
 
 test('runtime status exposes degraded lanes while escaping operational labels', () => {
   const output = runtimeStatus({ uptimeMs: 1000, rssBytes: 1024, heapBytes: 512, cpuPercent: 1,
-    workerPending: 2, aiActive: 1, aiQueued: 3, telegramMode: '<webhook>', engineRunning: false,
+    workerPending: 2, aiActive: 1, aiQueued: 3, telegramMode: '<webhook>', engineStatus: 'waiting',
     discoveryStatus: 'failed <source>', judgmentStatus: 'idle & waiting' }, 'en');
-  assert.match(output, /engine: idle/u); assert.match(output, /failed &lt;source&gt;/u);
+  assert.match(output, /engine: waiting for ownership/u); assert.match(output, /failed &lt;source&gt;/u);
   assert.match(output, /idle &amp; waiting/u); assert.equal(output.includes('<webhook>'), false);
 });

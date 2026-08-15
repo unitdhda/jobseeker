@@ -5,7 +5,7 @@ import { createOrderedShutdown, createWebApp, startHttpServer, validWebhookSecre
 const secret = 'a'.repeat(32);
 function fixture(overrides: Partial<Parameters<typeof createWebApp>[0]['ports']> = {}) {
   const events: string[] = [];
-  const ports = { persistenceReady: async () => 'postgres' as const,
+  const ports = { persistenceReady: async () => 'postgres' as const, engineReady: () => true,
     claimTelegramUpdate: async (id: number) => { events.push(`claim:${id}`); return true; },
     completeTelegramUpdate: async (id: number) => { events.push(`complete:${id}`); return true; },
     failTelegramUpdate: async (id: number) => { events.push(`fail:${id}`); return true; },
@@ -20,10 +20,14 @@ test('webhook secret validation is URL-safe, bounded, equal-length, and timing-s
   assert.equal(webhookSecretMatches(secret, 'a'.repeat(31)), false);
 });
 
-test('/health is detail-free and /ready reports postgres or generic 503', async () => {
+test('/health is detail-free and /ready requires postgres plus engine ownership', async () => {
   const good = fixture(); const app = createWebApp({ telegramMode: 'off', ports: good.ports });
   assert.deepEqual(await (await app.request('/health')).json(), { ok: true });
   assert.deepEqual(await (await app.request('/ready')).json(), { ok: true, persistence: 'postgres' });
+  const waiting = fixture({ engineReady: () => false });
+  const waitingApp = createWebApp({ telegramMode: 'off', ports: waiting.ports });
+  assert.equal((await waitingApp.request('/health')).status, 200);
+  assert.equal((await waitingApp.request('/ready')).status, 503);
   const bad = fixture({ persistenceReady: async () => { throw new Error('postgres://secret'); } });
   const response = await createWebApp({ telegramMode: 'off', ports: bad.ports }).request('/ready');
   assert.equal(response.status, 503); assert.deepEqual(await response.json(), { ok: false });

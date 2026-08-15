@@ -35,6 +35,8 @@ export const ru = {
   buttonNext: '→',
   statusRunning: 'работает',
   statusIdle: 'ожидает',
+  statusWaiting: 'ждёт владения',
+  statusRecovering: 'восстанавливается',
   statusOff: 'выключен',
   unknownError: 'Неизвестная ошибка.',
 } as const;

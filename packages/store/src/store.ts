@@ -15,6 +15,7 @@ import {
   type StoreOptions,
   type StoreRuntime,
   type StoreRuntimeDependencies,
+  type SingletonLease,
 } from './client.ts';
 
 export interface StoreAdmin {
@@ -32,7 +33,7 @@ export interface StoreLifecycle {
   ready(): Promise<'postgres'>;
   close(): Promise<void>;
   withAdvisoryLock<TResult>(key: string, operation: (client: PoolClient) => Promise<TResult>): Promise<TResult>;
-  tryAcquireSingletonLock(key: string): Promise<(() => Promise<void>) | null>;
+  tryAcquireSingletonLock(key: string): Promise<SingletonLease | null>;
 }
 
 function storeProxy<TTarget extends object>(runtime: StoreRuntime, target: TTarget): TTarget {

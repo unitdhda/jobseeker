@@ -32,13 +32,23 @@ interface Queryable {
   ): Promise<QueryResult<TRow>>;
 }
 
-interface ReleasableClient extends Queryable {
+interface ErrorObservable {
+  on?(event: 'error', listener: (error: Error) => void): unknown;
+  removeListener?(event: 'error', listener: (error: Error) => void): unknown;
+}
+
+interface ReleasableClient extends Queryable, ErrorObservable {
   release(error?: Error | boolean): void;
 }
 
-interface SingletonClient extends Queryable {
+interface SingletonClient extends Queryable, ErrorObservable {
   connect(): Promise<unknown>;
   end(): Promise<void>;
+}
+
+export interface SingletonLease {
+  readonly lost: Promise<Error>;
+  release(): Promise<void>;
 }
 
 interface PoolLike extends Queryable {
@@ -171,7 +181,8 @@ export class StoreConnectionError extends Error {
     const code = typeof cause === 'object' && cause !== null && 'code' in cause && typeof cause.code === 'string'
       ? cause.code
       : undefined;
-    super(`PostgreSQL ${operation} failed${code ? ` (${code})` : ''}.`, { cause });
+    // Keep the original error out of the public chain: pg errors can retain clients whose inspection exposes credentials.
+    super(`PostgreSQL ${operation} failed${code ? ` (${code})` : ''}.`);
     this.name = 'StoreConnectionError';
     this.operation = operation;
     this.code = code;
@@ -198,22 +209,30 @@ export async function postgresQuery<TRow extends QueryResultRow = QueryResultRow
 export async function withPostgresTransaction<TResult>(
   operation: (client: PoolClient) => Promise<TResult>,
 ): Promise<TResult> {
-  const client = await getPostgresPool().connect() as unknown as PoolClient;
-  let poisoned = false;
+  const client = await getPostgresPool().connect() as unknown as PoolClient & ErrorObservable;
+  let poisoned = false; let connectionFailure: StoreConnectionError | undefined;
+  const onError = (error: Error): void => {
+    poisoned = true;
+    connectionFailure ??= new StoreConnectionError('transaction connection', error);
+  };
+  client.on?.('error', onError);
   try {
     await client.query('begin');
     const result = await operation(client);
+    if (connectionFailure) throw connectionFailure;
     await client.query('commit');
+    if (connectionFailure) throw connectionFailure;
     return result;
   } catch (error) {
     try {
-      await client.query('rollback');
+      if (!connectionFailure) await client.query('rollback');
     } catch {
       poisoned = true;
     }
-    throw error;
+    throw connectionFailure ?? error;
   } finally {
-    // A client whose rollback failed may still be in a transaction; pg must destroy rather than reuse it.
+    client.removeListener?.('error', onError);
+    // A disconnected client or one whose rollback failed must be destroyed rather than reused.
     client.release(poisoned);
   }
 }
@@ -232,10 +251,19 @@ export function withPostgresAdvisoryLock<TResult>(
 export async function tryAcquireSingletonLock(
   runtime: StoreRuntime,
   key: string,
-): Promise<(() => Promise<void>) | null> {
+): Promise<SingletonLease | null> {
   if (!key) throw new TypeError('Invalid singleton lock key: expected a nonempty string.');
   if (runtime.closed) throw new Error('Store runtime is closed.');
   const client = runtime.dependencies.createClient(poolConfig(runtime));
+  let resolveLost!: (error: StoreConnectionError) => void;
+  const lost = new Promise<StoreConnectionError>((resolve) => { resolveLost = resolve; });
+  let connectionFailure: StoreConnectionError | undefined;
+  const onError = (error: Error): void => {
+    connectionFailure ??= new StoreConnectionError('singleton connection', error);
+    runtime.singletonClients.delete(client);
+    resolveLost(connectionFailure);
+  };
+  client.on?.('error', onError);
   try {
     await client.connect();
     const result = await client.query<{ locked: boolean }>(
@@ -243,24 +271,30 @@ export async function tryAcquireSingletonLock(
       [key],
     );
     if (!result.rows[0]?.locked) {
+      client.removeListener?.('error', onError);
       await client.end();
       return null;
     }
     runtime.singletonClients.add(client);
     let released = false;
-    return async (): Promise<void> => {
-      if (released) return;
-      released = true;
-      runtime.singletonClients.delete(client);
-      try {
-        await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [key]);
-      } finally {
-        await client.end();
-      }
-    };
+    return Object.freeze({
+      lost,
+      async release(): Promise<void> {
+        if (released) return;
+        released = true;
+        runtime.singletonClients.delete(client);
+        client.removeListener?.('error', onError);
+        try {
+          if (!connectionFailure) await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+        } finally {
+          await client.end().catch(() => undefined);
+        }
+      },
+    });
   } catch (error) {
+    client.removeListener?.('error', onError);
     await client.end().catch(() => undefined);
-    throw new StoreConnectionError('singleton lock', error);
+    throw connectionFailure ?? new StoreConnectionError('singleton lock', error);
   }
 }
 

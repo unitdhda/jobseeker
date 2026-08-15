@@ -50,9 +50,12 @@ export function formatDuration(milliseconds: number, locale: Locale): string {
   const hours = Math.round(minutes / 60);
   return `${hours} ${locale === 'ru' ? 'ч' : 'h'}`;
 }
-export function formatStatus(status: 'running' | 'idle' | 'off', locale: Locale): string {
+export function formatStatus(status: 'running' | 'idle' | 'waiting' | 'recovering' | 'off', locale: Locale): string {
   const catalogue = messages(locale);
-  return status === 'running' ? catalogue.statusRunning : status === 'idle' ? catalogue.statusIdle : catalogue.statusOff;
+  if (status === 'running') return catalogue.statusRunning;
+  if (status === 'waiting') return catalogue.statusWaiting;
+  if (status === 'recovering') return catalogue.statusRecovering;
+  return status === 'idle' ? catalogue.statusIdle : catalogue.statusOff;
 }
 
 function lines(values: readonly string[], maximum: number): string[] {

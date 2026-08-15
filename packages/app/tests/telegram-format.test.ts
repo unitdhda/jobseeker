@@ -32,7 +32,8 @@ test('number, salary, date, time, duration, and status respect reader locale', (
   assert.equal(formatSalary(null, 'en'), 'salary not specified');
   assert.ok(formatDate(vacancy.publishedAt, 'en', 'UTC').length > 0); assert.match(formatTime(vacancy.publishedAt, 'en', 'UTC'), /03:04|03\.04/u);
   assert.equal(formatDuration(90_000, 'ru'), '2 мин'); assert.equal(formatDuration(90_000, 'en'), '2 min');
-  assert.equal(formatStatus('running', 'en'), 'running'); assert.equal(formatStatus('off', 'ru'), 'выключен');
+  assert.equal(formatStatus('running', 'en'), 'running'); assert.equal(formatStatus('waiting', 'en'), 'waiting for ownership');
+  assert.equal(formatStatus('recovering', 'ru'), 'восстанавливается'); assert.equal(formatStatus('off', 'ru'), 'выключен');
 });
 
 test('message splitting preserves line boundaries and rejects an oversized indivisible line', () => {

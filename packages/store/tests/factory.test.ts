@@ -103,3 +103,53 @@ test('transient query failures retry twice with bounded exponential delay and re
   assert.equal(attempts, 3);
   assert.deepEqual(delays, [50, 100]);
 });
+
+test('singleton lease reports asynchronous loss safely and releases idempotently', async () => {
+  const listeners = new Set<(error: Error) => void>(); let ends = 0; let unlocks = 0;
+  const dependencies: StoreRuntimeDependencies = {
+    createPool: () => ({ query: async <TRow extends QueryResultRow>() => result<TRow>(),
+      connect: async () => { throw new Error('unused'); }, end: async () => undefined }),
+    createClient: () => ({
+      connect: async () => undefined,
+      query: async <TRow extends QueryResultRow>(sql: string) => {
+        if (sql.includes('pg_try')) return result([{ locked: true }] as unknown as TRow[]);
+        if (sql.includes('pg_advisory_unlock')) unlocks += 1;
+        return result<TRow>();
+      },
+      on: (_event: 'error', listener: (error: Error) => void) => { listeners.add(listener); },
+      removeListener: (_event: 'error', listener: (error: Error) => void) => { listeners.delete(listener); },
+      end: async () => { ends += 1; },
+    }),
+    sleep: async () => undefined,
+  };
+  const store = createStoreWithDependencies(options('1'), dependencies);
+  const lease = await store.tryAcquireSingletonLock('engine'); assert.ok(lease);
+  for (const listener of listeners) listener(Object.assign(new Error('postgres://user:secret@host/db'), { code: 'ETIMEDOUT' }));
+  const lost = await lease.lost;
+  assert.equal(lost.message, 'PostgreSQL singleton connection failed (ETIMEDOUT).');
+  assert.doesNotMatch(lost.message, /secret|postgres:/u);
+  await lease.release(); await lease.release();
+  assert.equal(unlocks, 0); assert.equal(ends, 1); assert.equal(listeners.size, 0);
+});
+
+test('transaction consumes asynchronous client errors and destroys the poisoned client', async () => {
+  const listeners = new Set<(error: Error) => void>(); const releases: Array<Error | boolean | undefined> = [];
+  const dependencies: StoreRuntimeDependencies = {
+    createPool: () => ({ query: async <TRow extends QueryResultRow>() => result<TRow>(),
+      connect: async () => ({ query: async <TRow extends QueryResultRow>() => result<TRow>(),
+        on: (_event: 'error', listener: (error: Error) => void) => { listeners.add(listener); },
+        removeListener: (_event: 'error', listener: (error: Error) => void) => { listeners.delete(listener); },
+        release: (error?: Error | boolean) => { releases.push(error); } }), end: async () => undefined }),
+    createClient: () => ({ connect: async () => undefined, query: async <TRow extends QueryResultRow>() => result<TRow>(), end: async () => undefined }),
+    sleep: async () => undefined,
+  };
+  const store = createStoreWithDependencies(options('1'), dependencies);
+  await assert.rejects(store.admin.transaction(async () => {
+    for (const listener of listeners) listener(Object.assign(new Error('password=private'), { code: 'ECONNRESET' }));
+    return 'done';
+  }), (error) => {
+    assert.ok(error instanceof Error); assert.equal(error.message, 'PostgreSQL transaction connection failed (ECONNRESET).');
+    assert.doesNotMatch(error.message, /private|password/u); return true;
+  });
+  assert.deepEqual(releases, [true]); assert.equal(listeners.size, 0);
+});

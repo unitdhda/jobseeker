@@ -79,12 +79,17 @@ export async function startService(): Promise<void> {
           confirmDelete: async (userId) => { await bot.api.sendMessage(Number(userId), 'Confirm deletion?', {
             reply_markup: { inline_keyboard: [[{ text: 'Delete', callback_data: 'privacy:delete' }]] } }); } },
         ownerMessageHistory, configuredSources: composition.enabledSourceProviderIds, digestMinScore: config.digestMinScore, alertScore: config.alertScore,
-        defaultTimezone: config.timezone, runtimeStatus: () => ({ uptimeMs: process.uptime() * 1000,
-          rssBytes: process.memoryUsage().rss, heapBytes: process.memoryUsage().heapUsed, cpuPercent: 0,
-          workerPending: worker?.pendingCount ?? 0, aiActive: 0, aiQueued: 0, telegramMode: config.telegramMode,
-          engineRunning: engine?.loop?.status().running ?? false,
-          discoveryStatus: engine?.loop?.status().discovery.lastStageFailures.join(',') || 'idle',
-          judgmentStatus: engine?.loop?.status().judgment.lastStageFailures.join(',') || 'idle' }) });
+        defaultTimezone: config.timezone, runtimeStatus: () => {
+          const ownership = engine?.status(); const loopStatus = ownership?.loop?.status();
+          const engineStatus = config.engineMode === 'off' ? 'off' : ownership?.state === 'running' ? 'running'
+            : ownership?.state === 'recovering' ? 'recovering' : 'waiting';
+          return { uptimeMs: process.uptime() * 1000,
+            rssBytes: process.memoryUsage().rss, heapBytes: process.memoryUsage().heapUsed, cpuPercent: 0,
+            workerPending: worker?.pendingCount ?? 0, aiActive: 0, aiQueued: 0, telegramMode: config.telegramMode,
+            engineStatus,
+            discoveryStatus: loopStatus?.discovery.lastStageFailures.join(',') || engineStatus,
+            judgmentStatus: loopStatus?.judgment.lastStageFailures.join(',') || engineStatus };
+        } });
       const telegramHandlers: TelegramCommandHandlers = Object.freeze({ ...commandHandlers,
         text: async (context: RoutedTelegramTextContext) => {
           await retrieveMatchByCode(context, { store: composition.store, transport: { reply: async (userId, html, buttons) => {
@@ -161,7 +166,9 @@ export async function startService(): Promise<void> {
           sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)) },
         judgment: { nextWakeMs: async () => 60_000, sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)) } } });
     const web = createWebApp({ telegramMode: config.telegramMode, webhookSecret: config.telegramWebhookSecret,
-      ports: { persistenceReady: composition.store.ready, claimTelegramUpdate: composition.store.claimTelegramUpdate,
+      ports: { persistenceReady: composition.store.ready,
+        engineReady: () => config.engineMode === 'off' || engine?.status().state === 'running',
+        claimTelegramUpdate: composition.store.claimTelegramUpdate,
         completeTelegramUpdate: composition.store.completeTelegramUpdate, failTelegramUpdate: composition.store.failTelegramUpdate,
         handleTelegramUpdate: async (update) => { if (!telegram || !await telegram.handleWebhook(update, config.telegramWebhookSecret)) throw new Error('Webhook receiver unavailable.'); } } });
     http = startHttpServer(web, config.appPort);

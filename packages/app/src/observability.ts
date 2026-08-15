@@ -119,7 +119,8 @@ export function scraperStatus(summary: ScraperSummary, configuredSources: readon
 export interface RuntimeStatusInput {
   readonly uptimeMs: number; readonly rssBytes: number; readonly heapBytes: number; readonly cpuPercent: number;
   readonly workerPending: number; readonly aiActive: number; readonly aiQueued: number;
-  readonly telegramMode: string; readonly engineRunning: boolean; readonly discoveryStatus: string; readonly judgmentStatus: string;
+  readonly telegramMode: string; readonly engineStatus: 'running' | 'waiting' | 'recovering' | 'off';
+  readonly discoveryStatus: string; readonly judgmentStatus: string;
 }
 export function runtimeStatus(value: RuntimeStatusInput, locale: Locale): string {
   const mb = (bytes: number) => `${formatNumber(bytes / 1024 / 1024, locale, 1)} MiB`;
@@ -127,7 +128,7 @@ export function runtimeStatus(value: RuntimeStatusInput, locale: Locale): string
     `<b>${locale === 'ru' ? 'Состояние' : 'Status'}</b>`,
     `uptime: ${formatDuration(value.uptimeMs, locale)} · RSS ${mb(value.rssBytes)} · heap ${mb(value.heapBytes)} · CPU ${formatNumber(value.cpuPercent, locale, 1)}%`,
     `worker: ${value.workerPending} · AI: ${value.aiActive}/${value.aiQueued}`,
-    `Telegram: ${escapeHtml(value.telegramMode)} · engine: ${formatStatus(value.engineRunning ? 'running' : 'idle', locale)}`,
+    `Telegram: ${escapeHtml(value.telegramMode)} · engine: ${formatStatus(value.engineStatus, locale)}`,
     `discovery: ${escapeHtml(value.discoveryStatus)} · judgment: ${escapeHtml(value.judgmentStatus)}`,
   ].join('\n');
 }

@@ -52,7 +52,7 @@ function fixture() {
     transport: { reply: async (_user, html) => { replies.push(html); }, sendDocument: async (_user, bytes) => { events.push(`export:${bytes.byteLength}`); },
       confirmDelete: async () => { events.push('confirm-delete'); } }, configuredSources: ['one'], digestMinScore: 50, alertScore: 80,
     defaultTimezone: 'UTC', runtimeStatus: () => ({ uptimeMs: 1000, rssBytes: 1, heapBytes: 1, cpuPercent: 0,
-      workerPending: 0, aiActive: 0, aiQueued: 0, telegramMode: 'polling', engineRunning: true, discoveryStatus: 'running', judgmentStatus: 'running' }),
+      workerPending: 0, aiActive: 0, aiQueued: 0, telegramMode: 'polling', engineStatus: 'running', discoveryStatus: 'running', judgmentStatus: 'running' }),
   };
   return { ports, events, replies };
 }

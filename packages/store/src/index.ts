@@ -1,4 +1,4 @@
-export type { StoreOptions, StoreSettings } from './client.ts';
+export type { SingletonLease, StoreOptions, StoreSettings } from './client.ts';
 export type { StoreAdminClient } from './admin.ts';
 export { initializeEmptyPublicSchema, publicUsersTableReady } from './admin.ts';
 export type * from './repos.ts';

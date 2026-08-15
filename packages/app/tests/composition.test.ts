@@ -71,19 +71,22 @@ function fakeLoop(events: string[]): EngineLoop {
       judgment: { iterations: 0, lastIterationAt: null, lastStageFailures: [], lastWakeMs: null } }) };
 }
 
-test('engine lock loser idles without vocabularies, hooks, sources, or loop', async () => {
+test('engine lock loser waits without vocabularies, hooks, sources, or loop', async () => {
   const events: string[] = [];
   const ownership = await startEngineOwnership({ store: { tryAcquireSingletonLock: async () => null },
     sources: { close: async () => { events.push('sources-close'); } },
     extensions: { startupHooks: [() => { events.push('startup'); }], shutdownHooks: [() => { events.push('shutdown'); }] },
     vocabularies: vocabulary(events), ports: emptyPorts, clocks: { discovery: clock, judgment: clock },
-    createLoop: () => fakeLoop(events) });
-  assert.equal(ownership.ownsLock, false); assert.deepEqual(events, []); await ownership.stop();
+    createLoop: () => fakeLoop(events), retryDelayMs: 1 });
+  assert.equal(ownership.ownsLock, false); assert.equal(ownership.status().state, 'waiting');
+  assert.deepEqual(events, []); await ownership.stop();
 });
 
 test('lock holder loads state, starts hooks/lanes, and shuts down in required order once', async () => {
   const events: string[] = [];
-  const ownership = await startEngineOwnership({ store: { tryAcquireSingletonLock: async () => { events.push('lock'); return async () => { events.push('release'); }; } },
+  const ownership = await startEngineOwnership({ store: { tryAcquireSingletonLock: async () => {
+      events.push('lock'); return { lost: new Promise(() => undefined), release: async () => { events.push('release'); } };
+    } },
     sources: { close: async () => { events.push('sources-close'); } },
     extensions: { startupHooks: [() => { events.push('startup-1'); }, () => { events.push('startup-2'); }],
       shutdownHooks: [() => { events.push('shutdown-1'); }, () => { events.push('shutdown-2'); }] },
@@ -92,14 +95,40 @@ test('lock holder loads state, starts hooks/lanes, and shuts down in required or
   assert.equal(ownership.ownsLock, true);
   assert.deepEqual(events, ['lock', 'vocabulary', 'startup-1', 'startup-2', 'loop-run']);
   await ownership.stop(); await ownership.stop();
-  assert.deepEqual(events.slice(5), ['loop-stop', 'sources-close', 'shutdown-2', 'shutdown-1', 'release']);
+  assert.deepEqual(events.slice(5), ['loop-stop', 'release', 'sources-close', 'shutdown-2', 'shutdown-1']);
 });
 
 test('startup failure closes sources, runs shutdown hooks, and releases lock', async () => {
   const events: string[] = [];
-  await assert.rejects(startEngineOwnership({ store: { tryAcquireSingletonLock: async () => async () => { events.push('release'); } },
+  await assert.rejects(startEngineOwnership({ store: { tryAcquireSingletonLock: async () => ({
+      lost: new Promise(() => undefined), release: async () => { events.push('release'); } }) },
     sources: { close: async () => { events.push('sources-close'); } },
     extensions: { startupHooks: [], shutdownHooks: [() => { events.push('shutdown'); }] }, vocabularies: vocabulary(events, true),
     ports: emptyPorts, clocks: { discovery: clock, judgment: clock }, createLoop: () => fakeLoop(events) }), /load failed/u);
   assert.deepEqual(events, ['vocabulary', 'sources-close', 'shutdown', 'release']);
+});
+
+test('engine retries contention and lease loss without reinitializing providers or overlapping loops', async () => {
+  const events: string[] = []; let attempts = 0; let loseFirst!: (error: Error) => void;
+  const firstLost = new Promise<Error>((resolve) => { loseFirst = resolve; });
+  const leases = [
+    { lost: firstLost, release: async () => { events.push('release-1'); } },
+    { lost: new Promise<Error>(() => undefined), release: async () => { events.push('release-2'); } },
+  ];
+  const ownership = await startEngineOwnership({ store: { tryAcquireSingletonLock: async () => {
+      attempts += 1; events.push(`lock-${attempts}`); return attempts === 1 ? null : leases[attempts - 2] ?? leases[1]!;
+    } }, sources: { close: async () => { events.push('sources-close'); } },
+    extensions: { startupHooks: [() => { events.push('startup'); }], shutdownHooks: [() => { events.push('shutdown'); }] },
+    vocabularies: vocabulary(events), ports: emptyPorts, clocks: { discovery: clock, judgment: clock },
+    createLoop: () => fakeLoop(events), retryDelayMs: 0, sleep: async () => undefined });
+  while (events.filter((event) => event === 'loop-run').length < 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(ownership.status().state, 'running');
+  loseFirst(new Error('postgres://must-not-log'));
+  while (events.filter((event) => event === 'loop-run').length < 2) await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(events.filter((event) => event === 'vocabulary').length, 1);
+  assert.equal(events.filter((event) => event === 'startup').length, 1);
+  assert.deepEqual(events.filter((event) => event.startsWith('loop-')), ['loop-run', 'loop-stop', 'loop-run']);
+  await ownership.stop();
+  assert.equal(events.filter((event) => event === 'sources-close').length, 1);
+  assert.equal(events.filter((event) => event === 'shutdown').length, 1);
 });

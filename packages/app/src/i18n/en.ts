@@ -37,6 +37,8 @@ export const en = {
   buttonNext: '→',
   statusRunning: 'running',
   statusIdle: 'idle',
+  statusWaiting: 'waiting for ownership',
+  statusRecovering: 'recovering',
   statusOff: 'off',
   unknownError: 'Unknown error.',
 } satisfies Catalogue;
