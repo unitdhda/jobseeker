@@ -123,6 +123,31 @@ run('PostgreSQL schema and critical store lifecycle', { timeout: 120_000 }, asyn
     assert.deepEqual(await store.claimMatches(user, [vacancy.id]), [vacancy.id]);
     assert.equal(await store.saveScore(user, vacancy.id, 90, 'Backend', 'Strong fit', ['Evidence'], [], false,
       'test-model', { rationale: 'Full durable explanation' }), true);
+    await store.admin.query('update vacancies set apply_id=$2 where id=$1', [vacancy.id, 'abcdef']);
+
+    const second = await store.upsertVacancy({ ...normalized, sourceId: parseSourceVacancyId('second'),
+      name: 'Frontend Designer', employer: 'Interface Works', description: 'Design accessible React interfaces.',
+      keySkills: ['React'], url: new URL('https://example.test/second'), contentHash: parseVacancyContentHash('c'.repeat(64)) });
+    await store.createMatches([{ userId: user, vacancyId: second.id, score: 70, regexScore: 70, lexicalCosine: 0.15,
+      titleSimilarity: 0.8, skillCoverage: 0.7, seniorityGap: null, specificity: null, lexicalCosineIdf: null }], new Date());
+    assert.deepEqual(await store.claimMatches(user, [second.id]), [second.id]);
+    assert.equal(await store.saveScore(user, second.id, 75, 'Frontend', 'Good fit', ['React'], [], false,
+      'test-model', { rationale: 'Second explanation' }), true);
+    await store.admin.query('update vacancies set apply_id=$2 where id=$1', [second.id, 'abcxyz']);
+
+    const unscored = await store.upsertVacancy({ ...normalized, sourceId: parseSourceVacancyId('unscored'),
+      name: 'Data Analyst', employer: 'Numbers Ltd', description: 'Analyze reporting datasets.', keySkills: ['SQL'],
+      url: new URL('https://example.test/unscored'), contentHash: parseVacancyContentHash('d'.repeat(64)) });
+    await store.createMatches([{ userId: user, vacancyId: unscored.id, score: 60, regexScore: 60, lexicalCosine: 0.1,
+      titleSimilarity: 0.7, skillCoverage: 0.6, seniorityGap: null, specificity: null, lexicalCosineIdf: null }], new Date());
+    await store.admin.query('update vacancies set apply_id=$2 where id=$1', [unscored.id, 'zzzzzz']);
+
+    assert.deepEqual(await store.scoredVacancyApplyIds(user), ['abcdef', 'abcxyz']);
+    assert.equal((await store.scoredVacanciesByApplyIdPrefix(user, 'abc')).length, 2);
+    assert.equal((await store.scoredVacanciesByApplyIdPrefix(user, 'abcdef'))[0]?.id, vacancy.id);
+    assert.deepEqual(await store.scoredVacanciesByApplyIdPrefix(user, 'z'), []);
+    assert.deepEqual(await store.scoredVacanciesByApplyIdPrefix(owner, 'abc'), []);
+
     await store.markAlerted(user, vacancy.id);
     assert.deepEqual((await store.getScoredVacancy(user, vacancy.id))?.explanation,
       { rationale: 'Full durable explanation' });

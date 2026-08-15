@@ -11,13 +11,14 @@ import { startEngineOwnership, type EngineOwnership } from './engine-main.ts';
 import { createJobWorkerClient, type JobWorkerClient } from './worker-client.ts';
 import { createScoringWorkflowPorts } from './workflow-adapters.ts';
 import { createTelegramApi, downloadTelegramFile, telegramSendError } from './telegram/api.ts';
-import { installTelegramRoutes } from './telegram/bot.ts';
+import { installTelegramRoutes, type RoutedTelegramTextContext, type TelegramCommandHandlers } from './telegram/bot.ts';
 import { resolveLocale } from './i18n/index.ts';
 import { createCommandHandlers } from './telegram/commands.ts';
 import { routeTelegramCallback } from './telegram/callbacks.ts';
 import { sendHighAlerts, sendScheduledDigest } from './telegram/delivery.ts';
 import { grammYReceiver, startTelegramOwnership, type TelegramOwnership } from './telegram/ownership.ts';
 import { createOwnerMessageHistory } from './telegram/owner-message-history.ts';
+import { retrieveMatchByCode } from './telegram/match-code.ts';
 import { createWebApp, createOrderedShutdown, startHttpServer, type HttpServerHandle } from './web.ts';
 import { safeErrorMessage } from './security.ts';
 import { createCvParser, nodeCvParserCommand } from './cv.ts';
@@ -84,7 +85,17 @@ export async function startService(): Promise<void> {
           engineRunning: engine?.loop?.status().running ?? false,
           discoveryStatus: engine?.loop?.status().discovery.lastStageFailures.join(',') || 'idle',
           judgmentStatus: engine?.loop?.status().judgment.lastStageFailures.join(',') || 'idle' }) });
-      installTelegramRoutes(bot, composition.store, config.defaultLocale, { handlers: commandHandlers,
+      const telegramHandlers: TelegramCommandHandlers = Object.freeze({ ...commandHandlers,
+        text: async (context: RoutedTelegramTextContext) => {
+          await retrieveMatchByCode(context, { store: composition.store, transport: { reply: async (userId, html, buttons) => {
+            await bot.api.sendMessage(Number(userId), html, { parse_mode: 'HTML', ...(buttons ? { reply_markup: { inline_keyboard: [[
+              ...buttons.map((button) => button.url ? { text: button.text, url: button.url }
+                : { text: button.text, callback_data: button.callbackData! }),
+            ]] } } : {}) });
+          } } });
+        },
+      });
+      installTelegramRoutes(bot, composition.store, config.defaultLocale, { handlers: telegramHandlers,
         setCommands: (userId, locale, commands) => receiver.setUserCommands(userId, locale, commands),
         notifyOwner: async (text) => { if (config.ownerTelegramUserId) await bot.api.sendMessage(Number(config.ownerTelegramUserId), text); },
         document: async (document) => {

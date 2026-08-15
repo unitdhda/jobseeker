@@ -44,6 +44,16 @@ test('installed document route ignores unknown users and sends approved metadata
   [{ userId, locale: 'en', fileId: 'file', filename: 'cv.pdf', mediaType: 'application/pdf', declaredSize: 20 }]);
 });
 
+test('installed approved text route invokes only the non-command text handler', async () => {
+  const fixture = portsFixture(approved); const bot = botFixture(); const texts: string[] = [];
+  installTelegramRoutes(bot.bot, fixture.ports, 'en', { handlers: { text: (value) => { texts.push(value.text); } } });
+  await bot.message()(context({ text: '  BQE  ' }).value);
+  assert.deepEqual(texts, ['  BQE  ']); assert.deepEqual(fixture.calls, { get: 1, touch: 1, request: 0 });
+
+  await bot.message()(context({}).value);
+  assert.deepEqual(texts, ['  BQE  ']);
+});
+
 test('installed /request route propagates owner notification', async () => {
   const fixture = portsFixture(null); const bot = botFixture(); const notifications: string[] = [];
   installTelegramRoutes(bot.bot, fixture.ports, 'en', { notifyOwner: async (text) => { notifications.push(text); } });

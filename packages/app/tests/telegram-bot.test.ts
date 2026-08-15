@@ -10,7 +10,7 @@ const user = (overrides: Partial<TelegramUser> = {}): TelegramUser => ({ userId,
   status: 'approved', isOwner: false, locale: null, localeSelected: false, createdAt: new Date(), updatedAt: new Date(), ...overrides });
 function fixture(existing: TelegramUser | null) {
   const calls = { get: 0, touch: 0, request: 0, locale: 0, replies: [] as string[], menus: [] as Array<{ locale: Locale; commands: readonly string[] }>,
-    approved: 0, owner: 0, notified: 0 };
+    approved: 0, owner: 0, text: [] as string[], notified: 0 };
   let stored = existing;
   const ports: TelegramAccessPorts = {
     getTelegramUser: async () => { calls.get += 1; return stored; },
@@ -21,7 +21,8 @@ function fixture(existing: TelegramUser | null) {
   const response: TelegramResponsePort = { reply: async (text) => { calls.replies.push(text); },
     notifyOwner: async () => { calls.notified += 1; }, setCommands: async (locale, commands) => { calls.menus.push({ locale, commands }); } };
   const handlers = { approved: Object.fromEntries(approvedCommands.map((command) => [command, () => { calls.approved += 1; }])),
-    owner: Object.fromEntries(ownerCommands.map((command) => [command, () => { calls.owner += 1; }])) };
+    owner: Object.fromEntries(ownerCommands.map((command) => [command, () => { calls.owner += 1; }])),
+    text: (context: { text: string }) => { calls.text.push(context.text); } };
   return { ports, response, handlers, calls };
 }
 const update = (text: string, languageCode = 'en-US', chatType = 'private') => ({ chatType, text,
@@ -37,7 +38,7 @@ test('command inventories contain exactly the required public, approved, and own
 test('unknown arbitrary senders and non-private chats create no rows and invoke no command handlers', async () => {
   const unknown = fixture(null);
   assert.equal(await routeTelegramUpdate(update('hello'), unknown.ports, unknown.response, 'ru', unknown.handlers), null);
-  assert.deepEqual(unknown.calls, { get: 1, touch: 0, request: 0, locale: 0, replies: [], menus: [], approved: 0, owner: 0, notified: 0 });
+  assert.deepEqual(unknown.calls, { get: 1, touch: 0, request: 0, locale: 0, replies: [], menus: [], approved: 0, owner: 0, text: [], notified: 0 });
   const group = fixture(null);
   await routeTelegramUpdate(update('/start', 'en', 'group'), group.ports, group.response, 'ru', group.handlers);
   assert.equal(group.calls.get, 0); assert.equal(group.calls.touch, 0); assert.equal(group.calls.replies.length, 1);
@@ -60,6 +61,18 @@ test('approved middleware resolves locale and touches identity exactly once befo
   const context = await routeTelegramUpdate(update('/digest', 'en-US'), value.ports, value.response, 'en', value.handlers);
   assert.equal(context?.locale, 'ru'); assert.equal(value.calls.get, 1); assert.equal(value.calls.touch, 1);
   assert.equal(value.calls.approved, 1); assert.equal(value.calls.owner, 0);
+});
+
+test('approved non-command text routes once while non-text and unapproved text retain existing behavior', async () => {
+  const approved = fixture(user({ locale: 'ru', localeSelected: true }));
+  const context = await routeTelegramUpdate(update('  BQE  '), approved.ports, approved.response, 'en', approved.handlers);
+  assert.equal(context?.locale, 'ru'); assert.deepEqual(approved.calls.text, ['  BQE  ']); assert.equal(approved.calls.touch, 1);
+
+  assert.equal(await routeTelegramUpdate({ ...update('ignored'), text: undefined }, approved.ports, approved.response, 'en', approved.handlers), null);
+  assert.deepEqual(approved.calls.text, ['  BQE  ']);
+  const pending = fixture(user({ status: 'pending' }));
+  assert.equal(await routeTelegramUpdate(update('abcdef'), pending.ports, pending.response, 'en', pending.handlers), null);
+  assert.deepEqual(pending.calls.text, []); assert.equal(pending.calls.touch, 0); assert.deepEqual(pending.calls.replies, []);
 });
 
 test('owner commands are hidden and rejected before touching a non-owner identity', async () => {

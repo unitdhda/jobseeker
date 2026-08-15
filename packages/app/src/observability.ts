@@ -107,6 +107,9 @@ export function scraperStatus(summary: ScraperSummary, configuredSources: readon
     `${locale === 'ru' ? 'Матчи' : 'Matches'}: <b>${formatNumber(summary.matched24h, locale)}</b> · ${locale === 'ru' ? 'оценки' : 'scored'}: <b>${formatNumber(summary.scored24h, locale)}</b>`,
     '', `<b>${locale === 'ru' ? 'По источникам' : 'By source'}</b>`];
   for (const row of all) lines.push(`• ${escapeHtml(row.source)}: +${formatNumber(row.discovered24h, locale)} · ${locale === 'ru' ? 'расп.' : 'parsed'} ${formatNumber(row.normalized24h, locale)} · ${locale === 'ru' ? 'сбои' : 'failed'} ${formatNumber(row.failed, locale)}`);
+  lines.push('', `<b>${locale === 'ru' ? 'Поисковые единицы' : 'Search units'}</b>`);
+  if (!summary.units.length) lines.push(locale === 'ru' ? 'Нет активных единиц' : 'No active units');
+  for (const unit of summary.units) lines.push(`• ${escapeHtml(unit.platform)}: ${formatNumber(unit.units, locale)} · ${locale === 'ru' ? 'просрочено' : 'overdue'} ${formatNumber(unit.overdue, locale)} · ${locale === 'ru' ? 'интервал' : 'cadence'} ${formatNumber(unit.cadenceMin, locale)}–${formatNumber(unit.cadenceMax, locale)} min`);
   if (summary.parserErrors.length) { lines.push('', `<b>${locale === 'ru' ? 'Ошибки парсера за 24 часа' : 'Parser errors over 24 hours'}</b>`);
     for (const error of summary.parserErrors) lines.push(`• ${escapeHtml(error.error)} ×${formatNumber(error.count, locale)}`); }
   lines.push('', `<b>${locale === 'ru' ? 'Почасовая динамика за 24 часа' : 'Hour by hour over 24 hours'}</b>`, `<pre>${escapeHtml(chart)}</pre>`);

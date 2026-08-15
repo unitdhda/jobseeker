@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { digestPageMeta, digestPageSize, digestPageSlice, shortestUniqueApplyPrefixes } from '../src/telegram/digest-page.ts';
+import { digestPageMeta, digestPageSize, digestPageSlice, formatApplyIdWithUniquePrefix, normalizeApplyIdPrefix,
+  shortestUniqueApplyPrefixes } from '../src/telegram/digest-page.ts';
 
 test('digest uses ten items per page and clamps stale navigation to the last page', () => {
   assert.equal(digestPageSize, 10);
@@ -11,9 +12,17 @@ test('digest uses ten items per page and clamps stale navigation to the last pag
   assert.deepEqual(digestPageMeta(0, 0), { page: 0, pageCount: 1, total: 0, hasPrevious: false, hasNext: false });
 });
 
-test('apply IDs use shortest prefixes unique over the whole digest, not one visible page', () => {
+test('apply IDs use shortest prefixes across the complete scored history', () => {
   const prefixes = shortestUniqueApplyPrefixes(['abcdef', 'abcxyz', 'zbcdef', 'qwerty']);
   assert.deepEqual({ ...prefixes }, { abcdef: 'abcd', abcxyz: 'abcx', zbcdef: 'z', qwerty: 'q' });
+  assert.equal(formatApplyIdWithUniquePrefix('abcdef', ['abcdef', 'abcxyz']), '<b>abcd</b>ef');
+  assert.equal(formatApplyIdWithUniquePrefix('zbcdef', ['abcdef', 'zbcdef']), '<b>z</b>bcdef');
+  assert.equal(formatApplyIdWithUniquePrefix('abcdea', ['abcdef', 'abcdea']), '<b>abcdea</b>');
   assert.throws(() => shortestUniqueApplyPrefixes(['abcdef', 'abcdef']), /unique/u);
   assert.throws(() => shortestUniqueApplyPrefixes(['ABCDEF']), /Invalid/u);
+});
+
+test('match-code normalization trims and lowercases one to six ASCII letters only', () => {
+  assert.equal(normalizeApplyIdPrefix('  BQE  '), 'bqe'); assert.equal(normalizeApplyIdPrefix('abcdef'), 'abcdef');
+  for (const invalid of ['', 'abcdefg', 'ab-1', 'абв', '   ']) assert.equal(normalizeApplyIdPrefix(invalid), null);
 });

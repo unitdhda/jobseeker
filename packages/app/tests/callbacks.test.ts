@@ -32,7 +32,7 @@ function fixture(approved = true) {
     applicationTransport: { sendDocument: async () => ({ fileId: 'x' }), sendFileId: async () => undefined, sendText: async () => undefined },
     delivery: { isApprovedUser: async () => approved, unsentHighScoreVacancies: async () => [], markAlerted: async () => true,
       digestVacancies: async () => [], addressableDigestPage: async () => ({ vacancies: [], allApplyIds: [], total: 0 }),
-      replaceDigestSnapshot: async () => undefined }, digestMinScore: 50, alertScore: 80,
+      replaceDigestSnapshot: async () => undefined, scoredVacancyApplyIds: async () => [] }, digestMinScore: 50, alertScore: 80,
   };
   return { ports, events };
 }

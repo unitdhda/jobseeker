@@ -19,6 +19,8 @@ export const ru = {
   applicationPreparingLetter: 'Готовлю сопроводительное письмо…',
   applicationFailed: 'Не удалось подготовить материал. Попробуйте позже.',
   noDigest: 'Подходящих вакансий для дайджеста пока нет.',
+  matchCodeNotFound: 'Вакансия с таким кодом не найдена.',
+  matchCodeAmbiguous: 'Этот префикс подходит к нескольким вакансиям. Отправьте больше букв кода.',
   digestTitle: (page: number, pages: number) => `Дайджест вакансий · ${page}/${pages}`,
   scoreLabel: 'Оценка',
   salaryUnknown: 'зарплата не указана',

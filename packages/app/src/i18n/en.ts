@@ -21,6 +21,8 @@ export const en = {
   applicationPreparingLetter: 'Preparing a cover letter…',
   applicationFailed: 'The artifact could not be prepared. Try again later.',
   noDigest: 'There are no matching vacancies for the digest yet.',
+  matchCodeNotFound: 'No vacancy was found for that code.',
+  matchCodeAmbiguous: 'That prefix matches multiple vacancies. Send more letters from the code.',
   digestTitle: (page: number, pages: number) => `Vacancy digest · ${page}/${pages}`,
   scoreLabel: 'Score',
   salaryUnknown: 'salary not specified',

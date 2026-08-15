@@ -12,7 +12,7 @@ test('scraper status contains every configured source including zero-row provide
   const text = output.join('\n');
   assert.match(text, /one: \+5 · parsed 4 · failed 1/u); assert.match(text, /two: \+0 · parsed 0 · failed 0/u);
   assert.match(text, /&lt;parser &amp; error&gt;/u); assert.equal(text.includes('<parser & error>'), false);
-  assert.equal(text.includes('Search units'), false); assert.match(text, /<pre>/u);
+  assert.match(text, /Search units/u); assert.match(text, /one: 3 · overdue 1 · cadence 30–60 min/u); assert.match(text, /<pre>/u);
   assert.match(text, /Scored — left axis/u); assert.match(text, /Parsed — right axis/u);
 });
 

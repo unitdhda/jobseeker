@@ -6,6 +6,7 @@ import { runtimeStatus, scraperStatus, usageStatus, type RuntimeStatusInput } fr
 import { armCvUpload, deliverApplicationArtifact, type ApplicationActionPorts, type ApplicationTransport, type CvActionPorts } from './actions.ts';
 import type { ApprovedCommand, OwnerCommand, TelegramCommandHandlers, RoutedTelegramContext } from './bot.ts';
 import { onDemandDigest, type DeliveryPorts } from './delivery.ts';
+import { formatApplyIdWithUniquePrefix } from './digest-page.ts';
 import { escapeHtml, formatNumber, splitTelegramHtml, telegramLink } from './format.ts';
 import type { OwnerMessageHistory } from './owner-message-history.ts';
 
@@ -16,7 +17,7 @@ export interface CommandTransport {
 }
 export interface CommandPorts {
   readonly store: Pick<Store, 'getDeliverySettings' | 'saveDeliverySettings' | 'exportUserData' | 'getCvHash'
-    | 'setUserStatus' | 'listTelegramUsers' | 'userUsageSummaries' | 'searchMatchedVacancies'
+    | 'setUserStatus' | 'listTelegramUsers' | 'userUsageSummaries' | 'searchMatchedVacancies' | 'scoredVacancyApplyIds'
     | 'llmUsageSummary' | 'scraperSummary'>;
   readonly cvActions: CvActionPorts;
   readonly applicationActions: ApplicationActionPorts;
@@ -85,12 +86,14 @@ export function createCommandHandlers(input: CommandPorts): TelegramCommandHandl
         if (!query) { await reply(input, context, context.locale === 'ru'
           ? 'Добавьте запрос после команды: /search должность, компания или навык'
           : 'Add a query after the command: /search role, company, or skill'); return; }
-        const results = await input.store.searchMatchedVacancies(user.userId, query, 10);
+        const [results, scoredApplyIds] = await Promise.all([
+          input.store.searchMatchedVacancies(user.userId, query, 10), input.store.scoredVacancyApplyIds(user.userId),
+        ]);
         if (!results.length) { await reply(input, context, context.locale === 'ru'
           ? 'В ваших совпадениях ничего не найдено. Попробуйте другие слова.'
           : 'Nothing was found in your matches. Try different words.'); return; }
         const lines = results.map((vacancy) => `<b>${vacancy.score === null ? '—' : formatNumber(vacancy.score, context.locale)}/100 — ${escapeHtml(vacancy.name)}</b>\n`
-          + `${escapeHtml(vacancy.employer)} · <code>${escapeHtml(vacancy.applyId)}</code> · ${telegramLink(context.locale === 'ru' ? 'открыть' : 'open', vacancy.url)}`);
+          + `${escapeHtml(vacancy.employer)} · ${formatApplyIdWithUniquePrefix(vacancy.applyId, scoredApplyIds)} · ${telegramLink(context.locale === 'ru' ? 'открыть' : 'open', vacancy.url)}`);
         for (const message of splitTelegramHtml(lines.flatMap((line, index) => index ? ['', line] : [line]))) await reply(input, context, message); },
       privacy: async (context) => reply(input, context, context.locale === 'ru'
         ? 'Хранятся профиль, резюме, оценки и настройки. /export_me экспортирует данные; /delete_me запрашивает удаление.'

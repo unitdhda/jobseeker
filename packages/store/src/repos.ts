@@ -833,6 +833,14 @@ export async function searchScoredVacancies(
   return Object.freeze(result.rows.map(scoredOf));
 }
 
+export async function scoredVacancyApplyIds(targetUserId: UserId): Promise<readonly string[]> {
+  const result = await postgresQuery<{ apply_id: string }>(`select v.apply_id from matches m
+    join vacancies v on v.id=m.vacancy_id where m.user_id=$1 and m.llm_score is not null order by v.apply_id`, [targetUserId]);
+  const applyIds = result.rows.map((row) => row.apply_id);
+  for (const applyId of applyIds) validApplyId(applyId);
+  return Object.freeze(applyIds);
+}
+
 export async function scoredVacanciesByApplyIdPrefix(
   targetUserId: UserId, prefix: string,
 ): Promise<readonly ScoredVacancy[]> {

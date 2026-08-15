@@ -40,9 +40,17 @@ export interface RoutedTelegramContext {
   readonly messageId?: number;
   readonly ownerCommand?: boolean;
 }
+export interface RoutedTelegramTextContext {
+  readonly text: string;
+  readonly user: TelegramUser;
+  readonly locale: Locale;
+  readonly t: Catalogue;
+  readonly messageId?: number;
+}
 export interface TelegramCommandHandlers {
   readonly approved?: Partial<Record<ApprovedCommand, (context: RoutedTelegramContext) => Promise<void> | void>>;
   readonly owner?: Partial<Record<OwnerCommand, (context: RoutedTelegramContext) => Promise<void> | void>>;
+  readonly text?: (context: RoutedTelegramTextContext) => Promise<void> | void;
 }
 
 function commandOf(text: string | undefined): { readonly command: TelegramCommand; readonly argument: string } | null {
@@ -62,7 +70,7 @@ function menuFor(user: TelegramUser): readonly TelegramCommand[] {
 }
 
 export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: TelegramAccessPorts,
-  response: TelegramResponsePort, defaultLocale: Locale, handlers: TelegramCommandHandlers = {}): Promise<RoutedTelegramContext | null> {
+  response: TelegramResponsePort, defaultLocale: Locale, handlers: TelegramCommandHandlers = {}): Promise<RoutedTelegramContext | RoutedTelegramTextContext | null> {
   if (input.chatType !== 'private') { await response.reply(messages(defaultLocale).privateOnly); return null; }
   if (!input.from || input.from.isBot) return null;
   const parsedCommand = commandOf(input.text);
@@ -101,7 +109,12 @@ export async function routeTelegramUpdate(input: TelegramUpdateInput, ports: Tel
     await response.reply(messages(selected).languageChanged, { locale: selected, command });
     return Object.freeze({ command, argument, user: updated ?? user, locale: selected, t: messages(selected), messageId: input.messageId, ownerCommand: false });
   }
-  if (!command) return null;
+  if (!command) {
+    if (typeof input.text !== 'string' || !existing || existing.status !== 'approved') return null;
+    const user = await ports.touchTelegramUser(identity(input.from, clientLocale));
+    const context = Object.freeze({ text: input.text, user, locale, t, messageId: input.messageId });
+    await handlers.text?.(context); return context;
+  }
   if (!existing || existing.status !== 'approved') { await response.reply(t.accessDenied, { locale }); return null; }
   const ownerCommand = (ownerCommands as readonly string[]).includes(command);
   if (ownerCommand && !existing.isOwner) { await response.reply(t.accessDenied, { locale }); return null; }

@@ -1,6 +1,7 @@
 import type { Locale, ScoredVacancy } from '@jobseeker/store';
 import type { SalaryRange } from '@jobseeker/engine/contracts';
 import { messages } from '../i18n/index.ts';
+import { formatApplyIdWithUniquePrefix } from './digest-page.ts';
 
 export function escapeHtml(value: string): string {
   return value.replace(/&/gu, '&amp;').replace(/</gu, '&lt;').replace(/>/gu, '&gt;').replace(/"/gu, '&quot;');
@@ -57,9 +58,9 @@ export function formatStatus(status: 'running' | 'idle' | 'off', locale: Locale)
 function lines(values: readonly string[], maximum: number): string[] {
   return values.slice(0, maximum).map((value) => `• ${escapeHtml(value)}`);
 }
-export function formatDigestVacancy(vacancy: ScoredVacancy, applyPrefix: string, locale: Locale): string {
+export function formatDigestVacancy(vacancy: ScoredVacancy, scoredApplyIds: readonly string[], locale: Locale): string {
   const t = messages(locale);
-  const heading = `<b>${escapeHtml(applyPrefix)} · ${escapeHtml(vacancy.name)}</b>`;
+  const heading = `${formatApplyIdWithUniquePrefix(vacancy.applyId, scoredApplyIds)} · <b>${escapeHtml(vacancy.name)}</b>`;
   const employer = `${escapeHtml(vacancy.employer)} · ${escapeHtml(vacancy.area)}`;
   const metadata = `${t.scoreLabel}: <b>${formatNumber(vacancy.score, locale)}</b> · ${formatSalary(vacancy.salary, locale)}`;
   const details = [vacancy.summary ? escapeHtml(vacancy.summary) : '',

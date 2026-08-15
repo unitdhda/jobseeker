@@ -10,3 +10,4 @@ docs/production-schema-compatibility.md
 *.pdf
 *.tgz
 .DS_Store
+.pi/

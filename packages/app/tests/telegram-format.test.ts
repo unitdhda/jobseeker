@@ -18,9 +18,10 @@ const vacancy: ScoredVacancy = {
 test('HTML and link formatting escapes user strings and query-bearing URLs', () => {
   assert.equal(escapeHtml('<a "x">&'), '&lt;a &quot;x&quot;&gt;&amp;');
   assert.equal(telegramLink('<open>', vacancy.url), '<a href="https://example.test/job?a=1&amp;b=2">&lt;open&gt;</a>');
-  const formatted = formatDigestVacancy(vacancy, 'a', 'en');
+  const formatted = formatDigestVacancy(vacancy, ['abcdef', 'abcxyz'], 'en');
   assert.doesNotMatch(formatted, /<Backend|<strong|<domain>/u);
-  assert.match(formatted, /&lt;Backend &amp; API&gt;/u); assert.match(formatted, /TypeScript &amp; APIs/u);
+  assert.match(formatted, /<b>abcd<\/b>ef · <b>&lt;Backend &amp; API&gt;<\/b>/u);
+  assert.match(formatted, /TypeScript &amp; APIs/u);
   assert.equal(formatted.includes('private query'), false);
 });
 

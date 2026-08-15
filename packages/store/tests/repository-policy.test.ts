@@ -65,6 +65,17 @@ test('match-history search is bounded to one user and includes rows without a fu
   assert.match(search, /limit \$3/u);
 });
 
+test('match-code reads are scored-only, user-scoped, ordered, and ambiguity-bounded', async () => {
+  const repos = await read('repos.ts');
+  const snapshot = /export async function scoredVacancyApplyIds[\s\S]*?\n\}\n/u.exec(repos)?.[0] ?? '';
+  const prefix = /export async function scoredVacanciesByApplyIdPrefix[\s\S]*?\n\}\n/u.exec(repos)?.[0] ?? '';
+  for (const source of [snapshot, prefix]) {
+    assert.match(source, /m\.user_id=\$1/u); assert.match(source, /m\.llm_score is not null/u);
+  }
+  assert.match(snapshot, /order by v\.apply_id/u);
+  assert.match(prefix, /v\.apply_id like \$2\|\|'%'/u); assert.match(prefix, /limit 2/u);
+});
+
 test('LLM usage writes every durable token class and rejects invalid counters', async () => {
   const repos = await read('repos.ts');
   const recording = /export async function recordLlmUsageEvent[\s\S]*?\n\}\n/u.exec(repos)?.[0] ?? '';

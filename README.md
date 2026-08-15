@@ -79,6 +79,10 @@ Each alert carries what a decision needs:
 - the original vacancy link;
 - actions for a tailored CV, a cover letter, or skipping the role.
 
+Every vacancy-bearing message shows its full six-letter code with the shortest prefix currently unique across your
+scored history in bold. Send that prefix—or any longer prefix up to the full code—as a plain message to retrieve the
+match and get Open, Letter, and CV actions. If a prefix later becomes ambiguous, the full code remains visible.
+
 Delivered artifacts are cached against the authoritative CV hash. Requesting the same artifact again reuses it without
 another model call; confirming a new CV invalidates the old cache naturally.
 

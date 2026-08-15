@@ -53,6 +53,16 @@ test('matching CV-hash cache returns before reservation, state transition, model
   assert.equal(modelCalls, 0); assert.equal(renderCalls, 0);
 });
 
+test('changed CV hash bypasses a stale artifact cache and regenerates', async () => {
+  const value = fixture({ deliveredArtifact: async () => ({ cvSha256: changedHash, fileId: 'stale-file', deliveredAt: new Date() }) });
+  let rendered = 0;
+  const result = await tailorApplication({ userId, vacancyId: 7, artifact: 'cv',
+    models: ai({ artifact: 'cv', document: tailoredDocument }), model: 'test/model', ports: value.ports,
+    renderer: { render: () => { rendered += 1; return new Uint8Array([37, 80, 68, 70]); } } });
+  assert.equal(result.kind, 'generated'); assert.equal(result.artifact, 'cv'); assert.equal(rendered, 1);
+  assert.deepEqual(value.events, [`reserve:cv`, `begin:cv:${hash}`, 'llm:tailor-application:test/model', 'ready']);
+});
+
 test('tailored CV uses independent prompt, evidence gate, renderer, and ready transition without persisting bytes', async () => {
   assert.match(tailorCvSystemPrompt, /"artifact":"cv".*"document"/su);
   for (const kind of ['text', 'bullets', 'entry', 'facts']) assert.match(tailorCvSystemPrompt, new RegExp(`"kind":"${kind}"`, 'u'));

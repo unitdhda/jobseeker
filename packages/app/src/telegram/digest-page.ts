@@ -8,9 +8,16 @@ export interface DigestPageMeta {
   readonly hasNext: boolean;
 }
 
+const applyIdPattern = /^[a-z]{6}$/u;
+
+export function normalizeApplyIdPrefix(input: string): string | null {
+  const normalized = input.trim().toLowerCase();
+  return /^[a-z]{1,6}$/u.test(normalized) ? normalized : null;
+}
+
 export function shortestUniqueApplyPrefixes(applyIds: readonly string[]): Readonly<Record<string, string>> {
-  if (new Set(applyIds).size !== applyIds.length) throw new TypeError('Digest apply IDs must be unique.');
-  if (applyIds.some((id) => !/^[a-z]{6}$/u.test(id))) throw new TypeError('Invalid digest apply ID.');
+  if (new Set(applyIds).size !== applyIds.length) throw new TypeError('Apply IDs must be unique.');
+  if (applyIds.some((id) => !applyIdPattern.test(id))) throw new TypeError('Invalid apply ID.');
   const result: Record<string, string> = Object.create(null);
   for (const id of applyIds) {
     let prefix = id;
@@ -21,6 +28,15 @@ export function shortestUniqueApplyPrefixes(applyIds: readonly string[]): Readon
     result[id] = prefix;
   }
   return Object.freeze(result);
+}
+
+export function formatApplyIdWithUniquePrefix(applyId: string, scoredApplyIds: readonly string[]): string {
+  if (!applyIdPattern.test(applyId) || scoredApplyIds.some((id) => !applyIdPattern.test(id))) {
+    throw new TypeError('Invalid apply ID.');
+  }
+  const candidates = scoredApplyIds.includes(applyId) ? scoredApplyIds : [...scoredApplyIds, applyId];
+  const prefix = shortestUniqueApplyPrefixes(candidates)[applyId]!;
+  return `<b>${prefix}</b>${applyId.slice(prefix.length)}`;
 }
 
 export function digestPageMeta(total: number, requestedPage: number, pageSize = digestPageSize): DigestPageMeta {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { fixedChart, usageStatus } from '../src/observability.ts';
+import { fixedChart, runtimeStatus, usageStatus } from '../src/observability.ts';
 
 test('usage chart is a fixed 25-point dual axis with independent scaling', () => {
   const chart = fixedChart(Array.from({ length: 30 }, (_, index) => ({ primary: index, secondary: index === 29 ? 1000 : 0 })));
@@ -19,4 +19,12 @@ test('usage status localizes totals and emits bounded chart lines', () => {
   assert.match(output[0]!, /Input.*output/u); assert.match(output[0]!, /Cache read.*write/u);
   assert.match(output[0]!, /Money — right axis/u); assert.match(output[0]!, /<pre>/u);
   assert.ok(output[0]!.length < 4096);
+});
+
+test('runtime status exposes degraded lanes while escaping operational labels', () => {
+  const output = runtimeStatus({ uptimeMs: 1000, rssBytes: 1024, heapBytes: 512, cpuPercent: 1,
+    workerPending: 2, aiActive: 1, aiQueued: 3, telegramMode: '<webhook>', engineRunning: false,
+    discoveryStatus: 'failed <source>', judgmentStatus: 'idle & waiting' }, 'en');
+  assert.match(output, /engine: idle/u); assert.match(output, /failed &lt;source&gt;/u);
+  assert.match(output, /idle &amp; waiting/u); assert.equal(output.includes('<webhook>'), false);
 });

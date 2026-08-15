@@ -12,14 +12,15 @@ function vacancy(id: number, applyId: string, score = 70): ScoredVacancy {
     url: new URL(`https://example.test/${id}`), publishedAt: new Date(), sourceQuery: 'private', primaryTrack: 'Track',
     summary: 'Summary', reasons: ['Reason'], gaps: [], explanation: null };
 }
-function ports(vacancies: readonly ScoredVacancy[]) {
+function ports(vacancies: readonly ScoredVacancy[], scoredApplyIds = vacancies.map((item) => item.applyId)) {
   const marked: number[] = []; const snapshots: number[][] = [];
   const value: DeliveryPorts = { isApprovedUser: async () => true,
     unsentHighScoreVacancies: async () => vacancies as readonly AlertVacancy[], markAlerted: async (_user, id) => { marked.push(id); return true; },
     digestVacancies: async () => vacancies,
     addressableDigestPage: async (_user, _minimum, _high, size, page) => ({ vacancies: vacancies.slice(page * size, (page + 1) * size),
       allApplyIds: vacancies.map((item) => item.applyId), total: vacancies.length }),
-    replaceDigestSnapshot: async (_user, ids) => { snapshots.push([...ids]); } };
+    replaceDigestSnapshot: async (_user, ids) => { snapshots.push([...ids]); },
+    scoredVacancyApplyIds: async () => scoredApplyIds };
   return { value, marked, snapshots };
 }
 
@@ -33,10 +34,10 @@ test('high alerts send sequentially, mark only after send, pace, and defer remai
   assert.deepEqual(sleeps, [250]);
 });
 
-test('on-demand digest reads addressable snapshot but never replaces or consumes it', async () => {
-  const fixture = ports([vacancy(1, 'abcdef'), vacancy(2, 'abcxyz')]);
+test('on-demand digest uses complete scored history but never replaces or consumes its snapshot', async () => {
+  const fixture = ports([vacancy(1, 'abcdef')], ['abcdef', 'abcxyz']);
   const page = await onDemandDigest({ userId, locale: 'en', page: 0, minimumScore: 50, alertScore: 80, ports: fixture.value });
-  assert.match(page.html, /Vacancy digest/u); assert.match(page.html, /abcd/u); assert.match(page.html, /abcx/u);
+  assert.match(page.html, /Vacancy digest/u); assert.match(page.html, /<b>abcd<\/b>ef/u);
   assert.deepEqual(fixture.snapshots, []);
 });
 
