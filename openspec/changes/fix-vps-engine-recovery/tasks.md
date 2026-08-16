@@ -20,8 +20,8 @@
 
 - [x] 4.1 Run focused tests, full unit tests, typecheck, build, and package smoke validation
 - [x] 4.2 Bump application, reference deployment, documentation, and packaging assertions from `0.2.7` to `0.2.8`
-- [ ] 4.3 Validate the OpenSpec change, review the diff for secrets, commit the complete change, and push it
-- [ ] 4.4 Tell the operator to publish `@unitdhda/jobseeker@0.2.8` and pause before VPS redeployment
+- [x] 4.3 Validate the OpenSpec change, review the diff for secrets, commit the complete change, and push it
+- [x] 4.4 Tell the operator to publish `@unitdhda/jobseeker@0.2.8` and pause before VPS redeployment
 
 ## 5. Post-Publish Redeployment
 
