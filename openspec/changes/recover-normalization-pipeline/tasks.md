@@ -44,5 +44,5 @@
 
 - [x] 7.1 Run focused tests, full tests, typecheck, build, package smoke, real-database tests, strict OpenSpec validation, and secret review
 - [x] 7.2 Bump application, reference deployment, documentation, and packaging assertions from `0.2.9` to `0.2.10`
-- [ ] 7.3 Commit and push the completed change, then pause for publication of `@unitdhda/jobseeker@0.2.10`
+- [x] 7.3 Commit and push the completed change, then pause for publication of `@unitdhda/jobseeker@0.2.10`
 - [ ] 7.4 Deploy `0.2.10`, verify health, readiness, one engine lock, zero restart churn, and safe logs, then confirm advancing units and declining expired claims
