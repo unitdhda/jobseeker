@@ -32,7 +32,9 @@ export interface JudgmentPorts {
   maintain?(now: Date): Promise<void>;
 }
 
-export interface LoopPorts extends DiscoveryPorts, JudgmentPorts {}
+export interface LoopPorts extends DiscoveryPorts, JudgmentPorts {
+  observeDiscovery?(report: DiscoveryReport): void;
+}
 
 export interface DiscoveryReport {
   readonly tick?: TickReport;
@@ -206,7 +208,8 @@ export interface LaneStatus {
 
 export interface EngineLoopStatus {
   readonly running: boolean;
-  readonly discovery: LaneStatus & { readonly lastDue: number; readonly lastUnitsRun: number };
+  readonly discovery: LaneStatus & { readonly lastDue: number; readonly lastUnitsRun: number;
+    readonly lastSuccessfulPlatforms: readonly string[]; readonly lastFailedPlatforms: readonly string[] };
   readonly judgment: LaneStatus;
 }
 
@@ -243,7 +246,8 @@ export function createEngineLoop(
   let runPromise: Promise<void> | null = null;
   let releaseStop!: () => void;
   const stopSignal = new Promise<void>((resolve) => { releaseStop = resolve; });
-  let discoveryStatus = { ...emptyLane(), lastDue: 0, lastUnitsRun: 0 };
+  let discoveryStatus = { ...emptyLane(), lastDue: 0, lastUnitsRun: 0,
+    lastSuccessfulPlatforms: Object.freeze([]) as readonly string[], lastFailedPlatforms: Object.freeze([]) as readonly string[] };
   let judgmentStatus = emptyLane();
 
   const sleepOrStop = async (clock: LaneClock, milliseconds: number): Promise<boolean> => {
@@ -261,6 +265,7 @@ export function createEngineLoop(
     while (!stopped) {
       const now = new Date();
       const report = await runDiscoveryIteration(ports, now);
+      try { ports.observeDiscovery?.(report); } catch { /* Observability must not stop engine work. */ }
       const failures = [...report.stageFailures];
       let wakeMs = fallbackWakeMs;
       try {
@@ -275,6 +280,8 @@ export function createEngineLoop(
         lastWakeMs: wakeMs,
         lastDue: report.tick?.due ?? 0,
         lastUnitsRun: report.tick?.unitsRun ?? 0,
+        lastSuccessfulPlatforms: Object.freeze([...(report.tick?.successfulPlatforms ?? [])]),
+        lastFailedPlatforms: Object.freeze([...(report.tick?.failedPlatforms ?? [])]),
       };
       const sleepFailed = !stopped && await sleepOrStop(clocks.discovery, wakeMs);
       if (sleepFailed) {
@@ -331,6 +338,8 @@ export function createEngineLoop(
         discovery: Object.freeze({
           ...discoveryStatus,
           lastStageFailures: Object.freeze([...discoveryStatus.lastStageFailures]),
+          lastSuccessfulPlatforms: Object.freeze([...discoveryStatus.lastSuccessfulPlatforms]),
+          lastFailedPlatforms: Object.freeze([...discoveryStatus.lastFailedPlatforms]),
         }),
         judgment: Object.freeze({
           ...judgmentStatus,

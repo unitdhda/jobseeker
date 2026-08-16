@@ -107,6 +107,8 @@ export function scraperStatus(summary: ScraperSummary, configuredSources: readon
     `${locale === 'ru' ? 'Матчи' : 'Matches'}: <b>${formatNumber(summary.matched24h, locale)}</b> · ${locale === 'ru' ? 'оценки' : 'scored'}: <b>${formatNumber(summary.scored24h, locale)}</b>`,
     '', `<b>${locale === 'ru' ? 'По источникам' : 'By source'}</b>`];
   for (const row of all) lines.push(`• ${escapeHtml(row.source)}: +${formatNumber(row.discovered24h, locale)} · ${locale === 'ru' ? 'расп.' : 'parsed'} ${formatNumber(row.normalized24h, locale)} · ${locale === 'ru' ? 'сбои' : 'failed'} ${formatNumber(row.failed, locale)}`);
+  lines.push('', `<b>${locale === 'ru' ? 'Нормализация' : 'Normalization'}</b>`,
+    `${locale === 'ru' ? 'очередь' : 'queued'}: ${formatNumber(summary.normalization.queued, locale)} · ${locale === 'ru' ? 'активные' : 'active'}: ${formatNumber(summary.normalization.activeClaims, locale)} · ${locale === 'ru' ? 'просроченные' : 'expired'}: ${formatNumber(summary.normalization.expiredClaims, locale)}`);
   lines.push('', `<b>${locale === 'ru' ? 'Поисковые единицы' : 'Search units'}</b>`);
   if (!summary.units.length) lines.push(locale === 'ru' ? 'Нет активных единиц' : 'No active units');
   for (const unit of summary.units) lines.push(`• ${escapeHtml(unit.platform)}: ${formatNumber(unit.units, locale)} · ${locale === 'ru' ? 'просрочено' : 'overdue'} ${formatNumber(unit.overdue, locale)} · ${locale === 'ru' ? 'интервал' : 'cadence'} ${formatNumber(unit.cadenceMin, locale)}–${formatNumber(unit.cadenceMax, locale)} min`);

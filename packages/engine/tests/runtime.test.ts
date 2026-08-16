@@ -52,6 +52,9 @@ test('scheduler builds one fair plan per platform and isolates provider failure'
 
   assert.equal(plans.get(alpha)?.searches.length, 2);
   assert.equal(report.platformFailures, 1);
+  assert.deepEqual(report.successfulPlatforms, ['alpha']); assert.deepEqual(report.failedPlatforms, ['beta']);
+  assert.deepEqual(report.perPlatform.beta, { selected: 1, unitsRun: 0, discovered: 0, failed: true });
+  assert.deepEqual(report.perPlatform.alpha, { selected: 2, unitsRun: 2, discovered: 1, failed: false });
   assert.equal(report.unitsRun, 2);
   assert.deepEqual(updates.map((entry) => entry.cadence).sort((a, b) => a - b), [30, 90]);
 });

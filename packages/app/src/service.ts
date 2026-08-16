@@ -87,7 +87,9 @@ export async function startService(): Promise<void> {
             rssBytes: process.memoryUsage().rss, heapBytes: process.memoryUsage().heapUsed, cpuPercent: 0,
             workerPending: worker?.pendingCount ?? 0, aiActive: 0, aiQueued: 0, telegramMode: config.telegramMode,
             engineStatus,
-            discoveryStatus: loopStatus?.discovery.lastStageFailures.join(',') || engineStatus,
+            discoveryStatus: loopStatus?.discovery.lastFailedPlatforms.length
+              ? `failed: ${loopStatus.discovery.lastFailedPlatforms.join(',')}`
+              : loopStatus?.discovery.lastStageFailures.join(',') || engineStatus,
             judgmentStatus: loopStatus?.judgment.lastStageFailures.join(',') || engineStatus };
         } });
       const telegramHandlers: TelegramCommandHandlers = Object.freeze({ ...commandHandlers,
@@ -139,7 +141,7 @@ export async function startService(): Promise<void> {
     const scorePool = new AdaptiveTaskPool(config.scoreConcurrencyMin, config.scoreConcurrencyMax);
     const scoreStore = Object.assign(Object.create(composition.store), createScoringWorkflowPorts(composition.store));
     const enginePorts = createEnginePorts({ store: scoreStore, sources: composition.sources, vocabularies: vocabulary,
-      models: composition.ai, scorePool, config, errorMessage: safeErrorMessage,
+      models: composition.ai, scorePool, config, errorMessage: safeErrorMessage, log: (message) => console.info(message),
       deliver: async (now) => {
         if (!bot) return;
         for (const user of await composition.store.approvedUsers(false)) {
@@ -162,7 +164,7 @@ export async function startService(): Promise<void> {
       } });
     if (config.engineMode === 'run') engine = await startEngineOwnership({ store: composition.store, sources: composition.sources,
       extensions: composition.extensions, vocabularies: vocabulary, ports: enginePorts,
-      clocks: { discovery: { nextWakeMs: async (now) => { const next = await composition.store.nextUnitDueAt(); return nextWakeMs(next ? [{ nextRunAt: next }] : [], now); },
+      log: (message) => console.info(message), clocks: { discovery: { nextWakeMs: async (now) => { const next = await composition.store.nextUnitDueAt(); return nextWakeMs(next ? [{ nextRunAt: next }] : [], now); },
           sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)) },
         judgment: { nextWakeMs: async () => 60_000, sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)) } } });
     const web = createWebApp({ telegramMode: config.telegramMode, webhookSecret: config.telegramWebhookSecret,

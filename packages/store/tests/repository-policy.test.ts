@@ -20,6 +20,19 @@ test('match claims and transitions retain source-state predicates and delivered 
   assert.doesNotMatch(repos, /application_artifacts[^\n]*(?:bytea|Buffer)/iu);
 });
 
+test('normalization claims are source-fair, lease-bounded, and reclaim expired work', async () => {
+  const repos = await read('repos.ts');
+  const claim = /export async function queuedListings[\s\S]*?\n\}/u.exec(repos)?.[0] ?? '';
+  assert.match(claim, /row_number\(\) over\(partition by source order by next_normalization_at,id\)/u);
+  assert.match(claim, /lifecycle_status in \('discovered','failed','normalizing'\)/u);
+  assert.match(claim, /r\.source_rank<=\$2/u);
+  assert.match(claim, /for update of v skip locked limit \$1/u);
+  assert.match(claim, /next_normalization_at=now\(\)\+\(\$2\*interval '1 minute'\)/u);
+  assert.match(claim, /normalization_attempts=normalization_attempts\+1/u);
+  const failure = /export async function markCandidateFailed[\s\S]*?\n\}/u.exec(repos)?.[0] ?? '';
+  assert.match(failure, /least\(1440,power\(2,greatest\(0,normalization_attempts-1\)\)\)/u);
+});
+
 test('engine scheduling, refresh, vocabularies, and applications retain their ownership predicates', async () => {
   const engine = await read('engine-repos.ts');
   const repos = await read('repos.ts');
@@ -89,4 +102,8 @@ test('operational summaries contain exactly the current hour plus previous 24 ho
   const repos = await read('repos.ts');
   const series = /generate_series\(date_trunc\('hour',now\(\)\)-interval '24 hours',date_trunc\('hour',now\(\)\),interval '1 hour'\)/gu;
   assert.equal([...repos.matchAll(series)].length, 2);
+  const summary = /export async function scraperSummary[\s\S]*?\n\}/u.exec(repos)?.[0] ?? '';
+  assert.match(summary, /lifecycle_status in \('discovered','failed'\).*queued/su);
+  assert.match(summary, /lifecycle_status='normalizing' and next_normalization_at>now\(\).*active_claims/su);
+  assert.match(summary, /lifecycle_status='normalizing' and next_normalization_at<=now\(\).*expired_claims/su);
 });

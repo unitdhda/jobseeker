@@ -24,6 +24,8 @@ export interface AppConfig {
   readonly vacancyRetentionDays: number;
   readonly vacancyPurgeBatchSize: number;
   readonly normalizationBatchSizePerUser: number;
+  readonly normalizationPerSourceLimit: number;
+  readonly normalizationClaimLeaseMinutes: number;
   readonly normalizeSourceConcurrency: number;
   readonly discoveryTickConcurrency: number;
   readonly candidateRefreshBatchSize: number;
@@ -230,6 +232,8 @@ export function parseConfig(env: Readonly<Record<string, string | undefined>>): 
     vacancyRetentionDays: positive(env.VACANCY_RETENTION_DAYS, 30, 'VACANCY_RETENTION_DAYS'),
     vacancyPurgeBatchSize: positive(env.VACANCY_PURGE_BATCH_SIZE, 500, 'VACANCY_PURGE_BATCH_SIZE'),
     normalizationBatchSizePerUser: positive(env.NORMALIZATION_BATCH_SIZE_PER_USER, 10, 'NORMALIZATION_BATCH_SIZE_PER_USER'),
+    normalizationPerSourceLimit: positive(env.NORMALIZATION_PER_SOURCE_LIMIT, 10, 'NORMALIZATION_PER_SOURCE_LIMIT'),
+    normalizationClaimLeaseMinutes: positive(env.NORMALIZATION_CLAIM_LEASE_MINUTES, 15, 'NORMALIZATION_CLAIM_LEASE_MINUTES'),
     normalizeSourceConcurrency: positive(env.NORMALIZE_SOURCE_CONCURRENCY, 3, 'NORMALIZE_SOURCE_CONCURRENCY'),
     discoveryTickConcurrency: positive(env.DISCOVERY_TICK_CONCURRENCY, 3, 'DISCOVERY_TICK_CONCURRENCY'),
     candidateRefreshBatchSize: positive(env.CANDIDATE_REFRESH_BATCH_SIZE, 2, 'CANDIDATE_REFRESH_BATCH_SIZE'),

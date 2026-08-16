@@ -689,14 +689,25 @@ export async function upsertVacancy(
   });
 }
 
-export async function queuedListings(limit: number): Promise<readonly VacancyCandidate[]> {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) throw new RangeError('Invalid listing queue limit.');
+export async function queuedListings(
+  limit: number,
+  perSourceLimit: number,
+  claimLeaseMinutes: number,
+): Promise<readonly VacancyCandidate[]> {
+  for (const [value, name] of [[limit, 'queue'], [perSourceLimit, 'per-source'], [claimLeaseMinutes, 'claim lease']] as const) {
+    if (!Number.isSafeInteger(value) || value < 1 || value > 1_000) throw new RangeError(`Invalid listing ${name} limit.`);
+  }
+  if (perSourceLimit > limit) throw new RangeError('Invalid listing per-source limit: must not exceed queue limit.');
   return withPostgresTransaction(async (client) => {
-    const result = await client.query(`select * from vacancies where lifecycle_status in ('discovered','failed')
-      and next_normalization_at<=now() order by next_normalization_at,id for update skip locked limit $1`, [limit]);
+    const result = await client.query(`with ranked as (
+        select id,row_number() over(partition by source order by next_normalization_at,id) source_rank
+        from vacancies where next_normalization_at<=now()
+          and lifecycle_status in ('discovered','failed','normalizing'))
+      select v.* from vacancies v join ranked r using(id) where r.source_rank<=$2
+      order by v.next_normalization_at,v.source,v.id for update of v skip locked limit $1`, [limit, perSourceLimit]);
     if (result.rows.length) await client.query(`update vacancies set lifecycle_status='normalizing',
-      normalization_attempts=normalization_attempts+1,updated_at=now() where id=any($1::bigint[])`,
-    [result.rows.map((row) => row.id)]);
+      normalization_attempts=normalization_attempts+1,next_normalization_at=now()+($2*interval '1 minute'),updated_at=now()
+      where id=any($1::bigint[])`, [result.rows.map((row) => row.id), claimLeaseMinutes]);
     return Object.freeze(result.rows.map((row) => candidateOf({ ...row,
       lifecycle_status: 'normalizing', normalization_attempts: Number(row.normalization_attempts) + 1 })));
   });
@@ -1097,10 +1108,14 @@ export interface UnitScheduleStats {
   readonly platform: string; readonly units: number; readonly overdue: number;
   readonly cadenceMin: number; readonly cadenceMax: number; readonly lastNoveltyAt: Date | null;
 }
+export interface NormalizationQueueStats {
+  readonly queued: number; readonly activeClaims: number; readonly expiredClaims: number;
+}
 export interface ScraperSummary {
   readonly hours: readonly { readonly at: Date; readonly normalized: number; readonly scored: number }[];
   readonly sources: readonly SourceScrapeStats[];
   readonly units: readonly UnitScheduleStats[];
+  readonly normalization: NormalizationQueueStats;
   readonly matched24h: number;
   readonly scored24h: number;
   readonly parserErrors: readonly { readonly error: string; readonly count: number }[];
@@ -1108,7 +1123,7 @@ export interface ScraperSummary {
 
 export async function scraperSummary(): Promise<ScraperSummary> {
   const platforms = storeSettings().searchPlatforms;
-  const [hours, sources, units, counts, errors] = await Promise.all([
+  const [hours, sources, units, normalization, counts, errors] = await Promise.all([
     postgresQuery<{ at: Date | string; normalized: string; scored: string }>(`with hours as (
       select generate_series(date_trunc('hour',now())-interval '24 hours',date_trunc('hour',now()),interval '1 hour') at)
       select h.at,count(distinct v.id) filter(where v.last_checked_at>=h.at and v.last_checked_at<h.at+interval '1 hour') normalized,
@@ -1128,6 +1143,11 @@ export async function scraperSummary(): Promise<ScraperSummary> {
       last_novelty_at: Date | string | null }>(`select platform,count(*) units,count(*) filter(where next_run_at<=now()) overdue,
       min(cadence_minutes) cadence_min,max(cadence_minutes) cadence_max,max(last_novelty_at) last_novelty_at
       from search_units where retired_at is null group by platform order by platform`),
+    postgresQuery<{ queued: string; active_claims: string; expired_claims: string }>(`select
+      count(*) filter(where lifecycle_status in ('discovered','failed') and next_normalization_at<=now()) queued,
+      count(*) filter(where lifecycle_status='normalizing' and next_normalization_at>now()) active_claims,
+      count(*) filter(where lifecycle_status='normalizing' and next_normalization_at<=now()) expired_claims
+      from vacancies`),
     postgresQuery<{ matched: string; scored: string }>(`select
       count(*) filter(where matched_at>=now()-interval '24 hours') matched,
       count(*) filter(where score_updated_at>=now()-interval '24 hours') scored from matches`),
@@ -1143,6 +1163,8 @@ export async function scraperSummary(): Promise<ScraperSummary> {
     units: Object.freeze(units.rows.map((row) => Object.freeze({ platform: row.platform, units: Number(row.units),
       overdue: Number(row.overdue), cadenceMin: Number(row.cadence_min), cadenceMax: Number(row.cadence_max),
       lastNoveltyAt: row.last_novelty_at == null ? null : new Date(row.last_novelty_at) }))),
+    normalization: Object.freeze({ queued: Number(normalization.rows[0]?.queued ?? 0),
+      activeClaims: Number(normalization.rows[0]?.active_claims ?? 0), expiredClaims: Number(normalization.rows[0]?.expired_claims ?? 0) }),
     matched24h: Number(counts.rows[0]?.matched ?? 0), scored24h: Number(counts.rows[0]?.scored ?? 0),
     parserErrors: Object.freeze(errors.rows.map((row) => Object.freeze({ error: row.error, count: Number(row.count) }))),
   });

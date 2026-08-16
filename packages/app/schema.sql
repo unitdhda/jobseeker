@@ -98,9 +98,11 @@ create table vacancies (
   check (normalized_vacancy_id is null or normalized_vacancy_id <> id)
 );
 create index vacancies_canonical_fingerprint_idx on vacancies(canonical_fingerprint) where canonical_fingerprint is not null;
+comment on column vacancies.next_normalization_at is
+  'Due time for discovered/failed rows; claim lease deadline while lifecycle_status is normalizing.';
 create index vacancies_normalization_queue_idx
-  on vacancies(next_normalization_at, id)
-  where lifecycle_status in ('discovered','failed');
+  on vacancies(next_normalization_at, source, id)
+  where lifecycle_status in ('discovered','failed','normalizing');
 create index vacancies_refresh_idx on vacancies(last_checked_at, id) where lifecycle_status = 'normalized';
 create index vacancies_last_seen_idx on vacancies(last_seen_at, id);
 create index vacancies_search_vector_idx on vacancies using gin(search_vector);

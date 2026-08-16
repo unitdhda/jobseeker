@@ -25,5 +25,5 @@
 
 ## 5. Post-Publish Redeployment
 
-- [ ] 5.1 After publication confirmation, verify the npm package, back up VPS deployment assets, rebuild the image, and run `doctor`
+- [x] 5.1 After publication confirmation, verify the npm package, back up VPS deployment assets, rebuild the image, and run `doctor`
 - [ ] 5.2 Recreate the VPS service and verify readiness, one live advisory lock, progressing overdue units, stable restarts, and sanitized logs

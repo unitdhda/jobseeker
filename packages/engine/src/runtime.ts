@@ -37,8 +37,10 @@ export interface TickPorts {
 }
 
 export interface PlatformTickReport {
-  readonly units: number;
+  readonly selected: number;
+  readonly unitsRun: number;
   readonly discovered: number;
+  readonly failed: boolean;
 }
 
 export interface TickReport {
@@ -46,6 +48,8 @@ export interface TickReport {
   readonly unitsRun: number;
   readonly platformFailures: number;
   readonly unitUpdateFailures: number;
+  readonly successfulPlatforms: readonly string[];
+  readonly failedPlatforms: readonly string[];
   readonly perPlatform: Readonly<Record<string, PlatformTickReport>>;
 }
 
@@ -113,6 +117,7 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
   let unitsRun = 0;
   let platformFailures = 0;
   let unitUpdateFailures = 0;
+  const successfulPlatforms: string[] = []; const failedPlatforms: string[] = [];
   const perPlatform: Record<string, PlatformTickReport> = Object.create(null);
   const platforms = [...byPlatform.entries()].sort(([left], [right]) => compareStrings(left, right));
 
@@ -138,7 +143,7 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
     const unitsById = new Map(units.map((unit) => [unit.unitId, unit]));
     const chosen = selected.map((selectedUnit) => unitsById.get(selectedUnit.unitId)!);
     if (chosen.length === 0) {
-      perPlatform[platform] = Object.freeze({ units: 0, discovered: 0 });
+      perPlatform[platform] = Object.freeze({ selected: 0, unitsRun: 0, discovered: 0, failed: false });
       return;
     }
 
@@ -154,10 +159,12 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
       discovery = await ports.discover(platform, plan);
     } catch {
       // Advancing cadence after provider failure would silently skip an entire discovery period.
-      platformFailures += 1;
+      platformFailures += 1; failedPlatforms.push(platform);
+      perPlatform[platform] = Object.freeze({ selected: chosen.length, unitsRun: 0, discovered: 0, failed: true });
       return;
     }
 
+    let platformUnitsRun = 0;
     for (const unit of chosen) {
       const name = representativeSearchName(unit.query);
       const perSearch = discovery.discoveredBySearch;
@@ -171,12 +178,14 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
           foundNovelty,
           now,
         );
-        unitsRun += 1;
+        unitsRun += 1; platformUnitsRun += 1;
       } catch {
         unitUpdateFailures += 1;
       }
     }
-    perPlatform[platform] = Object.freeze({ units: chosen.length, discovered: discovery.discovered });
+    successfulPlatforms.push(platform);
+    perPlatform[platform] = Object.freeze({ selected: chosen.length, unitsRun: platformUnitsRun,
+      discovered: discovery.discovered, failed: false });
   });
 
   return Object.freeze({
@@ -184,6 +193,8 @@ export async function runSchedulerTick(ports: TickPorts, now: Date): Promise<Tic
     unitsRun,
     platformFailures,
     unitUpdateFailures,
+    successfulPlatforms: Object.freeze(successfulPlatforms.sort(compareStrings)),
+    failedPlatforms: Object.freeze(failedPlatforms.sort(compareStrings)),
     perPlatform: Object.freeze(perPlatform),
   });
 }

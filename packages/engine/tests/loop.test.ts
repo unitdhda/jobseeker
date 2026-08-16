@@ -10,7 +10,8 @@ import {
 } from '../src/loop.ts';
 
 const emptyTick = {
-  due: 0, unitsRun: 0, platformFailures: 0, unitUpdateFailures: 0, perPlatform: {},
+  due: 0, unitsRun: 0, platformFailures: 0, unitUpdateFailures: 0,
+  successfulPlatforms: [], failedPlatforms: [], perPlatform: {},
 };
 
 test('discovery and judgment preserve stage order while isolating failures', async () => {
@@ -57,7 +58,7 @@ test('independent lanes publish their clocks and stop promptly while sleeping', 
   const discoverySleep = new Promise<void>((resolve) => { releaseDiscovery = resolve; });
   const judgmentSleep = new Promise<void>((resolve) => { releaseJudgment = resolve; });
   const ports: LoopPorts = {
-    tick: async () => emptyTick,
+    tick: async () => ({ ...emptyTick, successfulPlatforms: ['alpha'], failedPlatforms: ['beta'] }),
     normalize: async () => ({ vacancyIds: [], failed: 0, closed: 0, expired: 0, selected: 0, refreshed: 0, normalized: 0, bySource: {} }),
     matchVacancies: async () => ({ matched: 0, failures: 0 }),
     scoreDue: async () => ({ users: 0, drained: 0, skippedOverBudget: 0, failures: 0 }),
@@ -72,6 +73,8 @@ test('independent lanes publish their clocks and stop promptly while sleeping', 
     await new Promise((resolve) => setTimeout(resolve, 1));
   }
   assert.equal(loop.status().discovery.lastWakeMs, 999_999);
+  assert.deepEqual(loop.status().discovery.lastSuccessfulPlatforms, ['alpha']);
+  assert.deepEqual(loop.status().discovery.lastFailedPlatforms, ['beta']);
   assert.equal(loop.status().judgment.lastWakeMs, 888_888);
   loop.stop();
   await Promise.race([

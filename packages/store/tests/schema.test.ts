@@ -60,4 +60,6 @@ test('match diagnostics, queue indexes, and generated search vector are present'
     'vacancies_canonical_fingerprint_idx', 'vacancies_normalization_queue_idx', 'vacancies_search_vector_idx',
   ]) assert.match(sql, new RegExp(`create index ${index}\\b`, 'iu'));
   assert.match(sql, /search_vector\s+tsvector\s+generated\s+always\s+as/iu);
+  assert.match(sql, /comment on column vacancies\.next_normalization_at[\s\S]*claim lease deadline/iu);
+  assert.match(sql, /vacancies_normalization_queue_idx[\s\S]*where lifecycle_status in \('discovered','failed','normalizing'\)/iu);
 });

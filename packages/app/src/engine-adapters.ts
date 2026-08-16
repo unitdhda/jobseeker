@@ -2,6 +2,7 @@ import type { ThinkingLevel } from '@earendil-works/pi-ai';
 import {
   drainScoring,
   type DiscoveryPorts,
+  type DiscoveryReport,
   type JudgmentPorts,
   type LoopPorts,
   type NormalizeReport,
@@ -20,7 +21,7 @@ import { prescorePendingVacancies, scorePendingVacancies, type ScoringWorkflowPo
 
 export interface NormalizationPorts {
   approvedUsers(requireCv?: boolean): Promise<readonly TelegramUser[]>;
-  queuedListings(limit: number): Promise<readonly VacancyCandidate[]>;
+  queuedListings(limit: number, perSourceLimit: number, claimLeaseMinutes: number): Promise<readonly VacancyCandidate[]>;
   candidatesDueForRefresh(limit: number, days: number): Promise<readonly VacancyCandidate[]>;
   upsertVacancy(input: VacancyInput): Promise<{ readonly id: number; readonly needsScore: boolean; readonly duplicate: boolean }>;
   markCandidateNormalized(candidate: VacancyCandidate, vacancyId: number, duplicate?: boolean): Promise<void>;
@@ -41,7 +42,8 @@ function groupCandidates(candidates: readonly VacancyCandidate[]): Map<string, V
 export function createNormalizationAdapter(input: {
   readonly store: NormalizationPorts;
   readonly sources: Pick<MutableSources, 'normalize'>;
-  readonly config: Pick<AppConfig, 'normalizationBatchSizePerUser' | 'normalizeSourceConcurrency' | 'candidateRefreshBatchSize'
+  readonly config: Pick<AppConfig, 'normalizationBatchSizePerUser' | 'normalizationPerSourceLimit'
+    | 'normalizationClaimLeaseMinutes' | 'normalizeSourceConcurrency' | 'candidateRefreshBatchSize'
     | 'candidateRefreshDays' | 'vacancyRetentionDays' | 'vacancyPurgeBatchSize'>;
   readonly errorMessage?: (error: unknown) => string;
 }): (now: Date) => Promise<NormalizeReport> {
@@ -50,7 +52,8 @@ export function createNormalizationAdapter(input: {
     const users = await input.store.approvedUsers(true);
     const queueLimit = users.length * input.config.normalizationBatchSizePerUser;
     const [queued, refresh] = await Promise.all([
-      queueLimit > 0 ? input.store.queuedListings(queueLimit) : Promise.resolve([]),
+      queueLimit > 0 ? input.store.queuedListings(queueLimit,
+        Math.min(queueLimit, input.config.normalizationPerSourceLimit), input.config.normalizationClaimLeaseMinutes) : Promise.resolve([]),
       input.store.candidatesDueForRefresh(input.config.candidateRefreshBatchSize, input.config.candidateRefreshDays),
     ]);
     const refreshKeys = new Set(refresh.map((candidate) => `${candidate.source.length}:${candidate.source}:${candidate.sourceId}`));
@@ -58,15 +61,17 @@ export function createNormalizationAdapter(input: {
     const bySource = groupCandidates(candidates);
     const vacancyIds = new Set<number>(); let failed = 0; let closed = 0; let normalized = 0;
     await mapConcurrent([...bySource.entries()], input.config.normalizeSourceConcurrency, async ([source, group]) => {
-      let results: Map<string, VacancyInput | null | Error>;
-      try { results = await input.sources.normalize(source, group); }
-      catch (error) { results = new Map(group.map((candidate) => [candidate.sourceId, error instanceof Error ? error : new Error(errorMessage(error))])); }
       for (const candidate of group) {
         const key = `${candidate.source.length}:${candidate.source}:${candidate.sourceId}`;
         const isRefresh = refreshKeys.has(key);
-        const result = results.has(candidate.sourceId)
-          ? results.get(candidate.sourceId)!
-          : new Error('Source omitted normalization result.');
+        let result: VacancyInput | null | Error;
+        try {
+          const results = await input.sources.normalize(source, [candidate]);
+          result = results.has(candidate.sourceId) ? results.get(candidate.sourceId)!
+            : new Error('Source omitted normalization result.');
+        } catch (error) {
+          result = error instanceof Error ? error : new Error(errorMessage(error));
+        }
         if (result === null) {
           closed += 1; await input.store.markCandidateClosed(candidate); continue;
         }
@@ -207,6 +212,12 @@ export function createMaintenanceAdapter(input: {
   });
 }
 
+export function discoveryTickLog(report: DiscoveryReport): string | null {
+  if (!report.tick) return null;
+  const failed = report.tick.failedPlatforms.join(',') || 'none';
+  return `Discovery tick: due=${report.tick.due} run=${report.tick.unitsRun} failed=${failed}.`;
+}
+
 export function createEnginePorts(input: {
   readonly store: NormalizationPorts & MatchingPorts & ScoringAdapterOptions['store'] & {
     dueUnits: Parameters<typeof runSchedulerTick>[0]['dueUnits'];
@@ -220,6 +231,7 @@ export function createEnginePorts(input: {
   readonly config: AppConfig;
   readonly deliver: (now: Date) => Promise<void>;
   readonly errorMessage?: (error: unknown) => string;
+  readonly log?: (message: string) => void;
 }): LoopPorts {
   const normalize = createNormalizationAdapter({ store: input.store, sources: input.sources, config: input.config,
     errorMessage: input.errorMessage });
@@ -237,6 +249,9 @@ export function createEnginePorts(input: {
     normalize, matchVacancies,
     scoreDue: (now: Date) => score(input.config.userScoreLimitPerCycle, now),
     deliver: input.deliver,
+    observeDiscovery: (report: DiscoveryReport) => {
+      const message = discoveryTickLog(report); if (message) input.log?.(message);
+    },
     ...maintenance,
   });
 }
