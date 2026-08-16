@@ -22,7 +22,7 @@
 
 - [x] 4.1 Run focused tests, full tests, typecheck, build, package smoke, strict OpenSpec validation, and secret review
 - [x] 4.2 Bump application, reference deployment, documentation, and packaging assertions from `0.2.8` to `0.2.9`
-- [ ] 4.3 Commit and push the completed change, then pause for publication of `@unitdhda/jobseeker@0.2.9`
+- [x] 4.3 Commit and push the completed change, then pause for publication of `@unitdhda/jobseeker@0.2.9`
 
 ## 5. Controlled Production Recovery
 
