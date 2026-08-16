@@ -9,6 +9,10 @@ export interface NormalizeReport {
   readonly selected: number;
   readonly refreshed: number;
   readonly normalized: number;
+  /** Candidate selections that failed without discarding candidates already claimed in this cycle. */
+  readonly selectionFailures: number;
+  /** Post-processing maintenance failures that must not discard persisted outcomes or matching work. */
+  readonly maintenanceFailures: number;
   readonly bySource: Readonly<Record<string, number>>;
 }
 
@@ -209,6 +213,7 @@ export interface LaneStatus {
 export interface EngineLoopStatus {
   readonly running: boolean;
   readonly discovery: LaneStatus & { readonly lastDue: number; readonly lastUnitsRun: number;
+    readonly lastUnitUpdateFailures: number;
     readonly lastSuccessfulPlatforms: readonly string[]; readonly lastFailedPlatforms: readonly string[] };
   readonly judgment: LaneStatus;
 }
@@ -246,7 +251,7 @@ export function createEngineLoop(
   let runPromise: Promise<void> | null = null;
   let releaseStop!: () => void;
   const stopSignal = new Promise<void>((resolve) => { releaseStop = resolve; });
-  let discoveryStatus = { ...emptyLane(), lastDue: 0, lastUnitsRun: 0,
+  let discoveryStatus = { ...emptyLane(), lastDue: 0, lastUnitsRun: 0, lastUnitUpdateFailures: 0,
     lastSuccessfulPlatforms: Object.freeze([]) as readonly string[], lastFailedPlatforms: Object.freeze([]) as readonly string[] };
   let judgmentStatus = emptyLane();
 
@@ -280,6 +285,7 @@ export function createEngineLoop(
         lastWakeMs: wakeMs,
         lastDue: report.tick?.due ?? 0,
         lastUnitsRun: report.tick?.unitsRun ?? 0,
+        lastUnitUpdateFailures: report.tick?.unitUpdateFailures ?? 0,
         lastSuccessfulPlatforms: Object.freeze([...(report.tick?.successfulPlatforms ?? [])]),
         lastFailedPlatforms: Object.freeze([...(report.tick?.failedPlatforms ?? [])]),
       };

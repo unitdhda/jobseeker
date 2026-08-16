@@ -7,7 +7,8 @@ import { uniformIdfLookups } from '@jobseeker/engine/idf';
 import { identityRoleResolver } from '@jobseeker/engine/equivalence';
 import * as v from 'valibot';
 import type { TelegramUser, Vacancy } from '@jobseeker/store';
-import { createMaintenanceAdapter, createMatchingAdapter, createNormalizationAdapter, discoveryTickLog } from '../src/engine-adapters.ts';
+import { createMaintenanceAdapter, createMatchingAdapter, createNormalizationAdapter, discoveryTickLog,
+  normalizationLog } from '../src/engine-adapters.ts';
 import type { MatchingVocabularies } from '../src/matching-vocabularies.ts';
 
 const userId = parseUserId('1'); const otherUser = parseUserId('2'); const source = parseSourceKey('test');
@@ -105,12 +106,40 @@ test('normalization persists each candidate before invoking the next and isolate
     'failed:2:safe timeout', 'invoke:3', 'failed:3:safe timeout']);
 });
 
-test('discovery log exposes only aggregate provider outcomes', () => {
-  const message = discoveryTickLog({ matched: 0, stageFailures: [], tick: { due: 5, unitsRun: 2,
-    platformFailures: 1, unitUpdateFailures: 0, successfulPlatforms: ['safe'], failedPlatforms: ['failed-source'],
+test('discovery and normalization logs expose only aggregate safe outcomes', () => {
+  const tick = discoveryTickLog({ matched: 0, stageFailures: [], tick: { due: 5, unitsRun: 0,
+    platformFailures: 1, unitUpdateFailures: 8, successfulPlatforms: ['safe'], failedPlatforms: ['failed-source'],
     perPlatform: {} } });
-  assert.equal(message, 'Discovery tick: due=5 run=2 failed=failed-source.');
-  assert.doesNotMatch(message!, /query|vacancy|postgres|token/u);
+  assert.equal(tick, 'Discovery tick: due=5 run=0 ok=1 writeFailures=8 failed=failed-source.');
+  const normalization = normalizationLog({ matched: 0, stageFailures: [], normalize: { vacancyIds: [1], failed: 2,
+    closed: 1, expired: 0, selected: 4, refreshed: 0, normalized: 1, selectionFailures: 1, maintenanceFailures: 1,
+    bySource: { 'failed-source': 4 } } });
+  assert.equal(normalization, 'Normalization: selected=4 refreshed=0 normalized=1 failed=2 closed=1'
+    + ' selectionFailures=1 maintenanceFailures=1.');
+  for (const message of [tick!, normalization!]) assert.doesNotMatch(message, /query|vacancy|postgres|token/u);
+  assert.equal(discoveryTickLog({ matched: 0, stageFailures: [] }), null);
+  assert.equal(normalizationLog({ matched: 0, stageFailures: [] }), null);
+});
+
+test('a refresh selection or purge failure cannot discard candidates already claimed in the cycle', async () => {
+  const claimed = candidate('1', 'normalizing'); const saved: string[] = [];
+  const normalize = createNormalizationAdapter({ store: {
+    approvedUsers: async () => [user()], queuedListings: async () => [claimed],
+    candidatesDueForRefresh: async () => { throw new Error('undecodable stored row'); },
+    upsertVacancy: async () => ({ id: 7, needsScore: true, duplicate: false }),
+    markCandidateNormalized: async (item) => { saved.push(`saved:${item.sourceId}`); },
+    markCandidateClosed: async () => undefined, markCandidateFailed: async () => { saved.push('failed'); },
+    markCandidateRefreshFailed: async () => undefined,
+    purgeExpiredVacancies: async () => { throw new Error('retention unavailable'); },
+  }, sources: { normalize: async (_provider, items) => new Map([[items[0]!.sourceId, normalized(items[0]!.sourceId)]]) },
+  config: { normalizationBatchSizePerUser: 10, normalizationPerSourceLimit: 10, normalizationClaimLeaseMinutes: 15,
+    normalizeSourceConcurrency: 1, candidateRefreshBatchSize: 2, candidateRefreshDays: 7,
+    vacancyRetentionDays: 30, vacancyPurgeBatchSize: 10 } });
+  const report = await normalize(new Date());
+  assert.deepEqual(saved, ['saved:1']);
+  assert.deepEqual(report.vacancyIds, [7]);
+  assert.equal(report.normalized, 1); assert.equal(report.refreshed, 0);
+  assert.equal(report.selectionFailures, 1); assert.equal(report.maintenanceFailures, 1); assert.equal(report.expired, 0);
 });
 
 const career = v.parse(careerProfileSchema, { version: 1, tracks: [{ name: 'Backend Engineer',

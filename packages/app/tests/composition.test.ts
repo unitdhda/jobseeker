@@ -68,7 +68,7 @@ function fakeLoop(events: string[]): EngineLoop {
   let release!: () => void; const running = new Promise<void>((resolve) => { release = resolve; });
   return { run: () => { events.push('loop-run'); return running; }, stop: () => { events.push('loop-stop'); release(); },
     status: () => ({ running: true, discovery: { iterations: 0, lastIterationAt: null, lastStageFailures: [], lastWakeMs: null,
-      lastDue: 0, lastUnitsRun: 0, lastSuccessfulPlatforms: [], lastFailedPlatforms: [] },
+      lastDue: 0, lastUnitsRun: 0, lastUnitUpdateFailures: 0, lastSuccessfulPlatforms: [], lastFailedPlatforms: [] },
       judgment: { iterations: 0, lastIterationAt: null, lastStageFailures: [], lastWakeMs: null } }) };
 }
 

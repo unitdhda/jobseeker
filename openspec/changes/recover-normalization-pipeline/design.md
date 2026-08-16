@@ -48,6 +48,24 @@ Scheduler reports will include stable successful and failed platform identifiers
 
 A count-only report was rejected because it cannot tell an operator which provider is preventing cadence advancement.
 
+### Give every parameterized interval its own explicit type
+
+Recording a completed unit run assigns `cadence_minutes=$2` and also computes `$2*interval '1 minute'`. PostgreSQL deduces `integer` from the assignment and `double precision` from the multiplication, rejects the statement with `42P08`, and the scheduler counts that as an isolated unit-update failure. Because the failure is per unit and silent, cadence never advances and every unit stays permanently due.
+
+Every parameter used in interval arithmetic will carry an explicit type at each site: minute and day intervals use `make_interval`, and millisecond intervals cast the parameter directly. A source-level policy test will forbid multiplying a bare parameter by an interval literal, and a real-database test will assert that a recorded run moves `next_run_at` into the future.
+
+Adding a second parameter for the same value was rejected because it leaves the untyped multiplication pattern available elsewhere in the repository.
+
+### Exclude undecodable rows during selection rather than after claiming
+
+One legacy `normalized` row has no listing hash, so decoding it throws. Because candidate decoding happens after the claim transaction commits, the whole normalization stage aborts while the claimed rows stay `normalizing` until their lease expires.
+
+Queue and refresh selection will require a decodable stored shape in SQL, so poison rows are never claimed, and operator diagnostics will report how many stored rows are excluded. Skipping rows only after claiming was rejected because a claimed undecodable row would be reclaimed on every later cycle.
+
+### Keep claimed queue work independent of refresh selection
+
+Queue claiming and refresh selection currently run in one `Promise.all`, so a refresh failure discards already-claimed queue candidates. Claiming will run first, refresh selection failure will be counted and reported, and the cycle will continue with the candidates it already owns.
+
 ### Recover production in bounded stages
 
 After deploying `0.2.9`, the automatic lease query can technically reclaim all 440 old rows, but per-source limits ensure only a bounded subset is selected per cycle. Before deployment, a small canary recovery may reset 10 HH rows and all 6 Trudvsem rows to `failed` with immediate due time only after taking a database backup. Remaining rows are left for the fixed lease mechanism.
@@ -69,4 +87,6 @@ After deploying `0.2.9`, the automatic lease query can technically reclaim all 4
 5. Publish and deploy `0.2.9`, then verify one engine lock, zero restarts, successful provider cadence advancement, decreasing expired claims, and durable candidate outcomes.
 6. Allow the fixed claim mechanism to drain the remaining production backlog under bounded limits.
 
-Rollback restores `0.2.8` only after ensuring no actively reclaimed rows are left in a state that the old runtime cannot process. No DDL rollback is required.
+7. Correct the cadence write, candidate selection, stage isolation, and diagnostics; release `0.2.10`; and verify that units advance and expired claims decline.
+
+Rollback restores the previous published version only after ensuring no actively reclaimed rows are left in a state that the old runtime cannot process. No DDL rollback is required.

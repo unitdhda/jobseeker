@@ -20,7 +20,8 @@ test('discovery and judgment preserve stage order while isolating failures', asy
     tick: async () => { order.push('tick'); throw new Error('transient'); },
     normalize: async () => {
       order.push('normalize');
-      return { vacancyIds: [1], failed: 0, closed: 0, expired: 0, selected: 1, refreshed: 0, normalized: 1, bySource: {} };
+      return { vacancyIds: [1], failed: 0, closed: 0, expired: 0, selected: 1, refreshed: 0, normalized: 1,
+        selectionFailures: 0, maintenanceFailures: 0, bySource: {} };
     },
     matchVacancies: async () => { order.push('match'); return { matched: 1, failures: 0 }; },
   }, new Date());
@@ -59,7 +60,8 @@ test('independent lanes publish their clocks and stop promptly while sleeping', 
   const judgmentSleep = new Promise<void>((resolve) => { releaseJudgment = resolve; });
   const ports: LoopPorts = {
     tick: async () => ({ ...emptyTick, successfulPlatforms: ['alpha'], failedPlatforms: ['beta'] }),
-    normalize: async () => ({ vacancyIds: [], failed: 0, closed: 0, expired: 0, selected: 0, refreshed: 0, normalized: 0, bySource: {} }),
+    normalize: async () => ({ vacancyIds: [], failed: 0, closed: 0, expired: 0, selected: 0, refreshed: 0, normalized: 0,
+      selectionFailures: 0, maintenanceFailures: 0, bySource: {} }),
     matchVacancies: async () => ({ matched: 0, failures: 0 }),
     scoreDue: async () => ({ users: 0, drained: 0, skippedOverBudget: 0, failures: 0 }),
     deliver: async () => undefined,

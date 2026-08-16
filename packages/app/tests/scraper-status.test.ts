@@ -7,7 +7,7 @@ test('scraper status contains every configured source including zero-row provide
     hours: Array.from({ length: 25 }, (_, index) => ({ at: new Date(), normalized: index, scored: 24 - index })),
     sources: [{ source: 'one', discovered24h: 5, normalized24h: 4, failed: 1, queued: 2, closed24h: 3, scored24h: 4 }],
     units: [{ platform: 'one', units: 3, overdue: 1, cadenceMin: 30, cadenceMax: 60, lastNoveltyAt: null }],
-    normalization: { queued: 2, activeClaims: 3, expiredClaims: 4 }, matched24h: 10, scored24h: 8,
+    normalization: { queued: 2, activeClaims: 3, expiredClaims: 4, undecodable: 5 }, matched24h: 10, scored24h: 8,
     parserErrors: [{ error: '<parser & error>', count: 2 }],
   }, ['one', 'two'], 'en');
   const text = output.join('\n');
@@ -17,7 +17,7 @@ test('scraper status contains every configured source including zero-row provide
   assert.match(text, /Search units/u); assert.match(text, /one: 3 · overdue 1 · cadence 30–60 min/u); assert.match(text, /<pre>/u);
   assert.match(text, /Scored — left axis/u); assert.match(text, /Parsed — right axis/u);
   const russian = scraperStatus({ hours: Array.from({ length: 25 }, () => ({ at: new Date(), normalized: 0, scored: 0 })),
-    sources: [], units: [], normalization: { queued: 1, activeClaims: 2, expiredClaims: 3 },
+    sources: [], units: [], normalization: { queued: 1, activeClaims: 2, expiredClaims: 3, undecodable: 4 },
     matched24h: 0, scored24h: 0, parserErrors: [] }, [], 'ru').join('\n');
   assert.match(russian, /Нормализация/u); assert.match(russian, /очередь: 1/u);
 });
@@ -26,6 +26,6 @@ test('scraper output splits large source inventories below Telegram limit on lin
   const sources = Array.from({ length: 200 }, (_, index) => `source-${index}-${'x'.repeat(20)}`);
   const output = scraperStatus({ hours: Array.from({ length: 25 }, (_, index) =>
     ({ at: new Date(index * 3_600_000), normalized: 0, scored: 0 })), sources: [], units: [],
-    normalization: { queued: 0, activeClaims: 0, expiredClaims: 0 }, matched24h: 0, scored24h: 0, parserErrors: [] }, sources, 'en');
+    normalization: { queued: 0, activeClaims: 0, expiredClaims: 0, undecodable: 0 }, matched24h: 0, scored24h: 0, parserErrors: [] }, sources, 'en');
   assert.ok(output.length > 1); assert.ok(output.every((message) => message.length <= 4096));
 });

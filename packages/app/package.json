@@ -1,6 +1,6 @@
 {
   "name": "@unitdhda/jobseeker",
-  "version": "0.2.9",
+  "version": "0.2.10",
   "description": "Self-hosted Telegram service for vacancy discovery, scoring, and tailored applications.",
   "license": "MIT",
   "type": "module",

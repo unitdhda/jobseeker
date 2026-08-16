@@ -87,9 +87,11 @@ export async function startService(): Promise<void> {
             rssBytes: process.memoryUsage().rss, heapBytes: process.memoryUsage().heapUsed, cpuPercent: 0,
             workerPending: worker?.pendingCount ?? 0, aiActive: 0, aiQueued: 0, telegramMode: config.telegramMode,
             engineStatus,
-            discoveryStatus: loopStatus?.discovery.lastFailedPlatforms.length
-              ? `failed: ${loopStatus.discovery.lastFailedPlatforms.join(',')}`
-              : loopStatus?.discovery.lastStageFailures.join(',') || engineStatus,
+            discoveryStatus: loopStatus?.discovery.lastUnitUpdateFailures
+              ? `write failures: ${loopStatus.discovery.lastUnitUpdateFailures}`
+              : loopStatus?.discovery.lastFailedPlatforms.length
+                ? `failed: ${loopStatus.discovery.lastFailedPlatforms.join(',')}`
+                : loopStatus?.discovery.lastStageFailures.join(',') || engineStatus,
             judgmentStatus: loopStatus?.judgment.lastStageFailures.join(',') || engineStatus };
         } });
       const telegramHandlers: TelegramCommandHandlers = Object.freeze({ ...commandHandlers,

@@ -27,10 +27,34 @@ test('normalization claims are source-fair, lease-bounded, and reclaim expired w
   assert.match(claim, /lifecycle_status in \('discovered','failed','normalizing'\)/u);
   assert.match(claim, /r\.source_rank<=\$2/u);
   assert.match(claim, /for update of v skip locked limit \$1/u);
-  assert.match(claim, /next_normalization_at=now\(\)\+\(\$2\*interval '1 minute'\)/u);
+  assert.match(claim, /next_normalization_at=now\(\)\+make_interval\(mins=>\$2::integer\)/u);
   assert.match(claim, /normalization_attempts=normalization_attempts\+1/u);
   const failure = /export async function markCandidateFailed[\s\S]*?\n\}/u.exec(repos)?.[0] ?? '';
   assert.match(failure, /least\(1440,power\(2,greatest\(0,normalization_attempts-1\)\)\)/u);
+});
+
+test('candidate selection excludes stored rows the decoder cannot accept and counts them', async () => {
+  const repos = await read('repos.ts');
+  assert.match(repos, /const decodableCandidate = `listing_hash ~ '\^\[0-9a-f\]\{64\}\$'/u);
+  for (const name of ['queuedListings', 'candidatesDueForRefresh']) {
+    const source = new RegExp(`export async function ${name}[\\s\\S]*?\\n\\}`, 'u').exec(repos)?.[0] ?? '';
+    assert.match(source, /\$\{decodableCandidate\}/u);
+  }
+  const summary = /export async function scraperSummary[\s\S]*?\n\}/u.exec(repos)?.[0] ?? '';
+  // A null column makes the predicate unknown, so counting must use `is not true` rather than negation.
+  assert.match(summary, /\(\$\{decodableCandidate\}\) is not true\) undecodable/u);
+});
+
+test('every parameterized interval carries an explicit type', async () => {
+  const sources = await Promise.all(['repos.ts', 'engine-repos.ts', 'telegram-repos.ts'].map(read));
+  // An untyped $n used both as an integer column value and an interval multiplier is rejected with 42P08 at runtime.
+  for (const source of sources) assert.doesNotMatch(source, /\$\d+\s*\*\s*interval/u);
+  const engine = sources[1]!;
+  const record = /export async function recordUnitRun[\s\S]*?\n\}/u.exec(engine)?.[0] ?? '';
+  assert.match(record, /cadence_minutes=\$2::integer/u);
+  assert.match(record, /next_run_at=\$3::timestamptz\+make_interval\(mins=>\$2::integer\)/u);
+  const expiry = /export async function expireStaleMatches[\s\S]*?\n\}/u.exec(engine)?.[0] ?? '';
+  assert.match(expiry, /\$2::timestamptz-make_interval\(days=>\$1::integer\)/u);
 });
 
 test('engine scheduling, refresh, vocabularies, and applications retain their ownership predicates', async () => {

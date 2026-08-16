@@ -44,8 +44,34 @@ A failed discovery provider SHALL leave affected search units due for retry, whi
 - **THEN** the failed provider's selected units remain due
 - **AND** the successful provider's completed units advance cadence
 
+### Requirement: Completed search-unit runs advance cadence durably
+Recording a completed search-unit run SHALL durably advance that unit's cadence and next run time, and a scheduling write that fails SHALL be counted and reported rather than discarded silently.
+
+#### Scenario: Provider completes discovery for a selected unit
+- **WHEN** a provider completes discovery and the unit's run is recorded
+- **THEN** the unit's next run time moves into the future
+- **AND** the unit is no longer due in the following cycle
+
+#### Scenario: Scheduling write fails
+- **WHEN** recording a completed run fails
+- **THEN** the unit remains due
+- **AND** operator diagnostics report the count of failed scheduling writes
+
+### Requirement: Undecodable stored rows cannot stall the pipeline
+Candidate selection SHALL exclude stored rows it cannot decode, report how many are excluded, and continue processing the remaining candidates.
+
+#### Scenario: Stored row lacks a decodable listing identity
+- **WHEN** a stored row that cannot be decoded becomes due for normalization or refresh
+- **THEN** selection excludes that row instead of claiming it
+- **AND** the remaining due candidates are processed in the same cycle
+
+#### Scenario: Refresh selection fails after queue claims commit
+- **WHEN** refresh selection fails in a cycle that already claimed queue candidates
+- **THEN** those claimed candidates are still processed and persisted in that cycle
+- **AND** the selection failure is reported
+
 ### Requirement: Pipeline health is observable
-Operator diagnostics SHALL expose failed discovery provider identities, successful/failed unit counts, due search units, queued candidates, active claims, and expired claims without exposing queries, vacancy content, credentials, or connection details.
+Operator diagnostics SHALL expose failed discovery provider identities, successful/failed unit counts, failed scheduling writes, due search units, queued candidates, active claims, expired claims, and excluded undecodable rows without exposing queries, vacancy content, credentials, or connection details.
 
 #### Scenario: Provider partially writes then fails
 - **WHEN** a provider records listings but fails before completing discovery
@@ -55,3 +81,8 @@ Operator diagnostics SHALL expose failed discovery provider identities, successf
 #### Scenario: Abandoned claims accumulate
 - **WHEN** expired normalization claims exist
 - **THEN** operator status reports their count separately from active claims and ordinary queued work
+
+#### Scenario: Discovery completes without advancing any unit
+- **WHEN** providers complete but no unit run is recorded successfully
+- **THEN** safe logs report the advanced-unit count and the failed scheduling-write count
+- **AND** do not present the cycle as fully successful

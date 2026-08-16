@@ -26,7 +26,23 @@
 
 ## 5. Controlled Production Recovery
 
-- [ ] 5.1 Verify publication, back up PostgreSQL plus VPS assets, and record baseline source/queue/claim counts
-- [ ] 5.2 If needed before cutover, reset only 10 abandoned HH and all 6 Trudvsem claims as an immediate canary and verify durable outcomes
-- [ ] 5.3 Build the published candidate, run `doctor`, deploy `0.2.9`, and verify health, readiness, one engine lock, zero restart churn, and safe logs
+- [x] 5.1 Verify publication, back up PostgreSQL plus VPS assets, and record baseline source/queue/claim counts
+- [x] 5.2 If needed before cutover, reset only 10 abandoned HH and all 6 Trudvsem claims as an immediate canary and verify durable outcomes
+- [x] 5.3 Build the published candidate, run `doctor`, deploy `0.2.9`, and verify health, readiness, one engine lock, zero restart churn, and safe logs
 - [ ] 5.4 Verify successful provider cadence advancement and bounded decline of queued/expired claims before allowing automatic backlog drainage
+
+## 6. Scheduling and Decoding Durability
+
+- [x] 6.1 Give every parameterized interval an explicit type so recording a completed unit run cannot fail on parameter type deduction
+- [x] 6.2 Exclude undecodable stored rows from queue and refresh selection and report the excluded count in operator diagnostics
+- [x] 6.3 Claim queue candidates independently of refresh selection so a refresh failure cannot discard claimed work
+- [x] 6.4 Report advanced units, failed scheduling writes, and normalization stage outcomes in safe logs and engine status
+- [x] 6.5 Add source-level policy tests forbidding untyped parameter interval arithmetic and covering the new selection predicates
+- [x] 6.6 Repair the PostgreSQL integration runner and cover cadence advancement, claim leases, source fairness, and undecodable-row exclusion against a real database
+
+## 7. Combined Release
+
+- [x] 7.1 Run focused tests, full tests, typecheck, build, package smoke, real-database tests, strict OpenSpec validation, and secret review
+- [x] 7.2 Bump application, reference deployment, documentation, and packaging assertions from `0.2.9` to `0.2.10`
+- [ ] 7.3 Commit and push the completed change, then pause for publication of `@unitdhda/jobseeker@0.2.10`
+- [ ] 7.4 Deploy `0.2.10`, verify health, readiness, one engine lock, zero restart churn, and safe logs, then confirm advancing units and declining expired claims

@@ -51,11 +51,16 @@ export function createNormalizationAdapter(input: {
   return async (_now) => {
     const users = await input.store.approvedUsers(true);
     const queueLimit = users.length * input.config.normalizationBatchSizePerUser;
-    const [queued, refresh] = await Promise.all([
-      queueLimit > 0 ? input.store.queuedListings(queueLimit,
-        Math.min(queueLimit, input.config.normalizationPerSourceLimit), input.config.normalizationClaimLeaseMinutes) : Promise.resolve([]),
-      input.store.candidatesDueForRefresh(input.config.candidateRefreshBatchSize, input.config.candidateRefreshDays),
-    ]);
+    let selectionFailures = 0;
+    const queued: readonly VacancyCandidate[] = queueLimit > 0
+      ? await input.store.queuedListings(queueLimit,
+        Math.min(queueLimit, input.config.normalizationPerSourceLimit), input.config.normalizationClaimLeaseMinutes)
+      : [];
+    // Claims are already leased once the queue transaction commits, so refresh selection must not discard them.
+    let refresh: readonly VacancyCandidate[] = [];
+    try {
+      refresh = await input.store.candidatesDueForRefresh(input.config.candidateRefreshBatchSize, input.config.candidateRefreshDays);
+    } catch { selectionFailures += 1; }
     const refreshKeys = new Set(refresh.map((candidate) => `${candidate.source.length}:${candidate.source}:${candidate.sourceId}`));
     const candidates = [...queued, ...refresh];
     const bySource = groupCandidates(candidates);
@@ -92,9 +97,13 @@ export function createNormalizationAdapter(input: {
         }
       }
     });
-    const expired = await input.store.purgeExpiredVacancies(input.config.vacancyRetentionDays, input.config.vacancyPurgeBatchSize);
+    // Retention maintenance runs after persistence; failing it must not discard outcomes or the matching work list.
+    let expired = 0; let maintenanceFailures = 0;
+    try {
+      expired = await input.store.purgeExpiredVacancies(input.config.vacancyRetentionDays, input.config.vacancyPurgeBatchSize);
+    } catch { maintenanceFailures += 1; }
     return Object.freeze({ vacancyIds: Object.freeze([...vacancyIds].sort((a, b) => a - b)), failed, closed, expired,
-      selected: queued.length, refreshed: refresh.length, normalized,
+      selected: queued.length, refreshed: refresh.length, normalized, selectionFailures, maintenanceFailures,
       bySource: Object.freeze(Object.fromEntries([...bySource].map(([source, values]) => [source, values.length]))) });
   };
 }
@@ -215,7 +224,16 @@ export function createMaintenanceAdapter(input: {
 export function discoveryTickLog(report: DiscoveryReport): string | null {
   if (!report.tick) return null;
   const failed = report.tick.failedPlatforms.join(',') || 'none';
-  return `Discovery tick: due=${report.tick.due} run=${report.tick.unitsRun} failed=${failed}.`;
+  return `Discovery tick: due=${report.tick.due} run=${report.tick.unitsRun} ok=${report.tick.successfulPlatforms.length}`
+    + ` writeFailures=${report.tick.unitUpdateFailures} failed=${failed}.`;
+}
+
+export function normalizationLog(report: DiscoveryReport): string | null {
+  if (!report.normalize) return null;
+  const value = report.normalize;
+  return `Normalization: selected=${value.selected} refreshed=${value.refreshed} normalized=${value.normalized}`
+    + ` failed=${value.failed} closed=${value.closed} selectionFailures=${value.selectionFailures}`
+    + ` maintenanceFailures=${value.maintenanceFailures}.`;
 }
 
 export function createEnginePorts(input: {
@@ -250,7 +268,7 @@ export function createEnginePorts(input: {
     scoreDue: (now: Date) => score(input.config.userScoreLimitPerCycle, now),
     deliver: input.deliver,
     observeDiscovery: (report: DiscoveryReport) => {
-      const message = discoveryTickLog(report); if (message) input.log?.(message);
+      for (const message of [discoveryTickLog(report), normalizationLog(report)]) if (message) input.log?.(message);
     },
     ...maintenance,
   });

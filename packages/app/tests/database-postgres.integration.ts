@@ -12,6 +12,7 @@ import {
   parseVacancyContentHash,
   type VacancyInput,
 } from '@jobseeker/engine/contracts';
+import { unitIdentityOf } from '@jobseeker/engine/identity';
 import type { ExtractedCvDocument } from '@jobseeker/cv/extract';
 
 const testUrl = process.env.JOBSEEKER_TEST_DATABASE_URL;
@@ -176,6 +177,57 @@ run('PostgreSQL schema and critical store lifecycle', { timeout: 120_000 }, asyn
     const releaseTwo = await secondStore.tryAcquireSingletonLock('jobseeker-engine-loop');
     assert.ok(releaseTwo);
     await releaseTwo!.release();
+
+    // Scheduling writes must advance real rows: an untyped interval parameter is rejected with 42P08 at execution.
+    const search = { name: 'Engineering', query: 'backend' };
+    const identity = unitIdentityOf(source, search);
+    await store.applyDemand(user, [{ ...identity, query: search }],
+      [{ unitId: identity.unitId, userId: user, searchName: 'Engineering', sourceSearch: search }], 30);
+    assert.deepEqual((await store.dueUnits(new Date())).map((unit) => unit.unitId), [identity.unitId]);
+    await store.recordUnitRun(identity.unitId, 45, true, new Date());
+    assert.deepEqual(await store.dueUnits(new Date()), []);
+    const scheduled = await store.admin.query<{ cadence_minutes: number; next_run_at: Date; last_novelty_at: Date | null }>(
+      'select cadence_minutes,next_run_at,last_novelty_at from search_units where unit_id=$1', [identity.unitId]);
+    assert.equal(Number(scheduled.rows[0]?.cadence_minutes), 45);
+    assert.ok(new Date(scheduled.rows[0]!.next_run_at).getTime() > Date.now());
+    assert.ok(scheduled.rows[0]?.last_novelty_at);
+    assert.equal(typeof await store.expireStaleMatches(30, new Date()), 'number');
+    assert.equal(typeof await store.purgeExpiredVacancies(30, 10), 'number');
+    assert.deepEqual(await store.recentNormalizedVacancyIds(0, 1, 30), [vacancy.id]);
+
+    // Claims are per-source, lease-bounded, reclaimed after expiry, and never taken from undecodable rows.
+    const other = parseSourceKey('second');
+    for (const [claimSource, ids] of [[source, ['queue-a', 'queue-b']], [other, ['queue-c']]] as const) {
+      for (const id of ids) {
+        assert.equal(await store.recordListingCandidate({ source: claimSource, sourceId: parseSourceVacancyId(id),
+          url: new URL(`https://example.test/${id}`), searchName: 'Engineering', title: 'Backend Developer',
+          publishedAt: new Date() }), true);
+      }
+    }
+    await store.admin.query(`insert into vacancies(source,source_id,url,published_at,listing_hash,lifecycle_status)
+      values($1,'undecodable','https://example.test/undecodable',now(),null,'discovered')`, [source]);
+    const firstClaim = await store.queuedListings(10, 1, 15);
+    assert.deepEqual(firstClaim.map((item) => item.source).sort(), [source, other]);
+    assert.equal(firstClaim.every((item) => item.status === 'normalizing' && item.attempts === 1), true);
+    assert.deepEqual((await store.queuedListings(10, 1, 15)).map((item) => item.sourceId), ['queue-b']);
+    assert.deepEqual(await store.queuedListings(10, 5, 15), []);
+    await store.admin.query(`update vacancies set next_normalization_at=now()-interval '1 minute'
+      where lifecycle_status='normalizing'`);
+    const reclaimed = await store.queuedListings(10, 5, 15);
+    assert.equal(reclaimed.length, 3);
+    assert.equal(reclaimed.every((item) => item.attempts === 2), true);
+    assert.equal(reclaimed.some((item) => item.sourceId === 'undecodable'), false);
+
+    // A stored row the decoder cannot accept is excluded from refresh and reported instead of aborting selection.
+    await store.admin.query(`update vacancies set lifecycle_status='normalized',listing_hash=null,
+      last_checked_at=now()-interval '30 days' where source_id='undecodable'`);
+    await store.admin.query(`update vacancies set last_checked_at=now()-interval '30 days' where id=$1`, [vacancy.id]);
+    const refreshable = await store.candidatesDueForRefresh(10, 7);
+    assert.equal(refreshable.some((item) => item.sourceId === 'undecodable'), false);
+    assert.deepEqual(refreshable.map((item) => item.sourceId), ['fresh']);
+    // Counts every stored row selection must skip: the explicit null-hash row plus the two vacancies that were
+    // normalized directly and therefore never carried a listing identity.
+    assert.equal((await store.scraperSummary()).normalization.undecodable, 3);
 
     await store.deleteUserData(user);
     assert.equal((await store.getTelegramUser(user))?.status, 'approved');

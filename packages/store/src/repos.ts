@@ -578,6 +578,13 @@ function vacancyOf(row: VacancyRow): Vacancy {
   });
 }
 
+/**
+ * Stored shapes a candidate decoder can accept. Selection excludes anything else so a legacy row can never be
+ * claimed and then abort the whole cycle after its claim has already committed.
+ */
+const decodableCandidate = `listing_hash ~ '^[0-9a-f]{64}$' and url ~ '^https?://'
+  and source ~ '^[a-z0-9][a-z0-9._-]{0,63}$' and source_id=btrim(source_id) and source_id !~ '[[:cntrl:]]'`;
+
 function candidateOf(row: QueryResultRow & Record<string, unknown>): VacancyCandidate {
   return Object.freeze({
     source: parseSourceKey(String(row.source)), sourceId: parseSourceVacancyId(String(row.source_id)),
@@ -702,11 +709,11 @@ export async function queuedListings(
     const result = await client.query(`with ranked as (
         select id,row_number() over(partition by source order by next_normalization_at,id) source_rank
         from vacancies where next_normalization_at<=now()
-          and lifecycle_status in ('discovered','failed','normalizing'))
+          and lifecycle_status in ('discovered','failed','normalizing') and ${decodableCandidate})
       select v.* from vacancies v join ranked r using(id) where r.source_rank<=$2
       order by v.next_normalization_at,v.source,v.id for update of v skip locked limit $1`, [limit, perSourceLimit]);
     if (result.rows.length) await client.query(`update vacancies set lifecycle_status='normalizing',
-      normalization_attempts=normalization_attempts+1,next_normalization_at=now()+($2*interval '1 minute'),updated_at=now()
+      normalization_attempts=normalization_attempts+1,next_normalization_at=now()+make_interval(mins=>$2::integer),updated_at=now()
       where id=any($1::bigint[])`, [result.rows.map((row) => row.id), claimLeaseMinutes]);
     return Object.freeze(result.rows.map((row) => candidateOf({ ...row,
       lifecycle_status: 'normalizing', normalization_attempts: Number(row.normalization_attempts) + 1 })));
@@ -718,7 +725,8 @@ export async function candidatesDueForRefresh(limit: number, days: number): Prom
     throw new RangeError('Invalid vacancy refresh bounds.');
   }
   const result = await postgresQuery(`select * from vacancies where lifecycle_status='normalized'
-    and last_checked_at<=now()-($2*interval '1 day') order by last_checked_at,id limit $1`, [limit, days]);
+    and last_checked_at<=now()-make_interval(days=>$2::integer) and ${decodableCandidate}
+    order by last_checked_at,id limit $1`, [limit, days]);
   return Object.freeze(result.rows.map(candidateOf));
 }
 
@@ -757,7 +765,7 @@ export async function purgeExpiredVacancies(retentionDays: number, limit: number
     throw new RangeError('Invalid vacancy retention bounds.');
   }
   const result = await postgresQuery(`delete from vacancies where id in (
-    select v.id from vacancies v where v.last_seen_at<now()-($1*interval '1 day')
+    select v.id from vacancies v where v.last_seen_at<now()-make_interval(days=>$1::integer)
       and not exists(select 1 from matches m where m.vacancy_id=v.id and (
         m.delivered_at is not null or m.application_status is not null or m.application_artifacts<>'{}'::jsonb
         or m.llm_score>=$3)) order by v.last_seen_at,v.id limit $2
@@ -1110,6 +1118,8 @@ export interface UnitScheduleStats {
 }
 export interface NormalizationQueueStats {
   readonly queued: number; readonly activeClaims: number; readonly expiredClaims: number;
+  /** Stored rows in normalization scope that selection excludes because they cannot be decoded. */
+  readonly undecodable: number;
 }
 export interface ScraperSummary {
   readonly hours: readonly { readonly at: Date; readonly normalized: number; readonly scored: number }[];
@@ -1143,10 +1153,12 @@ export async function scraperSummary(): Promise<ScraperSummary> {
       last_novelty_at: Date | string | null }>(`select platform,count(*) units,count(*) filter(where next_run_at<=now()) overdue,
       min(cadence_minutes) cadence_min,max(cadence_minutes) cadence_max,max(last_novelty_at) last_novelty_at
       from search_units where retired_at is null group by platform order by platform`),
-    postgresQuery<{ queued: string; active_claims: string; expired_claims: string }>(`select
+    postgresQuery<{ queued: string; active_claims: string; expired_claims: string; undecodable: string }>(`select
       count(*) filter(where lifecycle_status in ('discovered','failed') and next_normalization_at<=now()) queued,
       count(*) filter(where lifecycle_status='normalizing' and next_normalization_at>now()) active_claims,
-      count(*) filter(where lifecycle_status='normalizing' and next_normalization_at<=now()) expired_claims
+      count(*) filter(where lifecycle_status='normalizing' and next_normalization_at<=now()) expired_claims,
+      count(*) filter(where lifecycle_status in ('discovered','failed','normalizing','normalized')
+        and (${decodableCandidate}) is not true) undecodable
       from vacancies`),
     postgresQuery<{ matched: string; scored: string }>(`select
       count(*) filter(where matched_at>=now()-interval '24 hours') matched,
@@ -1164,7 +1176,8 @@ export async function scraperSummary(): Promise<ScraperSummary> {
       overdue: Number(row.overdue), cadenceMin: Number(row.cadence_min), cadenceMax: Number(row.cadence_max),
       lastNoveltyAt: row.last_novelty_at == null ? null : new Date(row.last_novelty_at) }))),
     normalization: Object.freeze({ queued: Number(normalization.rows[0]?.queued ?? 0),
-      activeClaims: Number(normalization.rows[0]?.active_claims ?? 0), expiredClaims: Number(normalization.rows[0]?.expired_claims ?? 0) }),
+      activeClaims: Number(normalization.rows[0]?.active_claims ?? 0), expiredClaims: Number(normalization.rows[0]?.expired_claims ?? 0),
+      undecodable: Number(normalization.rows[0]?.undecodable ?? 0) }),
     matched24h: Number(counts.rows[0]?.matched ?? 0), scored24h: Number(counts.rows[0]?.scored ?? 0),
     parserErrors: Object.freeze(errors.rows.map((row) => Object.freeze({ error: row.error, count: Number(row.count) }))),
   });

@@ -6,7 +6,7 @@
     "build": "cd packages/app && bun run build",
     "typecheck": "tsc --noEmit",
     "test": "bun --no-env-file test --max-concurrency=1 tests/*.test.ts packages/*/tests/*.test.ts",
-    "test:postgres": "JOBSEEKER_POSTGRES_TEST_REQUIRED=1 bun --env-file=.env packages/app/tests/database-postgres.integration.ts"
+    "test:postgres": "JOBSEEKER_POSTGRES_TEST_REQUIRED=1 bun --no-env-file test ./packages/app/tests/database-postgres.integration.ts"
   },
   "devDependencies": {
     "@types/node": "26.1.2",

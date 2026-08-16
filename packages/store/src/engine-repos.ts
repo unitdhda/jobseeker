@@ -69,9 +69,11 @@ export async function recordUnitRun(
   unitId: TickUnit['unitId'], cadenceMinutes: number, foundNovelty: boolean, now: Date,
 ): Promise<void> {
   positiveInteger(cadenceMinutes, 'cadence'); validDate(now, 'unit run time');
-  await postgresQuery(`update search_units set cadence_minutes=$2,last_run_at=$3,
-      last_novelty_at=case when $4 then $3 else last_novelty_at end,
-      next_run_at=$3+($2*interval '1 minute'),updated_at=$3
+  // Every use of a parameter must deduce one type: an untyped $n both assigned to an integer column and multiplied
+  // by an interval literal is rejected with 42P08, which would silently stop every unit from ever advancing.
+  await postgresQuery(`update search_units set cadence_minutes=$2::integer,last_run_at=$3::timestamptz,
+      last_novelty_at=case when $4::boolean then $3::timestamptz else last_novelty_at end,
+      next_run_at=$3::timestamptz+make_interval(mins=>$2::integer),updated_at=$3::timestamptz
     where unit_id=$1 and retired_at is null`, [unitId, cadenceMinutes, now, foundNovelty]);
 }
 
@@ -281,9 +283,9 @@ export async function savedScoreVacancyIds(targetUserId: UserId, vacancyIds: rea
 
 export async function expireStaleMatches(maxAgeDays: number, now: Date): Promise<number> {
   positiveInteger(maxAgeDays, 'match maximum age'); validDate(now, 'expiry time');
-  const result = await postgresQuery(`update matches m set state='expired',updated_at=$2
+  const result = await postgresQuery(`update matches m set state='expired',updated_at=$2::timestamptz
     from vacancies v where v.id=m.vacancy_id and m.state='matched' and m.llm_score is null
-      and v.published_at<$2-($1*interval '1 day')`, [maxAgeDays, now]);
+      and v.published_at<$2::timestamptz-make_interval(days=>$1::integer)`, [maxAgeDays, now]);
   return result.rowCount ?? 0;
 }
 
@@ -407,7 +409,7 @@ export async function recentNormalizedVacancyIds(
   if (!Number.isSafeInteger(afterId) || afterId < 0) throw new RangeError('Invalid recent-vacancy cursor.');
   positiveInteger(limit, 'recent-vacancy batch limit'); positiveInteger(maximumAgeDays, 'recent-vacancy maximum age');
   const result = await postgresQuery<{ id: string }>(`select id from vacancies where id>$1
-    and lifecycle_status='normalized' and published_at>=now()-($3*interval '1 day') order by id limit $2`,
+    and lifecycle_status='normalized' and published_at>=now()-make_interval(days=>$3::integer) order by id limit $2`,
   [afterId, limit, maximumAgeDays]);
   return Object.freeze(result.rows.map((row) => Number(row.id)));
 }

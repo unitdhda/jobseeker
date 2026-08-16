@@ -35,7 +35,7 @@ export async function setTelegramSession(
 ): Promise<void> {
   validKind(kind); validTtl(ttlMs);
   await postgresQuery(`insert into user_state(user_id,kind,state,token,expires_at)
-      values($1,$2,$3::jsonb,null,now()+($4*interval '1 millisecond'))
+      values($1,$2,$3::jsonb,null,now()+($4::double precision*interval '1 millisecond'))
     on conflict(user_id,kind) do update set state=excluded.state,token=null,
       expires_at=excluded.expires_at,updated_at=now()`, [userId, kind, JSON.stringify(state), ttlMs]);
 }
@@ -54,7 +54,7 @@ async function claimSession<TResult extends Record<string, unknown>>(
   // Durable workflow state exposes the same token required by token-owned renew/release; _claimToken remains legacy-compatible.
   const claimedState = { ...state, token, _claimToken: token };
   const result = await postgresQuery<{ state: TResult; expires_at: Date | string }>(`insert into user_state(user_id,kind,state,token,expires_at)
-      values($1,$2,$3::jsonb,$4,now()+($5*interval '1 millisecond'))
+      values($1,$2,$3::jsonb,$4,now()+($5::double precision*interval '1 millisecond'))
     on conflict(user_id,kind) do update set state=excluded.state,token=excluded.token,
       expires_at=excluded.expires_at,updated_at=now()
       where user_state.expires_at<=now()
@@ -86,7 +86,7 @@ export async function updateClaimedTelegramSession(
   validKind(kind); validTtl(ttlMs);
   if (!/^[0-9a-f]{64}$/u.test(token)) throw new TypeError('Invalid session claim token.');
   const result = await postgresQuery(`update user_state set state=$4::jsonb,
-      expires_at=now()+($5*interval '1 millisecond'),updated_at=now()
+      expires_at=now()+($5::double precision*interval '1 millisecond'),updated_at=now()
     where user_id=$1 and kind=$2 and token=$3 and expires_at>now()`, [
     userId, kind, token, JSON.stringify({ ...state, _claimToken: token }), ttlMs,
   ]);

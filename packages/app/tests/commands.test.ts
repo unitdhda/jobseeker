@@ -39,7 +39,7 @@ function fixture() {
         cost24h: 0, costTotal: 0,
         hours: Array.from({ length: 25 }, (_, index) => ({ at: new Date(index * 3_600_000), tokens: 0, costUsd: 0 })) }),
       scraperSummary: async () => ({ hours: Array.from({ length: 25 }, (_, index) => ({ at: new Date(index * 3_600_000), normalized: 0, scored: 0 })),
-        sources: [], units: [], normalization: { queued: 0, activeClaims: 0, expiredClaims: 0 },
+        sources: [], units: [], normalization: { queued: 0, activeClaims: 0, expiredClaims: 0, undecodable: 0 },
         matched24h: 0, scored24h: 0, parserErrors: [] }) },
     cvActions: { ...inertSession, setTelegramSession: async () => { events.push('arm'); }, deleteTelegramSession: async () => undefined,
       stageCvSource: async () => undefined, discardStagedCvSource: async () => undefined, confirmStagedCvSource: async () => false,
